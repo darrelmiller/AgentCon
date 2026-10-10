@@ -1,0 +1,19 @@
+{
+  "name": "agentcon-demo-issuer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DEMO ONLY: holder-bound age credential issuer",
+  "engines": { "node": ">=22 <25" },
+  "scripts": {
+    "start": "node server.mjs",
+    "offer": "node create-offer.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@digitalbazaar/ecdsa-multikey": "1.8.0",
+    "@sd-jwt/sd-jwt-vc": "0.21.1",
+    "jose": "6.2.12",
+    "qrcode": "1.5.4"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "A2A": {
+        "type": "Direct",
+        "requested": "[1.0.0-preview2, )",
+        "resolved": "1.0.0-preview2",
+        "contentHash": "sYFCdcwX/AdEoNSCCOWH8Upo+mmm82qDFXiwZqBBQoLhzQt4KCKvE8txmNaqGuNF8mSrfesSIuqf0rz7oPMl2Q==",
+        "dependencies": {
+          "Microsoft.Extensions.AI.Abstractions": "10.4.1"
+        }
+      },
+      "A2A.AspNetCore": {
+        "type": "Direct",
+        "requested": "[1.0.0-preview2, )",
+        "resolved": "1.0.0-preview2",
+        "contentHash": "x7E3BqcRrEtOJA21gu77DU2EL5HhWlYUmHYqg9Vjxq0UkqxIniDU3VdoMaZsSP5ock+MJhzZfivmYO+04RORBg==",
+        "dependencies": {
+          "A2A": "1.0.0-preview2"
+        }
+      },
+      "GitHub.Copilot.SDK": {
+        "type": "Direct",
+        "requested": "[1.0.19, )",
+        "resolved": "1.0.19",
+        "contentHash": "EKKWRDR8i+Fp2denREXQPOcn9nOhmF2SSRwZosyTx7baMrDjM9HFMBUG/NnFumt4vbmDuMd9f8oZ27g9LFrPAA==",
+        "dependencies": {
+          "Microsoft.Extensions.AI.Abstractions": "10.2.0"
+        }
+      },
+      "Microsoft.Extensions.AI.Abstractions": {
+        "type": "Transitive",
+        "resolved": "10.4.1",
+        "contentHash": "ZxhU/wg9BOc3ohibhLl18toPLWm96ysQoE+3OhCgrZ0TUPZd7bsUmGteeatz08yweyuPIEhtyUzEZTF+3bMWEQ=="
+      }
+    }
+  }
+}
