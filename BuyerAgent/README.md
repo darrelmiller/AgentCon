@@ -44,9 +44,10 @@ dotnet run --project BuyerAgent\BuyerAgent.csproj
 
 No supplier is needed to start the buyer or discuss the demo. The buyer finds
 suppliers by searching its configured AI Catalog, by default the repository
-[`catalog.json`](../catalog.json). That catalog currently lists only the buyer
-itself, so a supplier search reports an explicit "no matches" result; the buyer
-does not invent a quote or simulate a supplier.
+[`catalog.json`](../catalog.json). The catalog now includes the local
+[Rust test-only supplier](../SupplierAgent/README.md) as
+`urn:agentcon:agent:demo-wine-supplier`. Start it before selecting it; the buyer
+does not invent a quote when the supplier is unavailable.
 
 When a supplier is available, publish its Agent Card URL as a catalog entry
 rather than configuring a destination on the buyer. For example, add to
@@ -130,7 +131,7 @@ Call it directly, or ask your outer Copilot CLI to run these commands:
 # If using the demo-local installation of the official CLI:
 $env:PATH = (Join-Path $env:LOCALAPPDATA 'AgentConDemo\bin') + ';' + $env:PATH
 a2a card get http://localhost:5100 -o json
-a2a send -a http://localhost:5100 --timeout 150s 'Explain your role in the wine demo. The catalog lists no supplier yet; do not invent a quote.'
+a2a send -a http://localhost:5100 --timeout 150s 'Explain your role in the wine demo. Do not request a quote or purchase.'
 ```
 
 ### Discover through the repository Catalog
@@ -152,7 +153,7 @@ $buyers = @($catalog.entries | Where-Object {
 if ($buyers.Count -ne 1) { throw 'Expected exactly one buyer Agent Card entry' }
 $buyer = $buyers[0]
 a2a card get $buyer.url -o json
-a2a send -a $buyer.url --timeout 150s --context-id buyer-smoke 'Explain your role in the wine demo. The catalog lists no supplier yet; do not invent a quote.'
+a2a send -a $buyer.url --timeout 150s --context-id buyer-smoke 'Explain your role in the wine demo. Do not request a quote or purchase.'
 ```
 
 This resolves Catalog entry -> Agent Card -> advertised JSON-RPC interface.
@@ -174,13 +175,13 @@ a2a send -a http://localhost:5100 --timeout 150s --stream --context-id dinner-pa
 Structured input is accepted without inventing a supplier-specific schema:
 
 ```powershell
-a2a send -a http://localhost:5100 --timeout 150s --context-id dinner-party --text-part 'Request a quote using this data; do not place an order.' --data-part '{"wine":"Barolo","vintage":2019,"cases":12,"deliveryCity":"San Jose"}'
+a2a send -a http://localhost:5100 --timeout 150s --context-id dinner-party --text-part 'Select urn:agentcon:agent:demo-wine-supplier from the catalog and send this exact agreed v1 data as dataJson to request a quote; do not place an order.' --data-part '{"kind":"rfq","schemaVersion":"1","demoOnly":true,"wine":"Barolo","vintage":2019,"cases":12,"deliveryCity":"San Jose"}'
 ```
 
-These fields are illustrative, not an agreed UBL profile. The Copilot harness
-interprets the caller's instruction and constructs the supplier tool call.
-This is not a zero-inference pass-through endpoint or a measured performance
-comparison.
+These fields follow the local supplier's [agreed demo profile](../SupplierAgent/README.md#agreed-structured-profiles),
+not UBL. The Copilot harness interprets the caller's instruction and constructs
+the supplier tool call. The supplier handles this profile deterministically,
+but this buyer endpoint is not zero-inference or a measured performance comparison.
 
 Reuse `--context-id` across completed buyer tasks to retain recent conversation
 history. Use `--task-id` to continue a buyer task paused for input or authorization:
