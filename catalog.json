@@ -12,6 +12,14 @@
       "description": "Local C# wine buyer using the GitHub Copilot SDK and A2A v1 JSON-RPC. Discovers supplier Agent Cards through its configured AI Catalog.",
       "tags": ["wine", "buyer", "demo", "a2a"],
       "url": "http://localhost:5100/.well-known/agent-card.json"
+    },
+    {
+      "identifier": "urn:agentcon:agent:demo-wine-supplier",
+      "displayName": "AgentCon Demo Wine Supplier",
+      "type": "application/a2a-agent-card+json",
+      "description": "TEST ONLY Rust supplier: Copilot natural-language quotes and simulated orders, deterministic v1 wine RFQ/order data parts. No real purchasing or wallet verification.",
+      "tags": ["wine", "supplier", "demo", "a2a", "Barolo"],
+      "url": "http://localhost:6000/.well-known/agent-card.json"
     }
   ]
 }
