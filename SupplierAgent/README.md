@@ -14,6 +14,13 @@ A2A **1.0**. Natural language uses the official
 `github-copilot-sdk = 1.0.20-preview.2`, exactly pinned. `Cargo.lock` pins the
 dependency graph.
 
+## Distributed tracing
+
+See [the shared OTLP/Aspire setup](../docs/telemetry.md). Rust HTTP server spans
+extract W3C `traceparent`; the official A2A SDK executor keeps that parent across
+its background queue. Structured work has agent/business spans, **not** chat
+spans. Export is deliberately disabled without a configured OTLP endpoint.
+
 ## Run on this Windows ARM64 machine
 
 Rust 1.94+ is required by Copilot. This machine has native ARM64 Rust but only

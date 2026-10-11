@@ -237,8 +237,12 @@ public sealed class BuyerServiceTests
         Assert.IsType<CopilotBuyerHarness>(app.Services.GetRequiredService<IBuyerHarness>());
         var gateway = app.Services.GetRequiredService<SupplierGateway>();
         var result = await gateway.SearchAsync("wine supplier", CancellationToken.None);
-        Assert.Empty(result.Matches);
+        var supplier = Assert.Single(result.Matches);
+        Assert.Equal("urn:agentcon:agent:demo-wine-supplier", supplier.Identifier);
+        Assert.Equal(new Uri("http://localhost:6000/.well-known/agent-card.json"), supplier.CardUrl);
+        Assert.Equal(1, result.AgentEntriesScanned);
         Assert.Equal(1, result.ExcludedSelfEntries);
+        Assert.Empty(result.Warnings);
     }
 
     [Fact]

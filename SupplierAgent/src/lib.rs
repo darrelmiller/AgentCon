@@ -1,5 +1,6 @@
 pub mod domain;
 pub mod inference;
+pub mod telemetry;
 
 use std::{
     sync::{
@@ -23,6 +24,8 @@ use axum::{
 use futures::stream::{self, BoxStream};
 use serde_json::json;
 use tokio::sync::Mutex;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use domain::{PURCHASE, QUOTE, RECEIPT, RFQ, Request, WineStore};
 use inference::{Intent, Interpreter};
@@ -135,7 +138,14 @@ impl Supplier {
     }
 
     async fn apply(&self, request: Request, context: &str) -> Result<Outcome, String> {
-        let (media_type, data, text) = self.store.lock().await.apply(request, context)?;
+        let span = tracing::info_span!("supplier.business", agentcon.a2a.context.id = context);
+        let result = async { self.store.lock().await.apply(request, context) }
+            .instrument(span.clone())
+            .await;
+        if result.is_err() {
+            telemetry::error(&span, "invalid_business_request");
+        }
+        let (media_type, data, text) = result?;
         Ok(Outcome {
             state: TaskState::Completed,
             text,
@@ -152,26 +162,48 @@ struct Outcome {
 
 struct SupplierExecutor(Arc<Supplier>);
 
+struct ExecutionTrace {
+    span: tracing::Span,
+    completed: bool,
+}
+
+impl Drop for ExecutionTrace {
+    fn drop(&mut self) {
+        if !self.completed {
+            telemetry::error(&self.span, "canceled");
+        }
+    }
+}
+
 impl AgentExecutor for SupplierExecutor {
     fn execute(
         &self,
         ctx: ExecutorContext,
     ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let supplier = self.0.clone();
+        let span = tracing::info_span!("invoke_agent SupplierAgent", otel.kind = "internal",
+            gen_ai.operation.name = "invoke_agent", gen_ai.agent.name = "SupplierAgent",
+            gen_ai.provider.name = "github.copilot", agentcon.a2a.task.id = %ctx.task_id,
+            agentcon.a2a.context.id = %ctx.context_id);
+        let _ = span.set_parent(telemetry::executor_parent(&ctx.service_params));
+        let execution_span = span.clone();
         Box::pin(stream::once(async move {
+            let mut execution = ExecutionTrace { span: execution_span.clone(), completed: false };
             let started = Instant::now();
             let outcome = match &ctx.message {
                 Some(message) => supplier.run(message, &ctx.context_id).await,
                 None => Err("Missing user message.".into()),
             };
             let outcome = outcome.unwrap_or_else(|error| {
-                tracing::warn!(task_id = %ctx.task_id, error = %error, "supplier request failed");
+                telemetry::error(&execution_span, "supplier_request_failed");
+                tracing::warn!(task_id = %ctx.task_id, "supplier request failed");
                 Outcome {
                     state: TaskState::Failed,
                     text: error,
                     data: None,
                 }
             });
+            execution.completed = true;
             tracing::info!(task_id = %ctx.task_id, state = ?outcome.state, elapsed_ms = started.elapsed().as_millis(), "supplier execution");
             let mut response = Message::new(Role::Agent, vec![Part::text(outcome.text)]);
             response.task_id = Some(ctx.task_id.clone());
@@ -198,10 +230,12 @@ impl AgentExecutor for SupplierExecutor {
                 history: None,
                 metadata: None,
             }))
-        }))
+        }.instrument(span)))
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+        let span = tracing::info_span!("supplier.cancel", agentcon.a2a.task.id = %ctx.task_id);
+        let _ = span.set_parent(telemetry::executor_parent(&ctx.service_params));
         Box::pin(stream::once(async move {
             Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
                 task_id: ctx.task_id,
@@ -218,7 +252,7 @@ impl AgentExecutor for SupplierExecutor {
                 },
                 metadata: None,
             }))
-        }))
+        }.instrument(span)))
     }
 }
 
@@ -286,4 +320,5 @@ pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
             }),
         )
         .layer(middleware::from_fn(reject_browser))
+        .layer(middleware::from_fn(telemetry::http))
 }

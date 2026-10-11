@@ -188,6 +188,8 @@ public sealed class AiCatalogClient(HttpClient httpClient, BuyerOptions options)
 
     private async Task<JsonDocument?> ReadCatalogAsync(Uri location, bool isRoot, List<string> warnings, CancellationToken cancellationToken)
     {
+        using var activity = BuyerTelemetry.Source.StartActivity("catalog.fetch");
+        activity?.SetTag("agentcon.catalog.transport", location.IsFile ? "file" : "http");
         try
         {
             var bytes = location.IsFile
@@ -215,8 +217,14 @@ public sealed class AiCatalogClient(HttpClient httpClient, BuyerOptions options)
         }
         catch (Exception exception) when (!isRoot && exception is InvalidOperationException or HttpRequestException)
         {
+            BuyerTelemetry.Error(activity, exception);
             warnings.Add($"Nested catalog {Display(location)} could not be read: {exception.Message}");
             return null;
+        }
+        catch (Exception exception)
+        {
+            BuyerTelemetry.Error(activity, exception);
+            throw;
         }
     }
 

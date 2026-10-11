@@ -11,6 +11,7 @@ public sealed class BuyerHandler(
 
     public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
+        using var activity = BuyerTelemetry.Agent(context.TaskId, context.ContextId);
         var updater = new TaskUpdater(eventQueue, context.TaskId, context.ContextId);
         if (!context.IsContinuation)
         {
@@ -59,6 +60,7 @@ public sealed class BuyerHandler(
             }
             else if (supplierTask?.Status.State is TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
             {
+                BuyerTelemetry.Error(activity, "supplier_task_failed");
                 await updater.FailAsync(message, cancellationToken: deadline.Token);
             }
             else
@@ -69,6 +71,7 @@ public sealed class BuyerHandler(
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
+            BuyerTelemetry.Error(activity, execution.CancellationRequested ? "canceled" : "timeout");
             if (execution.CancellationRequested)
             {
                 reply = "Buyer task canceled. Supplier tasks are not automatically canceled; inspect them before retrying an order.";
@@ -85,6 +88,7 @@ public sealed class BuyerHandler(
         }
         catch (Exception exception)
         {
+            BuyerTelemetry.Error(activity, exception);
             reply = $"Buyer request failed: {exception.Message}";
             logger.LogError(exception, "Buyer task {TaskId} failed", context.TaskId);
             await updater.FailAsync(CreateReply(reply, context), cancellationToken: cancellationToken);
@@ -109,6 +113,8 @@ public sealed class BuyerHandler(
 
     public async Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
+        using var activity = BuyerTelemetry.Source.StartActivity("buyer.cancel");
+        activity?.SetTag("agentcon.a2a.task.id", context.TaskId);
         lock (_activeLock)
         {
             if (_activeTasks.TryGetValue(context.TaskId, out var active))

@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use futures::{FutureExt, StreamExt};
 use github_copilot_sdk::{
     Client, ClientMode, ClientOptions, MemoryConfiguration, MessageOptions, SessionConfig,
     SystemMessageConfig, handler::DenyAllHandler,
@@ -8,6 +9,8 @@ use github_copilot_sdk::{
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::domain::Request;
 
@@ -35,6 +38,32 @@ pub struct CopilotInterpreter {
     client: Mutex<Option<Client>>,
     state_dir: PathBuf,
     model: String,
+}
+
+struct SessionCleanup {
+    session: Option<Arc<github_copilot_sdk::session::Session>>,
+    parent: opentelemetry::Context,
+}
+
+impl Drop for SessionCleanup {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            let span = tracing::info_span!("copilot.cancel_cleanup");
+            let _ = span.set_parent(self.parent.clone());
+            crate::telemetry::error(&span, "canceled");
+            tokio::spawn(
+                async move {
+                    if session.abort().await.is_err() {
+                        tracing::error!("Copilot cancellation abort failed");
+                    }
+                    if session.disconnect().await.is_err() {
+                        tracing::error!("Copilot cancellation disconnect failed");
+                    }
+                }
+                .instrument(span),
+            );
+        }
+    }
 }
 
 impl CopilotInterpreter {
@@ -91,7 +120,15 @@ impl Interpreter for CopilotInterpreter {
                 .with_base_directory(&self.state_dir)
                 .with_use_logged_in_user(true);
             options.working_directory = self.state_dir.clone();
+            options
+                .env
+                .push(("COPILOT_OTEL_ENABLED".into(), "false".into()));
+            options.env.push((
+                "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT".into(),
+                "false".into(),
+            ));
             let client = Client::start(options)
+                .instrument(crate::telemetry::runtime_start())
                 .await
                 .map_err(|e| format!("Copilot startup/authentication failed: {e}"))?;
             *guard = Some(client);
@@ -112,21 +149,50 @@ impl Interpreter for CopilotInterpreter {
                     .with_mode("replace")
                     .with_content(INSTRUCTIONS),
             );
-        let session = client
-            .create_session(config)
-            .await
-            .map_err(|e| e.to_string())?;
+        let session = Arc::new(
+            client
+                .create_session(config)
+                .await
+                .map_err(|e| e.to_string())?,
+        );
+        let mut cleanup = SessionCleanup {
+            session: Some(session.clone()),
+            parent: tracing::Span::current().context(),
+        };
         let prompt = json!({
             "userText": text, "latestQuoteId": latest_quote, "contextId": context,
             "suggestedPurchaseOrderId": format!("demo-po-{}", uuid::Uuid::new_v4())
         })
         .to_string();
-        let result = session
-            .send_and_wait(MessageOptions::new(prompt).with_wait_timeout(Duration::from_secs(100)))
-            .await;
+        let span = tracing::info_span!("copilot.agent_loop");
+        let parent = span.context();
+        let mut events = session.subscribe();
+        let result = async {
+            let send = session.send_and_wait(MessageOptions::new(prompt).with_wait_timeout(Duration::from_secs(100)));
+            tokio::pin!(send);
+            loop {
+                tokio::select! {
+                    result = &mut send => break result,
+                    Some(event) = events.next() => match event {
+                        Ok(event) => if let Ok(value) = serde_json::to_value(event) {
+                            crate::telemetry::usage(&value, &parent, "SupplierAgent");
+                        },
+                        Err(_) => tracing::warn!("Copilot usage subscription lagged; usage may be incomplete"),
+                    }
+                }
+            }
+        }.instrument(span.clone()).await;
+        while let Some(Some(event)) = events.next().now_or_never() {
+            if let Ok(event) = event {
+                if let Ok(value) = serde_json::to_value(event) {
+                    crate::telemetry::usage(&value, &parent, "SupplierAgent");
+                }
+            }
+        }
         if result.is_err() {
-            if let Err(error) = session.abort().await {
-                tracing::error!(%error, "Copilot abort failed");
+            crate::telemetry::error(&span, "copilot_inference_failed");
+            if session.abort().await.is_err() {
+                tracing::error!("Copilot abort failed");
             }
         }
         let parsed = match result {
@@ -144,10 +210,14 @@ impl Interpreter for CopilotInterpreter {
             Ok(None) => Err("Copilot returned no final response; no order executed.".into()),
             Err(e) => Err(format!("Copilot inference failed; no order executed: {e}")),
         };
+        if parsed.is_err() {
+            crate::telemetry::error(&span, "invalid_inference_result");
+        }
         session
             .disconnect()
             .await
             .map_err(|e| format!("Copilot session cleanup failed: {e}"))?;
+        cleanup.session = None;
         parsed
     }
 }

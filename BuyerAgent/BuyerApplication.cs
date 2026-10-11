@@ -1,5 +1,6 @@
 using A2A.AspNetCore;
 using System.Net;
+using OpenTelemetry.Trace;
 
 namespace BuyerAgent;
 
@@ -25,6 +26,7 @@ public static class BuyerApplication
         builder.WebHost.UseUrls(options.ListenUrl);
         builder.WebHost.ConfigureKestrel(server => server.Limits.MaxRequestBodySize = 128 * 1024);
         builder.Services.AddSingleton(options);
+        BuyerTelemetry.Configure(builder);
         builder.Services.AddSingleton<BuyerConversationStore>();
         builder.Services.AddSingleton<CopilotRuntime>();
         builder.Services.AddHttpClient<AiCatalogClient>(client =>
@@ -49,6 +51,12 @@ public static class BuyerApplication
         configureHost?.Invoke(builder);
 
         var app = builder.Build();
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            if (app.Services.GetService<OpenTelemetry.Trace.TracerProvider>() is { } provider &&
+                !provider.ForceFlush(10000))
+                Console.Error.WriteLine("Buyer OpenTelemetry shutdown flush failed.");
+        });
         app.Use(async (context, next) =>
         {
             if (context.Request.Headers.ContainsKey("Origin") ||

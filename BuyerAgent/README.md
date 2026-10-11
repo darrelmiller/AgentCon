@@ -20,6 +20,12 @@ framework.
 The packages are pinned to `A2A` / `A2A.AspNetCore` **1.0.0-preview2** and
 `GitHub.Copilot.SDK` **1.0.19**. The A2A v1 .NET SDK is still a preview.
 
+## Distributed tracing
+
+See [the shared OTLP/Aspire setup](../docs/telemetry.md) for exact environment
+variables, span semantics, privacy limits and cross-language validation.
+Export is deliberately disabled when no OTLP endpoint is configured.
+
 ## Prerequisites
 
 - .NET 10 SDK.

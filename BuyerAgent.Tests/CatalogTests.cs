@@ -12,7 +12,7 @@ public sealed class CatalogTests : IDisposable
     public void Dispose() => _files.Dispose();
 
     [Fact]
-    public async Task RepositoryCatalogIsTheDefaultAndContainsNoSupplier()
+    public async Task RepositoryCatalogIsTheDefaultAndContainsDemoSupplier()
     {
         var options = new BuyerOptions();
         var location = options.GetCatalogUri();
@@ -20,10 +20,13 @@ public sealed class CatalogTests : IDisposable
         Assert.Equal("catalog.json", Path.GetFileName(location.LocalPath));
         Assert.True(File.Exists(location.LocalPath));
         var result = await Client(options).SearchAsync("wine supplier", CancellationToken.None);
-        Assert.Empty(result.Matches);
-        Assert.Equal(0, result.AgentEntriesScanned);
+        var supplier = Assert.Single(result.Matches);
+        Assert.Equal("urn:agentcon:agent:demo-wine-supplier", supplier.Identifier);
+        Assert.Equal(new Uri("http://localhost:6000/.well-known/agent-card.json"), supplier.CardUrl);
+        Assert.Equal(1, result.AgentEntriesScanned);
         Assert.Equal(1, result.ExcludedSelfEntries);
-        Assert.Contains("No A2A Agent Card entries", result.Note);
+        Assert.Contains("One candidate matched", result.Note);
+        Assert.Empty(result.Warnings);
         Assert.Empty(_network.Requests);
     }
 

@@ -10,6 +10,18 @@ public sealed class CopilotRuntime(BuyerOptions options) : IAsyncDisposable
     private readonly SemaphoreSlim _startup = new(1, 1);
     private CopilotClient? _client;
 
+    public static Dictionary<string, string> CreateEnvironment()
+    {
+        // The SDK replaces, rather than merges, a supplied child environment.
+        var environment = new System.Diagnostics.ProcessStartInfo().Environment
+            .Where(entry => entry.Value is not null)
+            .ToDictionary(entry => entry.Key, entry => entry.Value!,
+                OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        environment["COPILOT_OTEL_ENABLED"] = "false";
+        environment["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "false";
+        return environment;
+    }
+
     public async Task<CopilotClient> GetClientAsync(CancellationToken cancellationToken)
     {
         await _startup.WaitAsync(cancellationToken);
@@ -23,7 +35,8 @@ public sealed class CopilotRuntime(BuyerOptions options) : IAsyncDisposable
                     Mode = CopilotClientMode.Empty,
                     BaseDirectory = options.CopilotStateDirectory,
                     WorkingDirectory = options.CopilotStateDirectory,
-                    UseLoggedInUser = true
+                    UseLoggedInUser = true,
+                    Environment = CreateEnvironment()
                 });
                 try
                 {
@@ -84,6 +97,21 @@ public sealed class CopilotBuyerHarness(
 
     public async Task<string> RunAsync(BuyerTurn turn, CancellationToken cancellationToken)
     {
+        using var activity = BuyerTelemetry.Source.StartActivity("copilot.agent_loop");
+        try
+        {
+            return await RunSessionAsync(turn, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            BuyerTelemetry.Error(activity, exception);
+            throw;
+        }
+    }
+
+    private async Task<string> RunSessionAsync(BuyerTurn turn, CancellationToken cancellationToken)
+    {
+        var usage = new CopilotUsageTrace(System.Diagnostics.Activity.Current?.Context ?? default, "BuyerAgent");
         var supplier = new SupplierTurnTools(gateway, turn, cancellationToken);
         var toolOptions = new CopilotToolOptions { SkipPermission = true, Defer = CopilotToolDefer.Never };
         var tools = new AIFunction[]
@@ -127,6 +155,8 @@ public sealed class CopilotBuyerHarness(
         }, cancellationToken);
         using var subscription = session.On<SessionEvent>(evt =>
         {
+            if (evt is AssistantUsageEvent usageEvent)
+                usage.Record(usageEvent);
             if (evt is ToolExecutionStartEvent tool)
             {
                 logger.LogInformation("Buyer tool: {ToolName}", tool.Data.ToolName);
