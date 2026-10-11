@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentCon test-only wine profiles v1 (unregistered demo media types)",
+  "oneOf": [
+    { "$ref": "#/$defs/rfq" },
+    { "$ref": "#/$defs/purchaseOrder" },
+    { "$ref": "#/$defs/quote" },
+    { "$ref": "#/$defs/receipt" }
+  ],
+  "$defs": {
+    "rfq": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schemaVersion", "demoOnly", "wine", "vintage", "cases", "deliveryCity"],
+      "properties": {
+        "kind": { "const": "rfq" },
+        "schemaVersion": { "const": "1" },
+        "demoOnly": { "const": true },
+        "wine": { "type": "string", "description": "Only Barolo is quoted, case-insensitive." },
+        "vintage": { "const": 2019 },
+        "cases": { "type": "integer", "minimum": 1, "maximum": 48 },
+        "deliveryCity": { "type": "string", "description": "Only San Jose is priced, case-insensitive." }
+      }
+    },
+    "purchaseOrder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schemaVersion", "demoOnly", "quoteId", "purchaseOrderId"],
+      "properties": {
+        "kind": { "const": "purchase-order" },
+        "schemaVersion": { "const": "1" },
+        "demoOnly": { "const": true },
+        "quoteId": { "type": "string", "minLength": 1 },
+        "purchaseOrderId": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schemaVersion", "demoOnly", "quoteId", "wine", "vintage", "cases", "bottlesPerCase", "deliveryCity", "currency", "casePriceMinor", "deliveryMinor", "totalMinor", "expiresAt"],
+      "properties": {
+        "kind": { "const": "quote" },
+        "schemaVersion": { "const": "1" },
+        "demoOnly": { "const": true },
+        "quoteId": { "type": "string" },
+        "wine": { "const": "Barolo" },
+        "vintage": { "const": 2019 },
+        "cases": { "type": "integer", "minimum": 1, "maximum": 48 },
+        "bottlesPerCase": { "const": 12 },
+        "deliveryCity": { "const": "San Jose" },
+        "currency": { "const": "USD" },
+        "casePriceMinor": { "const": 14400 },
+        "deliveryMinor": { "const": 2500 },
+        "totalMinor": { "type": "integer", "description": "cases * 14400 + 2500, cents. No taxes are modeled." },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schemaVersion", "demoOnly", "orderId", "purchaseOrderId", "quoteId", "status", "currency", "totalMinor", "ageVerification", "payment", "fulfillment"],
+      "properties": {
+        "kind": { "const": "order-receipt" },
+        "schemaVersion": { "const": "1" },
+        "demoOnly": { "const": true },
+        "orderId": { "type": "string" },
+        "purchaseOrderId": { "type": "string" },
+        "quoteId": { "type": "string" },
+        "status": { "const": "simulated" },
+        "currency": { "const": "USD" },
+        "totalMinor": { "type": "integer" },
+        "ageVerification": { "const": "not-performed" },
+        "payment": { "const": "not-performed" },
+        "fulfillment": { "const": "not-performed" }
+      }
+    }
+  }
+}

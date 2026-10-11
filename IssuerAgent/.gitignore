@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+*.jwk.json
+*.jwks.json
+*.sd-jwt
+*.zip
+coverage/
+local-output/
+research/

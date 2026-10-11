@@ -1,0 +1,8 @@
+test/
+.env
+.env.*
+*.jwk.json
+*.jwks.json
+*.sd-jwt
+local-output/
+research/

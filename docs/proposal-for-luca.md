@@ -8,11 +8,13 @@
 
 - **Discovery (3 min):** My agent finds your supplier agent through an AI Catalog entry and reads its Agent Card. *Introduces: A2A layers, Agent Cards, federated discovery.*
 - **Natural-language quote and purchase over JSON-RPC (5 min):** My agent asks for a quote in plain language, judges the price and asks to buy. Your agent moves the task to `TASK_STATE_AUTH_REQUIRED` and requests proof of buying authority using the [OID4VP In-Task Authorization extension](https://github.com/a2aproject/experimental-ext-oid4vp-auth) (experimental). I scan a QR code and present the credential from a phone wallet; the task resumes. Capture timing as the baseline. *Introduces: extensions, task lifecycle.*
-- **Structured quote and order over JSON-RPC (4 min):** Your card advertises a structured quote/order format (e.g. a UBL subset). My agent switches to it, and the accepted quote becomes a purchase order artifact. Transactions get faster because neither side needs an LLM to interpret prose. *Introduces: profiles.* Stretch: you change the format live and my agent adapts.
+- **Structured RFQ, quote and purchase order over JSON-RPC (4 min):** Your card advertises media types for wine RFQs, quotes and purchase orders, each with an agreed versioned schema. Deterministic code on both agents exchanges typed structured parts and returns the result as an artifact. The goal is to demonstrate a transaction with no LLM calls on either side, not just less prose interpretation. Measure elapsed time and inference calls/tokens for both runs; discovery/setup or LLM-assisted schema adaptation is outside the measured transaction. The current buyer's structured-input path still uses Copilot, so it needs a separate deterministic route. *Introduces: media types, profiles, artifacts.*
 - **Same transactions over SLIMRPC (6 min):** Same app logic, different binding. Laptops on separate networks, both connecting out to a SLIM routing node; neither agent has a public endpoint. *Introduces: custom bindings, end-to-end encryption.*
 - **Wrap-up (3 min):** When something should be an extension, a binding, or core spec.
 
-**Positioning:** Structured messages bring the speed; SLIM brings private endpoints. We show measured SLIM numbers, not assumptions.
+**Positioning:** Agreed structured formats can let agents transact without an LLM; SLIM brings private endpoints. Any speed or zero-inference claim must be supported by measurements, not assumptions.
+
+**Buyer implementation update:** GitHub Copilot CLI drives the official `a2a` CLI to call a local C# buyer service. That service uses the GitHub Copilot SDK as the harness and the official .NET A2A SDK for supplier calls. The initial service uses JSON-RPC; SLIMRPC and phone-wallet hand-off still need integration.
 
 **Questions for you**
 
