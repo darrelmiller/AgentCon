@@ -1,6 +1,7 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use a2a::{Message, Part, Role};
+use agentcon_supplier::authorization::{Challenge, EXTENSION, Verifier};
 use agentcon_supplier::{
     Supplier, app,
     domain::{PURCHASE, QUOTE, RECEIPT, RFQ, Request, WineStore},
@@ -8,6 +9,27 @@ use agentcon_supplier::{
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
+
+#[derive(Default)]
+struct TestVerifier(std::sync::atomic::AtomicBool);
+
+#[async_trait]
+impl Verifier for TestVerifier {
+    async fn create(&self, task: &str, context: &str) -> Result<Challenge, String> {
+        Ok(Challenge {
+            id: "test-presentation".into(),
+            task_id: task.into(),
+            context_id: context.into(),
+            expires_at: chrono::Utc::now().timestamp() + 600,
+            authorization_request: json!({"client_id":"redirect_uri:https://verifier.example/response","request_uri":"https://verifier.example/request"}),
+            presentation_url: "https://verifier.example/presentation".into(),
+            wallet_uri: "openid4vp://?request_uri=https%3A%2F%2Fverifier.example%2Frequest".into(),
+        })
+    }
+    async fn verified(&self, _: &Challenge) -> Result<bool, String> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+}
 
 struct NoInference;
 
@@ -163,9 +185,13 @@ impl Drop for TestServer {
 
 impl TestServer {
     async fn new(interpreter: Arc<dyn Interpreter>) -> Self {
+        Self::with_supplier(Supplier::new(interpreter)).await
+    }
+
+    async fn with_supplier(supplier: Supplier) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let supplier = Arc::new(Supplier::new(interpreter));
+        let supplier = Arc::new(supplier);
         let router = app(supplier.clone(), &url);
         let task = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -204,7 +230,11 @@ impl TestServer {
 
 #[tokio::test]
 async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
-    let server = TestServer::new(Arc::new(NoInference)).await;
+    let verifier = Arc::new(TestVerifier::default());
+    let server = TestServer::with_supplier(
+        Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()),
+    )
+    .await;
     let card: Value = reqwest::get(format!("{}/.well-known/agent-card.json", server.url))
         .await
         .unwrap()
@@ -225,7 +255,12 @@ async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
             .unwrap()
             .contains(&json!("application/json"))
     );
-    let discovery = &card["capabilities"]["extensions"][0]["params"]["schemas"];
+    let discovery = &card["capabilities"]["extensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|extension| extension["uri"] == "urn:agentcon:extension:structured-schemas:v1")
+        .unwrap()["params"]["schemas"];
     assert_eq!(discovery.as_array().unwrap().len(), 4);
     let schema_response = reqwest::get(discovery[0]["url"].as_str().unwrap())
         .await
@@ -263,6 +298,36 @@ async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
         )
         .await;
     assert_eq!(
+        purchased["task"]["status"]["state"], "TASK_STATE_AUTH_REQUIRED",
+        "{purchased}"
+    );
+    assert!(purchased["task"].get("artifacts").is_none());
+    assert_eq!(
+        purchased["task"]["status"]["message"]["metadata"][EXTENSION]["authorizationRequest"]["client_id"],
+        "redirect_uri:https://verifier.example/response"
+    );
+    let mut continuation = Message::new(
+        Role::User,
+        vec![
+            Part::data(order("changed-quote-must-not-execute", "changed-po"))
+                .with_media_type(PURCHASE),
+        ],
+    );
+    continuation.task_id = Some(purchased["task"]["id"].as_str().unwrap().into());
+    continuation.context_id = Some("http-test".into());
+    let waiting = server
+        .rpc("SendMessage", json!({"message":continuation}))
+        .await;
+    assert_eq!(
+        waiting["task"]["status"]["state"],
+        "TASK_STATE_AUTH_REQUIRED"
+    );
+    assert!(waiting["task"].get("artifacts").is_none());
+    verifier.0.store(true, Ordering::SeqCst);
+    let purchased = server
+        .rpc("SendMessage", json!({"message":continuation}))
+        .await;
+    assert_eq!(
         purchased["task"]["status"]["state"], "TASK_STATE_COMPLETED",
         "{purchased}"
     );
@@ -270,6 +335,10 @@ async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
         purchased["task"]["artifacts"][0]["parts"][0]["mediaType"],
         RECEIPT
     );
+    let receipt = &purchased["task"]["artifacts"][0]["parts"][0]["data"];
+    assert_eq!(receipt["purchaseOrderId"], "http-po");
+    assert_eq!(receipt["quoteId"], quote["quoteId"]);
+    assert_eq!(receipt["ageVerification"], "verified-demo-over-21");
     let fetched = server
         .rpc("GetTask", json!({"id":purchased["task"]["id"]}))
         .await;
@@ -292,6 +361,31 @@ async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
     );
 }
 
+#[tokio::test]
+async fn unconfigured_verifier_never_creates_purchase_and_quotes_remain_open() {
+    let server = TestServer::new(Arc::new(NoInference)).await;
+    let quote = server
+        .send(vec![Part::data(rfq(1)).with_media_type(RFQ)], "no-verifier")
+        .await;
+    assert_eq!(quote["task"]["status"]["state"], "TASK_STATE_COMPLETED");
+    let id = quote["task"]["artifacts"][0]["parts"][0]["data"]["quoteId"]
+        .as_str()
+        .unwrap();
+    let order = server
+        .send(
+            vec![Part::data(order(id, "po")).with_media_type(PURCHASE)],
+            "no-verifier",
+        )
+        .await;
+    assert_eq!(order["task"]["status"]["state"], "TASK_STATE_AUTH_REQUIRED");
+    assert!(order["task"].get("artifacts").is_none());
+    assert!(
+        order["task"]["status"]["message"]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("not configured")
+    );
+}
 #[tokio::test]
 async fn invalid_structured_input_never_falls_back_to_inference() {
     let server = TestServer::new(Arc::new(NoInference)).await;
@@ -400,7 +494,7 @@ impl Interpreter for AuthInterpreter {
 }
 
 #[tokio::test]
-async fn authorization_remains_unimplemented_and_cannot_be_asserted() {
+async fn caller_age_assertion_cannot_authorize_a_purchase_without_quote() {
     let server = TestServer::new(Arc::new(AuthInterpreter)).await;
     let response = server
         .send(
@@ -416,5 +510,6 @@ async fn authorization_remains_unimplemented_and_cannot_be_asserted() {
     let text = response["task"]["status"]["message"]["parts"][0]["text"]
         .as_str()
         .unwrap();
-    assert!(text.contains("requires authorization"));
+    assert!(text.contains("quote-bound purchase request"));
+    assert!(text.contains("No order has been created"));
 }

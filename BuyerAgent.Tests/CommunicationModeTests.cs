@@ -198,6 +198,11 @@ public sealed class CommunicationModeTests
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.Equal("o", SupplierFormats.Validate(formats.Single(item => item.MediaType == SupplierFormats.Receipt), receipt, true)
             .GetProperty("orderId").GetString());
+        var verifiedReceipt = JsonSerializer.Deserialize<JsonElement>(
+            receipt.GetRawText().Replace("\"ageVerification\":\"not-performed\"", "\"ageVerification\":\"verified-demo-over-21\""));
+        Assert.Equal("verified-demo-over-21",
+            SupplierFormats.Validate(formats.Single(item => item.MediaType == SupplierFormats.Receipt), verifiedReceipt, true)
+                .GetProperty("ageVerification").GetString());
         var decimalNumbers = JsonSerializer.Deserialize<JsonElement>(quote.GetRawText().Replace("\"cases\":12", "\"cases\":12.0"));
         Assert.Equal(12, SupplierFormats.Validate(format, decimalNumbers, true).GetProperty("cases").GetInt32());
     }

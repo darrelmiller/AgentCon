@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "DEMO ONLY: holder-bound age credential issuer",
-  "engines": { "node": ">=22 <25" },
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "start": "node server.mjs",
     "offer": "node create-offer.mjs",
@@ -15,5 +17,8 @@
     "@sd-jwt/sd-jwt-vc": "0.21.1",
     "jose": "6.2.12",
     "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "@sphereon/did-auth-siop": "0.20.1"
   }
 }

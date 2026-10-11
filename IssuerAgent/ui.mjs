@@ -57,10 +57,10 @@ html[data-theme="dark"] {
   --cp-highlight: rgba(253, 142, 161, 0.12);
 }`;
 
-function page(content) {
+function page(content, title = 'AgentCon DEMO issuer') {
   return `<!doctype html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentCon DEMO issuer</title>
+<title>${escapeHtml(title)}</title>
 <script>
   (() => {
     const param = new URLSearchParams(window.location.search).get("scoutTheme");
@@ -85,7 +85,7 @@ a { color: var(--cp-link); overflow-wrap: anywhere; }
 .button:hover { background: var(--cp-accent-hover); }
 code { font-family: Consolas, "Courier New", Courier, monospace; }
 </style></head><body><main>
-<h1>AgentCon DEMO issuer</h1>
+<h1>${escapeHtml(title)}</h1>
 <p class="warning"><strong>DEMO ONLY — no real age validation.</strong> This issuer sets
 <code>over_21: true</code> for every authorized test issuance. Never use this credential for an age-restricted service.</p>
 ${content}
@@ -112,4 +112,17 @@ The credential will be signed for your wallet's key, not a software test holder.
 The credential expires after 14 days. Keep this page private: its link grants one test issuance.</p>
 <p class="muted">Phone issuance is not verified until you scan and confirm it in the wallet.</p>
 `);
+}
+
+export async function presentationPage(link, issuer, expiresAt) {
+  const qr = await QRCode.toDataURL(link, { width: 320, margin: 4, errorCorrectionLevel: 'M' });
+  return page(`
+<p>Scan with Sphereon Wallet, select the credential issued by ${escapeHtml(issuer)},
+and approve disclosure of <code>over_21</code>. No birth date is requested.</p>
+<img class="qr" alt="Wallet presentation QR code" src="${escapeHtml(qr)}">
+<a class="button" href="${escapeHtml(link)}">Open in wallet</a>
+<p>After approving in your wallet, return to the buyer and ask it to continue the pending purchase.</p>
+<p class="muted">Request expires at ${escapeHtml(new Date(expiresAt * 1000).toISOString())}.
+Keep this page private. This authorizes only a simulated purchase.</p>
+`, 'Authorize the AgentCon purchase');
 }

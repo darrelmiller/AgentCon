@@ -380,9 +380,10 @@ never put a token in appsettings or a command-line argument.
   than adding a duplicate summary artifact.
   Supplier failures and tool failures cannot be converted to successful buyer
   completion simply because the model produces reassuring prose.
-- Supplier `auth-required` messages relay OID4VP metadata to the caller. This
-  **does not invoke a phone wallet, render a QR code, issue credentials, or run a
-  verifier**. After external verification, explicitly ask the buyer to inspect
+- Supplier `auth-required` messages relay experimental OID4VP metadata and
+  deterministic Sphereon instructions to the caller. The issuer-hosted presentation
+  page renders the QR; the phone posts credentials directly to that verifier, never
+  to buyer chat or telemetry. After wallet approval, explicitly ask the buyer to continue
   the supplier task. Supplier completion does not automatically resume the buyer.
 - Cancellation stops buyer execution, not orders already accepted at the
   supplier. After cancellation, timeout or an uncertain transport failure,

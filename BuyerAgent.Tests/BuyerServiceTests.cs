@@ -13,6 +13,69 @@ namespace BuyerAgent.Tests;
 public sealed class BuyerServiceTests
 {
     [Fact]
+    public async Task CallerCancellationPersistsCanceledInsteadOfLeavingWorking()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var app = await StartAsync(new StubHarness(async (_, token) =>
+        {
+            started.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return "unreachable";
+        }));
+        var store = app.Services.GetRequiredService<ITaskStore>();
+        const string id = "disconnect-test";
+        await store.SaveTaskAsync(id, new AgentTask { Id = id, ContextId = "context",
+            Status = new A2A.TaskStatus { State = TaskState.Working } });
+        var handler = app.Services.GetRequiredService<IAgentHandler>();
+        using var cancellation = new CancellationTokenSource();
+        var queue = new AgentEventQueue();
+        var execution = handler.ExecuteAsync(new RequestContext
+        {
+            TaskId = id, ContextId = "context", Message = Request("Quote").Message, StreamingResponse = false
+        }, queue, cancellation.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+        var saved = await store.GetTaskAsync(id);
+        Assert.Equal(TaskState.Canceled, saved!.Status.State);
+        Assert.Contains("Caller disconnected", saved.Status.Message!.Parts[0].Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ContinuationReturnsTaskAndPersistsCompletion(bool returnImmediately)
+    {
+        var count = 0;
+        await using var app = await StartAsync(new StubHarness((turn, _) =>
+        {
+            if (Interlocked.Increment(ref count) == 1)
+                turn.SupplierResponses.Add(new SendMessageResponse
+                {
+                    Task = new AgentTask { Id = "seller", ContextId = "seller-context",
+                        Status = new A2A.TaskStatus { State = TaskState.InputRequired } }
+                });
+            return Task.FromResult("Quote ready");
+        }));
+        using var http = app.GetTestClient();
+        using var client = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
+        var first = await client.SendMessageAsync(Request("Quote"));
+        Assert.Equal(TaskState.InputRequired, first.Task!.Status.State);
+        var next = Request("Supply missing details", first.Task.ContextId);
+        next.Message.TaskId = first.Task.Id;
+        next.Configuration = new SendMessageConfiguration { ReturnImmediately = returnImmediately };
+        var response = await client.SendMessageAsync(next);
+        Assert.Equal(first.Task.Id, response.Task!.Id);
+        AgentTask saved = response.Task;
+        for (var i = 0; i < 100 && saved.Status.State != TaskState.Completed; i++)
+        {
+            await Task.Delay(10);
+            saved = await client.GetTaskAsync(new GetTaskRequest { Id = first.Task.Id });
+        }
+        Assert.Equal(TaskState.Completed, saved.Status.State);
+    }
+
+    [Fact]
     public async Task DiscoversV1CardWithoutStartingInference()
     {
         await using var app = await StartAsync(new StubHarness((_, _) =>

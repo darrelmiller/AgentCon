@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { CONFIG_ID, GRANT, VCT, digest, random, signingService, validateProof } from './crypto.mjs';
 import { isMain, loadConfig } from './config.mjs';
 import { offerPage, rootPage } from './ui.mjs';
+import { presentationService } from './presentation.mjs';
 
 const MAX_BODY = 16 * 1024;
 class HttpError extends Error {
@@ -47,6 +48,7 @@ async function body(req, type) {
 
 export async function createIssuer(config) {
   const signer = await signingService(config);
+  const presentations = presentationService(config, signer.publicJwk);
   const offers = new Map(), codes = new Map(), tokens = new Map(), nonces = new Map(), rates = new Map();
   const stores = [offers, codes, tokens, nonces, rates];
   function cleanup() {
@@ -131,6 +133,43 @@ export async function createIssuer(config) {
       if (++rate.count > config.rateLimit) {
         res.setHeader('Retry-After', String(Math.max(1, rate.expiresAt - config.now())));
         fail(429, 'slow_down', 'Request rate exceeded');
+      }
+      const presentationMatch = /^\/presentations\/([A-Za-z0-9_-]{43})(?:\/(request|response))?$/.exec(path);
+      const statusMatch = /^\/admin\/presentations\/([A-Za-z0-9_-]{43})$/.exec(path);
+      if (path === '/admin/presentations' || statusMatch) {
+        const auth = bearer(req);
+        if (!auth || !equal(auth, config.adminToken)) fail(401, 'invalid_token', 'Supplier authorization required');
+        if (req.method !== (statusMatch ? 'GET' : 'POST')) fail(405, 'invalid_request');
+        if (statusMatch) {
+          try { return send(200, presentations.status(statusMatch[1])); }
+          catch { fail(404, 'not_found', 'Presentation unavailable or expired'); }
+        }
+        const input = await body(req, 'application/json');
+        fields(input, ['taskId', 'contextId']);
+        if (['taskId', 'contextId'].some(key => typeof input[key] !== 'string' ||
+            !input[key] || input[key].length > 128 || /[\x00-\x1f\x7f]/.test(input[key]))) fail(400, 'invalid_request');
+        try { return send(201, presentations.create(input.taskId, input.contextId)); }
+        catch { fail(503, 'temporarily_unavailable', 'Presentation capacity reached'); }
+      }
+      if (presentationMatch) {
+        const [, id, action] = presentationMatch;
+        if (req.method !== (action === 'response' ? 'POST' : 'GET')) fail(405, 'invalid_request');
+        if (action === 'response') {
+          const input = await body(req, 'application/x-www-form-urlencoded');
+          fields(input, ['vp_token', 'state', 'error', 'error_description']);
+          if (input.error) fail(400, 'access_denied', 'Wallet did not authorize the purchase');
+          try { await presentations.verify(id, input); }
+          catch { fail(400, 'invalid_request', 'Presentation signature, disclosure, holder binding, state or expiry invalid'); }
+          return send(200, {});
+        }
+        try {
+          if (action === 'request') {
+            const request = presentations.request(id);
+            res.writeHead(200, { 'Content-Type': 'application/oauth-authz-req+jwt' });
+            return res.end(request);
+          }
+          return send(200, await presentations.page(id), true);
+        } catch { fail(404, 'not_found', 'Presentation unavailable or expired'); }
       }
       const methods = {
         '/': 'GET', '/health': 'GET', '/.well-known/openid-credential-issuer': 'GET',

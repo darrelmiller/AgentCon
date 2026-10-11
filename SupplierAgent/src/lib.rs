@@ -1,3 +1,4 @@
+pub mod authorization;
 pub mod domain;
 pub mod inference;
 pub mod telemetry;
@@ -40,6 +41,13 @@ pub struct Supplier {
     store: Mutex<WineStore>,
     interpreter: Arc<dyn Interpreter>,
     pub metrics: Arc<Metrics>,
+    verifier: Option<Arc<dyn authorization::Verifier>>,
+    pending: Mutex<std::collections::HashMap<String, PendingPurchase>>,
+}
+
+struct PendingPurchase {
+    request: Request,
+    challenge: authorization::Challenge,
 }
 
 impl Supplier {
@@ -48,15 +56,51 @@ impl Supplier {
             store: Mutex::new(WineStore::default()),
             interpreter,
             metrics: Arc::new(Metrics::default()),
+            verifier: None,
+            pending: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub fn with_verifier(mut self, verifier: Arc<dyn authorization::Verifier>) -> Self {
+        self.verifier = Some(verifier);
+        self
     }
 
     async fn run(
         &self,
         message: &Message,
         context: &str,
+        task: &str,
         accepted: Option<&[String]>,
     ) -> Result<Outcome, String> {
+        let mut pending = self.pending.lock().await;
+        pending
+            .retain(|_, purchase| purchase.challenge.expires_at > chrono::Utc::now().timestamp());
+        if let Some(purchase) = pending.get(task) {
+            if purchase.challenge.context_id != context {
+                return Err("Purchase authorization belongs to another context.".into());
+            }
+            let verifier = self
+                .verifier
+                .as_ref()
+                .ok_or("Presentation verifier is not configured.")?;
+            if !verifier.verified(&purchase.challenge).await? {
+                return Ok(Outcome::authorization(&purchase.challenge));
+            }
+            // Resume the immutable purchase that was authorized, not new model-supplied data.
+            let purchase = pending
+                .remove(task)
+                .expect("Pending purchase exists while locked");
+            drop(pending);
+            let mut outcome = self
+                .apply_authorized(purchase.request, context, accepted)
+                .await?;
+            if let Some((_, data)) = &mut outcome.data {
+                data["ageVerification"] = json!("verified-demo-over-21");
+            }
+            return Ok(outcome);
+        }
+        drop(pending);
         if message.role != Role::User || message.parts.is_empty() {
             return Err("Expected a non-empty user message.".into());
         }
@@ -91,7 +135,7 @@ impl Supplier {
             if media_type != Some(request.media_type()) {
                 return Err("Data part must declare the agreed vendor mediaType matching its kind/version; generic application/json is not accepted.".into());
             }
-            return self.apply(request, context, accepted).await;
+            return self.apply(request, context, task, accepted).await;
         }
         if message
             .parts
@@ -120,24 +164,65 @@ impl Supplier {
             .await?;
         match intent {
             Intent::Quote { request: request @ Request::Rfq { .. } } |
-            Intent::Purchase { request: request @ Request::PurchaseOrder { .. } } => self.apply(request, context, accepted).await,
+            Intent::Purchase { request: request @ Request::PurchaseOrder { .. } } => self.apply(request, context, task, accepted).await,
             Intent::Quote { .. } | Intent::Purchase { .. } => Err("Copilot intent/request mismatch; no order executed.".into()),
-            Intent::InputRequired { question } => Ok(Outcome { state: TaskState::InputRequired, text: question, data: None }),
+            Intent::InputRequired { question } => Ok(Outcome { state: TaskState::InputRequired, text: question, data: None, authorization: None }),
             Intent::AuthorizationRequired => Ok(Outcome {
                 state: TaskState::AuthRequired,
-                text: "This request requires authorization. Wallet verification is not available; use a simulated order.".into(),
+                text: "Send a quote-bound purchase request to initiate wallet authorization. No order has been created.".into(),
                 data: None,
+                authorization: None,
             }),
             Intent::Help => Ok(Outcome {
                 state: TaskState::Completed,
                 text: "AgentCon wine supplier: 2019 Barolo quotes and orders, with delivery in the US or Canada. \
                        Natural language uses the official Copilot Rust SDK; agreed typed data parts \
-                       use deterministic code.".into(), data: None,
+                       use deterministic code.".into(), data: None, authorization: None,
             }),
         }
     }
 
     async fn apply(
+        &self,
+        request: Request,
+        context: &str,
+        task: &str,
+        accepted: Option<&[String]>,
+    ) -> Result<Outcome, String> {
+        if matches!(&request, Request::PurchaseOrder { .. }) {
+            self.store
+                .lock()
+                .await
+                .validate_purchase(&request, context)?;
+            if accepted.is_some_and(|modes| !modes.iter().any(|mode| mode == "text/plain")) {
+                return Err(
+                    "Purchase authorization requires text/plain status messages; no order created."
+                        .into(),
+                );
+            }
+            let Some(verifier) = &self.verifier else {
+                return Ok(Outcome {
+                    state: TaskState::AuthRequired,
+                    text: "Wallet authorization is required before purchasing. The supplier presentation verifier is not configured; no order has been created.".into(),
+                    data: None, authorization: None,
+                });
+            };
+            let mut pending = self.pending.lock().await;
+            pending.retain(|_, purchase| {
+                purchase.challenge.expires_at > chrono::Utc::now().timestamp()
+            });
+            if pending.len() >= 128 {
+                return Err("Pending purchase authorization capacity reached.".into());
+            }
+            let challenge = verifier.create(task, context).await?;
+            let outcome = Outcome::authorization(&challenge);
+            pending.insert(task.into(), PendingPurchase { request, challenge });
+            return Ok(outcome);
+        }
+        self.apply_authorized(request, context, accepted).await
+    }
+
+    async fn apply_authorized(
         &self,
         request: Request,
         context: &str,
@@ -168,6 +253,7 @@ impl Supplier {
             state: TaskState::Completed,
             text,
             data: Some((media_type, data)),
+            authorization: None,
         })
     }
 }
@@ -176,6 +262,21 @@ struct Outcome {
     state: TaskState,
     text: String,
     data: Option<(&'static str, serde_json::Value)>,
+    authorization: Option<authorization::Challenge>,
+}
+
+impl Outcome {
+    fn authorization(challenge: &authorization::Challenge) -> Self {
+        Self {
+            state: TaskState::AuthRequired,
+            text: format!(
+                "Wallet authorization is required before this purchase. Open {} and scan the QR code with Sphereon Wallet. Select the AgentCon over_21 credential and approve disclosure. Then return to the buyer and ask it to continue this pending purchase. No order has been created.",
+                challenge.presentation_url
+            ),
+            data: None,
+            authorization: Some(challenge.clone()),
+        }
+    }
 }
 
 struct SupplierExecutor(Arc<Supplier>);
@@ -221,7 +322,7 @@ impl AgentExecutor for SupplierExecutor {
             let (outcome, llm_calls, count_complete) = inference::MESSAGE_LLM_CALLS.scope(AtomicU64::new(0),
                 inference::MESSAGE_LLM_COMPLETE.scope(std::sync::atomic::AtomicBool::new(true), async {
                 let outcome = match &ctx.message {
-                    Some(message) => supplier.run(message, &ctx.context_id, accepted.as_deref()).await,
+                    Some(message) => supplier.run(message, &ctx.context_id, &ctx.task_id, accepted.as_deref()).await,
                     None => Err("Missing user message.".into()),
                 };
                 (outcome, inference::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
@@ -239,6 +340,7 @@ impl AgentExecutor for SupplierExecutor {
                     state: TaskState::Failed,
                     text: error,
                     data: None,
+                    authorization: None,
                 }
             });
             execution.completed = true;
@@ -249,6 +351,14 @@ impl AgentExecutor for SupplierExecutor {
                 ("agentcon.llmCalls".into(), json!(llm_calls)),
                 ("agentcon.llmCallsComplete".into(), json!(count_complete))
             ]));
+            if let Some(challenge) = &outcome.authorization {
+                response.metadata.as_mut().unwrap().insert(authorization::EXTENSION.into(),
+                    json!({"authorizationRequest": challenge.authorization_request}));
+                response.metadata.as_mut().unwrap().insert("agentcon.presentation".into(),
+                    json!({"presentationUrl": challenge.presentation_url, "walletUri": challenge.wallet_uri,
+                        "expiresAt": challenge.expires_at, "supplierTaskId": ctx.task_id,
+                        "supplierContextId": ctx.context_id, "demoOnly": true}));
+            }
             response.task_id = Some(ctx.task_id.clone());
             response.context_id = Some(ctx.context_id.clone());
             let artifacts = outcome.data.map(|(media_type, data)| {
@@ -285,9 +395,11 @@ impl AgentExecutor for SupplierExecutor {
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+        let supplier = self.0.clone();
         let span = tracing::info_span!("supplier.cancel", agentcon.a2a.task.id = %ctx.task_id);
         let _ = span.set_parent(telemetry::executor_parent(&ctx.service_params));
         Box::pin(stream::once(async move {
+            supplier.pending.lock().await.remove(&ctx.task_id);
             Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
                 task_id: ctx.task_id,
                 context_id: ctx.context_id,
@@ -321,6 +433,10 @@ pub fn card(origin: &str) -> AgentCard {
         provider: Some(AgentProvider { organization: "AgentCon demo".into(), url: "https://github.com/darrelmiller/AgentCon".into() }),
         capabilities: AgentCapabilities { streaming: Some(true), push_notifications: Some(false),
             extensions: Some(serde_json::from_value(json!([{
+                "uri": authorization::EXTENSION,
+                "description": "Purchase tasks require a task-bound presentation of the issuer's demo over_21 credential.",
+                "required": false, "params": {"oid4vpVersions": ["1.0"]}
+            }, {
                 "uri": "urn:agentcon:extension:structured-schemas:v1",
                 "description": "Demo-only schema discovery: media type to JSON Schema URL and local definition.",
                 "required": false,
@@ -440,6 +556,7 @@ async fn preserve_output_modes(request: HttpRequest, next: Next) -> Response {
 
 pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
     let metrics = supplier.metrics.clone();
+    let verifier_configured = supplier.verifier.is_some();
     let handler = Arc::new(DefaultRequestHandler::new(
         SupplierExecutor(supplier),
         InMemoryTaskStore::new(),
@@ -469,7 +586,8 @@ pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
                     "status": "ok", "demoOnly": true,
                     "structuredRequests": metrics.structured_requests.load(Ordering::Relaxed),
                     "inferenceAttempts": metrics.inference_attempts.load(Ordering::Relaxed),
-                    "oid4vp": "not-implemented", "slim": "not-implemented"
+                    "oid4vp": if verifier_configured { "presentation-verifier-configured" } else { "verifier-not-configured" },
+                    "slim": "not-implemented"
                 }))
             }),
         )

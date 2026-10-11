@@ -143,6 +143,44 @@ substitute for this flow.
 
 ## Endpoint contract
 
+### OID4VP purchase presentations
+
+The application also hosts a bounded in-memory OID4VP 1.0 verifier using its existing
+issuer public key as the trust anchor. It does not accept arbitrary DID issuers or
+fetch caller-provided key URLs. The supplier creates a 10-minute challenge with its
+task/context IDs through `POST /admin/presentations` (admin bearer token; JSON
+`{taskId, contextId}`), then receives the experimental A2A authorization request,
+presentation page URL, wallet URI and expiry.
+
+`GET /presentations/<id>` renders a local QR for Sphereon. The QR invokes
+`openid4vp://` with `client_id` and an HTTPS `request_uri`.
+`GET /presentations/<id>/request` returns an ES256-signed JWT request object
+(`application/oauth-authz-req+jwt`, `oauth-authz-req+jwt` protected-header type,
+`did:jwk` client identifier and key ID, `direct_post`). The verifier signs with
+the existing issuer key; the DID resolves that public key without a network key
+lookup. The signed request includes issuer, wallet audience, issue time and expiry.
+Sphereon 0.8.0 sends fetched request objects through its JWS verifier, so an
+`alg:none` request is not compatible. Its pinned redirect-uri validation also
+compares the prefixed client ID to the response URI; using its supported signed
+DID client path avoids that mismatch without weakening signature verification.
+DCQL requests only the `over_21:true` disclosure from `urn:agentcon:demo:age-over-21`,
+format `dc+sd-jwt`, with ES256 credential and key-binding signatures.
+
+The wallet submits form-encoded `state` and DCQL `vp_token` to
+`POST /presentations/<id>/response`. The verifier checks issuer signature and
+identity, credential type/expiry/demo label, selective disclosure, holder key,
+key-binding signature, `sd_hash`, nonce, audience, issued-at freshness and state.
+Replay and concurrent duplicate submission are rejected. Only task IDs, expiry and
+a verified boolean are retained; no credential/presentation is retained or logged.
+`GET /admin/presentations/<id>` requires the admin token and returns that task-bound
+status. The supplier checks it when continuing the original paused purchase task.
+
+The phone's already-issued credential remains valid if the issuer signing key is
+unchanged. Redeployment or restart clears presentation sessions. Actual Sphereon
+0.8.0 presentation acceptance is not established by the automated software-holder
+tests and must be checked with the phone. Issuance still sets the demo `over_21`
+claim without age checks: this is not a production age-verification service.
+
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/health` | GET | Safe `{status:"ok",demo_only:true}`; no secrets/state |

@@ -71,7 +71,7 @@
         "status": { "const": "simulated" },
         "currency": { "const": "USD" },
         "totalMinor": { "type": "integer" },
-        "ageVerification": { "const": "not-performed" },
+        "ageVerification": { "enum": ["not-performed", "verified-demo-over-21"] },
         "payment": { "const": "not-performed" },
         "fulfillment": { "const": "not-performed" }
       }
