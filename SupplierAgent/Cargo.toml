@@ -18,8 +18,12 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = "0.31"
+opentelemetry_sdk = "0.31"
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client", "tls-roots"] }
+tracing-opentelemetry = "0.32"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.31", features = ["testing"] }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
-

@@ -23,7 +23,12 @@ public sealed class CopilotRuntime(BuyerOptions options) : IAsyncDisposable
                     Mode = CopilotClientMode.Empty,
                     BaseDirectory = options.CopilotStateDirectory,
                     WorkingDirectory = options.CopilotStateDirectory,
-                    UseLoggedInUser = true
+                    UseLoggedInUser = true,
+                    Environment = new Dictionary<string, string>
+                    {
+                        ["COPILOT_OTEL_ENABLED"] = "false",
+                        ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "false"
+                    }
                 });
                 try
                 {
@@ -84,6 +89,21 @@ public sealed class CopilotBuyerHarness(
 
     public async Task<string> RunAsync(BuyerTurn turn, CancellationToken cancellationToken)
     {
+        using var activity = BuyerTelemetry.Source.StartActivity("copilot.agent_loop");
+        try
+        {
+            return await RunSessionAsync(turn, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            BuyerTelemetry.Error(activity, exception);
+            throw;
+        }
+    }
+
+    private async Task<string> RunSessionAsync(BuyerTurn turn, CancellationToken cancellationToken)
+    {
+        var usage = new CopilotUsageTrace(System.Diagnostics.Activity.Current?.Context ?? default, "BuyerAgent");
         var supplier = new SupplierTurnTools(gateway, turn, cancellationToken);
         var toolOptions = new CopilotToolOptions { SkipPermission = true, Defer = CopilotToolDefer.Never };
         var tools = new AIFunction[]
@@ -127,6 +147,8 @@ public sealed class CopilotBuyerHarness(
         }, cancellationToken);
         using var subscription = session.On<SessionEvent>(evt =>
         {
+            if (evt is AssistantUsageEvent usageEvent)
+                usage.Record(usageEvent);
             if (evt is ToolExecutionStartEvent tool)
             {
                 logger.LogInformation("Buyer tool: {ToolName}", tool.Data.ToolName);

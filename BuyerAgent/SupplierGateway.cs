@@ -46,12 +46,30 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     public async Task<SendMessageResponse> SendAsync(
         SupplierBinding supplier, Message message, CancellationToken cancellationToken)
     {
+        using var activity = BuyerTelemetry.Source.StartActivity("invoke_agent SupplierAgent", System.Diagnostics.ActivityKind.Client,
+            System.Diagnostics.Activity.Current?.Context ?? default,
+            tags: [new("gen_ai.operation.name", "invoke_agent"), new("gen_ai.agent.name", "SupplierAgent"),
+                new("gen_ai.provider.name", "agentcon.supplier"), new("agentcon.a2a.task.id", message.TaskId),
+                new("agentcon.a2a.context.id", message.ContextId)]);
         using var client = new A2AClient(supplier.Endpoint, httpClient);
-        return await client.SendMessageAsync(new SendMessageRequest
+        try
         {
-            Message = message,
-            Configuration = new SendMessageConfiguration { ReturnImmediately = true }
-        }, cancellationToken);
+            var response = await client.SendMessageAsync(new SendMessageRequest
+            {
+                Message = message,
+                Configuration = new SendMessageConfiguration { ReturnImmediately = true }
+            }, cancellationToken);
+            activity?.SetTag("agentcon.a2a.task.id", response.Task?.Id);
+            activity?.SetTag("agentcon.a2a.context.id", response.Task?.ContextId);
+            if (response.Task?.Status.State is TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
+                BuyerTelemetry.Error(activity, "supplier_task_failed");
+            return response;
+        }
+        catch (Exception exception)
+        {
+            BuyerTelemetry.Error(activity, exception);
+            throw;
+        }
     }
 
     public async Task<AgentTask> GetTaskAsync(SupplierBinding supplier, string taskId, CancellationToken cancellationToken)
@@ -86,7 +104,9 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
 
 public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, CancellationToken turnCancellation)
 {
-    public Task<string> SearchAsync(string? query = null) => ExecuteAsync(async () =>
+    private readonly System.Diagnostics.ActivityContext _parent = System.Diagnostics.Activity.Current?.Context ?? default;
+
+    public Task<string> SearchAsync(string? query = null) => ExecuteAsync("search_supplier_catalog", async () =>
     {
         var result = await gateway.SearchAsync(query, turnCancellation);
         return JsonSerializer.Serialize(new
@@ -114,7 +134,7 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
         }, JsonOptions);
     });
 
-    public Task<string> SelectAsync(string identifier, string? version = null) => ExecuteAsync(async () =>
+    public Task<string> SelectAsync(string identifier, string? version = null) => ExecuteAsync("select_supplier", async () =>
     {
         var selection = await gateway.SelectAsync(identifier, version, turnCancellation);
         turn.Conversation.SelectedSupplier = selection.Binding;
@@ -127,7 +147,7 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
     });
 
     public Task<string> SendAsync(
-        string text, string? dataJson = null, string? taskId = null, string? contextId = null, string? supplierIdentifier = null) => ExecuteAsync(async () =>
+        string text, string? dataJson = null, string? taskId = null, string? contextId = null, string? supplierIdentifier = null) => ExecuteAsync("send_supplier_message", async () =>
     {
         if (string.IsNullOrWhiteSpace(text) && dataJson is null)
         {
@@ -164,7 +184,7 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
         }, JsonOptions);
     });
 
-    public Task<string> GetTaskAsync(string taskId, string? supplierIdentifier = null) => ExecuteAsync(async () =>
+    public Task<string> GetTaskAsync(string taskId, string? supplierIdentifier = null) => ExecuteAsync("get_supplier_task", async () =>
     {
         var supplier = turn.Conversation.SupplierTasks.Resolve(taskId, supplierIdentifier, "task");
         var task = await gateway.GetTaskAsync(supplier, taskId, turnCancellation);
@@ -201,18 +221,21 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
         return selected;
     }
 
-    private async Task<string> ExecuteAsync(Func<Task<string>> operation)
+    private async Task<string> ExecuteAsync(string tool, Func<Task<string>> operation)
     {
-        if (turn.ToolFailure is not null)
-        {
-            throw new InvalidOperationException("A supplier tool already failed in this turn. Inspect the failure before retrying a possible order.");
-        }
+        using var activity = BuyerTelemetry.Source.StartActivity($"execute_tool {tool}",
+            System.Diagnostics.ActivityKind.Internal, _parent,
+            tags: [new("gen_ai.operation.name", "execute_tool"), new("gen_ai.tool.name", tool),
+                new("gen_ai.agent.name", "BuyerAgent"), new("gen_ai.tool.type", "function")]);
         try
         {
+            if (turn.ToolFailure is not null)
+                throw new InvalidOperationException("A supplier tool already failed in this turn. Inspect the failure before retrying a possible order.");
             return await operation();
         }
         catch (Exception exception)
         {
+            BuyerTelemetry.Error(activity, exception);
             turn.ToolFailure = exception;
             throw;
         }

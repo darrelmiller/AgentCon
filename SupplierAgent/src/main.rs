@@ -4,11 +4,7 @@ use agentcon_supplier::{Supplier, app, inference::CopilotInterpreter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let telemetry = agentcon_supplier::telemetry::init()?;
     let port: u16 = std::env::var("SUPPLIER_PORT")
         .unwrap_or_else(|_| "6000".into())
         .parse()?;
@@ -42,13 +38,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let origin = format!("http://localhost:{port}");
     tracing::info!(%origin, pid = std::process::id(), "TEST-ONLY supplier ready; no wallet verification or real purchases");
-    axum::serve(listener, app(supplier, &origin))
+    let served = axum::serve(listener, app(supplier, &origin))
         .with_graceful_shutdown(async {
             if let Err(error) = tokio::signal::ctrl_c().await {
                 tracing::error!(%error, "shutdown signal failed");
             }
         })
-        .await?;
-    interpreter.stop().await?;
+        .await;
+    let cleanup = interpreter.stop().await;
+    let flush = tokio::task::spawn_blocking(move || telemetry.shutdown()).await?;
+    flush?;
+    cleanup?;
+    served?;
     Ok(())
 }
