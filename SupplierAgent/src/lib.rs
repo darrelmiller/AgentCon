@@ -51,7 +51,12 @@ impl Supplier {
         }
     }
 
-    async fn run(&self, message: &Message, context: &str) -> Result<Outcome, String> {
+    async fn run(
+        &self,
+        message: &Message,
+        context: &str,
+        accepted: Option<&[String]>,
+    ) -> Result<Outcome, String> {
         if message.role != Role::User || message.parts.is_empty() {
             return Err("Expected a non-empty user message.".into());
         }
@@ -83,12 +88,10 @@ impl Supplier {
                 .fetch_add(1, Ordering::Relaxed);
             let request: Request = serde_json::from_value(value.clone())
                 .map_err(|e| format!("Invalid agreed v1 request (no inference attempted): {e}"))?;
-            if let Some(media_type) = media_type {
-                if media_type != request.media_type() && media_type != "application/json" {
-                    return Err("Data part mediaType does not match its kind/version.".into());
-                }
+            if media_type != Some(request.media_type()) {
+                return Err("Data part must declare the agreed vendor mediaType matching its kind/version; generic application/json is not accepted.".into());
             }
-            return self.apply(request, context).await;
+            return self.apply(request, context, accepted).await;
         }
         if message
             .parts
@@ -117,27 +120,42 @@ impl Supplier {
             .await?;
         match intent {
             Intent::Quote { request: request @ Request::Rfq { .. } } |
-            Intent::Purchase { request: request @ Request::PurchaseOrder { .. } } => self.apply(request, context).await,
+            Intent::Purchase { request: request @ Request::PurchaseOrder { .. } } => self.apply(request, context, accepted).await,
             Intent::Quote { .. } | Intent::Purchase { .. } => Err("Copilot intent/request mismatch; no order executed.".into()),
             Intent::InputRequired { question } => Ok(Outcome { state: TaskState::InputRequired, text: question, data: None }),
             Intent::AuthorizationRequired => Ok(Outcome {
                 state: TaskState::AuthRequired,
-                text: "Real purchasing and OID4VP verification are NOT IMPLEMENTED. No presentation request, \
-                       QR code or verifier exists here. A message asserting age is not proof. \
-                       Only demoOnly:true simulated orders can complete.".into(),
+                text: "This request requires authorization. Wallet verification is not available; use a simulated order.".into(),
                 data: None,
             }),
             Intent::Help => Ok(Outcome {
                 state: TaskState::Completed,
-                text: "AgentCon TEST-ONLY supplier: 2019 Barolo demo quotes and simulated orders. \
+                text: "AgentCon wine supplier: 2019 Barolo quotes and orders, with delivery in the US or Canada. \
                        Natural language uses the official Copilot Rust SDK; agreed typed data parts \
-                       use deterministic code. No real purchasing, payment, fulfillment, age proof, \
-                       OID4VP verifier or SLIM integration.".into(), data: None,
+                       use deterministic code.".into(), data: None,
             }),
         }
     }
 
-    async fn apply(&self, request: Request, context: &str) -> Result<Outcome, String> {
+    async fn apply(
+        &self,
+        request: Request,
+        context: &str,
+        accepted: Option<&[String]>,
+    ) -> Result<Outcome, String> {
+        let output = match &request {
+            Request::Rfq { .. } => QUOTE,
+            Request::PurchaseOrder { .. } => RECEIPT,
+        };
+        if accepted.is_some_and(|modes| {
+            !modes
+                .iter()
+                .any(|mode| mode == "text/plain" || mode == output)
+        }) {
+            return Err(
+                "No accepted output type for this request; no business operation executed.".into(),
+            );
+        }
         let span = tracing::info_span!("supplier.business", agentcon.a2a.context.id = context);
         let result = async { self.store.lock().await.apply(request, context) }
             .instrument(span.clone())
@@ -190,10 +208,30 @@ impl AgentExecutor for SupplierExecutor {
         Box::pin(stream::once(async move {
             let mut execution = ExecutionTrace { span: execution_span.clone(), completed: false };
             let started = Instant::now();
-            let outcome = match &ctx.message {
-                Some(message) => supplier.run(message, &ctx.context_id).await,
-                None => Err("Missing user message.".into()),
-            };
+            let accepted: Option<Vec<String>> = ctx.metadata.as_ref()
+                .and_then(|metadata| metadata.get("agentcon.internal.acceptedOutputModes"))
+                .map(|value| serde_json::from_value(value.clone()))
+                .transpose().map_err(|_| A2AError::invalid_params("Invalid acceptedOutputModes"))?;
+            let text_accepted = accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == "text/plain"));
+            if accepted.as_ref().is_some_and(|modes| !modes.iter().any(|mode| matches!(mode.as_str(), "text/plain" | QUOTE | RECEIPT))) {
+                telemetry::error(&execution_span, "incompatible_output_modes");
+                execution.completed = true;
+                return Err(A2AError::content_type_not_supported());
+            }
+            let (outcome, llm_calls, count_complete) = inference::MESSAGE_LLM_CALLS.scope(AtomicU64::new(0),
+                inference::MESSAGE_LLM_COMPLETE.scope(std::sync::atomic::AtomicBool::new(true), async {
+                let outcome = match &ctx.message {
+                    Some(message) => supplier.run(message, &ctx.context_id, accepted.as_deref()).await,
+                    None => Err("Missing user message.".into()),
+                };
+                (outcome, inference::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
+                    inference::MESSAGE_LLM_COMPLETE.with(|complete| complete.load(Ordering::Relaxed)))
+            })).await;
+            if !text_accepted && outcome.as_ref().map_or(true, |outcome| outcome.data.is_none()) {
+                telemetry::error(&execution_span, "incompatible_output_modes");
+                execution.completed = true;
+                return Err(A2AError::content_type_not_supported());
+            }
             let outcome = outcome.unwrap_or_else(|error| {
                 telemetry::error(&execution_span, "supplier_request_failed");
                 tracing::warn!(task_id = %ctx.task_id, "supplier request failed");
@@ -205,16 +243,26 @@ impl AgentExecutor for SupplierExecutor {
             });
             execution.completed = true;
             tracing::info!(task_id = %ctx.task_id, state = ?outcome.state, elapsed_ms = started.elapsed().as_millis(), "supplier execution");
+            let result_text = outcome.text.clone();
             let mut response = Message::new(Role::Agent, vec![Part::text(outcome.text)]);
+            response.metadata = Some(std::collections::HashMap::from([
+                ("agentcon.llmCalls".into(), json!(llm_calls)),
+                ("agentcon.llmCallsComplete".into(), json!(count_complete))
+            ]));
             response.task_id = Some(ctx.task_id.clone());
             response.context_id = Some(ctx.context_id.clone());
             let artifacts = outcome.data.map(|(media_type, data)| {
+                let typed_accepted = accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == media_type));
                 vec![Artifact {
                     artifact_id: uuid::Uuid::new_v4().to_string(),
-                    name: Some("AgentCon demo result".into()),
-                    description: Some("TEST ONLY: no real purchase or age verification.".into()),
-                    parts: vec![Part::data(data).with_media_type(media_type)],
-                    metadata: None,
+                    name: Some(if media_type == QUOTE { "quote" } else { "order-receipt" }.into()),
+                    description: Some(if media_type == QUOTE { "Wine quote" } else { "Order receipt" }.into()),
+                    parts: if typed_accepted { vec![Part::data(data).with_media_type(media_type)] }
+                        else { vec![Part::text(result_text).with_media_type("text/plain")] },
+                    metadata: Some(std::collections::HashMap::from([
+                        ("agentcon.llmCalls".into(), json!(llm_calls)),
+                        ("agentcon.llmCallsComplete".into(), json!(count_complete))
+                    ])),
                     extensions: None,
                 }]
             });
@@ -223,12 +271,15 @@ impl AgentExecutor for SupplierExecutor {
                 context_id: ctx.context_id,
                 status: TaskStatus {
                     state: outcome.state,
-                    message: Some(response),
+                    message: text_accepted.then_some(response),
                     timestamp: Some(chrono::Utc::now()),
                 },
                 artifacts,
                 history: None,
-                metadata: None,
+                metadata: Some(std::collections::HashMap::from([
+                    ("agentcon.llmCalls".into(), json!(llm_calls)),
+                    ("agentcon.llmCallsComplete".into(), json!(count_complete))
+                ])),
             }))
         }.instrument(span)))
     }
@@ -243,12 +294,18 @@ impl AgentExecutor for SupplierExecutor {
                 status: TaskStatus {
                     state: TaskState::Canceled,
                     timestamp: Some(chrono::Utc::now()),
-                    message: Some(Message::new(
+                    message: Some({
+                        let mut message = Message::new(
                         Role::Agent,
                         vec![Part::text(
                             "Task canceled. A recorded simulated order is not rolled back; inspect its receipt before retrying.",
                         )],
-                    )),
+                        );
+                        message.metadata = Some(std::collections::HashMap::from([
+                            ("agentcon.llmCalls".into(), json!(0))
+                        ]));
+                        message
+                    }),
                 },
                 metadata: None,
             }))
@@ -259,22 +316,34 @@ impl AgentExecutor for SupplierExecutor {
 pub fn card(origin: &str) -> AgentCard {
     AgentCard {
         name: "AgentCon Demo Wine Supplier".into(),
-        description: "TEST ONLY. Rust supplier: Copilot-mediated NL quotes and simulated purchases; deterministic v1 RFQ/order profiles. No real purchases or age verification.".into(),
+        description: "Wine supplier: Copilot-mediated natural-language quotes and orders; deterministic v1 RFQ/order profiles. Delivery throughout the US and Canada.".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         provider: Some(AgentProvider { organization: "AgentCon demo".into(), url: "https://github.com/darrelmiller/AgentCon".into() }),
-        capabilities: AgentCapabilities { streaming: Some(true), push_notifications: Some(false), extensions: None, extended_agent_card: None },
+        capabilities: AgentCapabilities { streaming: Some(true), push_notifications: Some(false),
+            extensions: Some(serde_json::from_value(json!([{
+                "uri": "urn:agentcon:extension:structured-schemas:v1",
+                "description": "Demo-only schema discovery: media type to JSON Schema URL and local definition.",
+                "required": false,
+                "params": {"schemas": [
+                    {"mediaType": RFQ, "url": format!("{origin}/schemas/wine-v1.schema.json"), "definition": "rfq", "direction": "input"},
+                    {"mediaType": PURCHASE, "url": format!("{origin}/schemas/wine-v1.schema.json"), "definition": "purchaseOrder", "direction": "input"},
+                    {"mediaType": QUOTE, "url": format!("{origin}/schemas/wine-v1.schema.json"), "definition": "quote", "direction": "output"},
+                    {"mediaType": RECEIPT, "url": format!("{origin}/schemas/wine-v1.schema.json"), "definition": "receipt", "direction": "output"}
+                ]}
+            }])).expect("Static schema discovery extension must match A2A SDK types")),
+            extended_agent_card: None },
         skills: vec![
             AgentSkill {
                 id: "demo-wine".into(), name: "Demo wine quote and order".into(),
-                description: "2019 Barolo, 1-48 cases, San Jose. Natural language invokes Copilot. Typed schemaVersion:1, kind:rfq/purchase-order data is deterministic. demoOnly:true required; artifacts carry typed quote/receipt. OID4VP and SLIM are future work.".into(),
+                description: "2019 Barolo, 1-48 cases, delivery anywhere in the US or Canada. USD 144/case plus USD 25 flat delivery in either country. Natural language invokes Copilot. Typed schemaVersion:1, kind:rfq/purchase-order data is deterministic; deliveryCountry US/CA (default US). demoOnly:true required; artifacts carry typed quote/receipt.".into(),
                 tags: vec!["wine".into(), "supplier".into(), "demo".into()],
                 examples: Some(vec!["Quote 12 cases of 2019 Barolo delivered to San Jose for the demo.".into()]),
-                input_modes: Some(vec!["text/plain".into(), "application/json".into(), RFQ.into(), PURCHASE.into()]),
+                input_modes: Some(vec!["text/plain".into(), RFQ.into(), PURCHASE.into()]),
                 output_modes: Some(vec!["text/plain".into(), QUOTE.into(), RECEIPT.into()]),
                 security_requirements: None,
             },
         ],
-        default_input_modes: vec!["text/plain".into(), "application/json".into(), RFQ.into(), PURCHASE.into()],
+        default_input_modes: vec!["text/plain".into(), RFQ.into(), PURCHASE.into()],
         default_output_modes: vec!["text/plain".into(), QUOTE.into(), RECEIPT.into()],
         supported_interfaces: vec![AgentInterface::new(format!("{origin}/a2a"), TRANSPORT_PROTOCOL_JSONRPC)],
         security_schemes: None, security_requirements: None,
@@ -297,6 +366,78 @@ async fn reject_browser(request: HttpRequest, next: Next) -> Response {
 
 use axum::response::IntoResponse;
 
+// The pinned SDK omits configuration from ExecutorContext. Bridge only output
+// negotiation into request metadata before dispatch; never retain message bodies.
+async fn preserve_output_modes(request: HttpRequest, next: Next) -> Response {
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, 128 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "A2A request exceeds 128 KiB or could not be read.",
+            )
+                .into_response();
+        }
+    };
+    let mut value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            return next
+                .run(HttpRequest::from_parts(
+                    parts,
+                    axum::body::Body::from(bytes),
+                ))
+                .await;
+        }
+    };
+    if let Some(params) = value
+        .get_mut("params")
+        .and_then(|params| params.as_object_mut())
+    {
+        let accepted = params
+            .get("configuration")
+            .and_then(|config| config.get("acceptedOutputModes"))
+            .cloned();
+        if let Some(modes) = accepted.as_ref() {
+            if !modes.as_array().is_some_and(|modes| {
+                modes.len() <= 16
+                    && modes.iter().all(|mode| {
+                        mode.as_str()
+                            .is_some_and(|mode| !mode.is_empty() && mode.len() <= 256)
+                    })
+            }) {
+                return (StatusCode::BAD_REQUEST, "Invalid acceptedOutputModes.").into_response();
+            }
+        }
+        let metadata = params.entry("metadata").or_insert_with(|| json!({}));
+        if metadata.is_null() {
+            *metadata = json!({});
+        }
+        if let Some(metadata) = metadata.as_object_mut() {
+            metadata.remove("agentcon.internal.acceptedOutputModes");
+            if let Some(accepted) = accepted {
+                metadata.insert("agentcon.internal.acceptedOutputModes".into(), accepted);
+            }
+        }
+    }
+    let bytes = match serde_json::to_vec(&value) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not preserve output negotiation.",
+            )
+                .into_response();
+        }
+    };
+    let mut request = HttpRequest::from_parts(parts, axum::body::Body::from(bytes));
+    request
+        .headers_mut()
+        .remove(axum::http::header::CONTENT_LENGTH);
+    next.run(request).await
+}
+
 pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
     let metrics = supplier.metrics.clone();
     let handler = Arc::new(DefaultRequestHandler::new(
@@ -304,7 +445,20 @@ pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
         InMemoryTaskStore::new(),
     ));
     Router::new()
-        .nest("/a2a", a2a_server::jsonrpc::jsonrpc_router(handler))
+        .route(
+            "/schemas/wine-v1.schema.json",
+            axum::routing::get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/schema+json")],
+                    include_str!("../schemas/wine-v1.schema.json"),
+                )
+            }),
+        )
+        .nest(
+            "/a2a",
+            a2a_server::jsonrpc::jsonrpc_router(handler)
+                .layer(middleware::from_fn(preserve_output_modes)),
+        )
         .merge(a2a_server::agent_card::agent_card_router(Arc::new(
             StaticAgentCard::new(card(origin)),
         )))

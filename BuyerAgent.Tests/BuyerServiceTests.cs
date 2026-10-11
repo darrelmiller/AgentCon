@@ -23,12 +23,13 @@ public sealed class BuyerServiceTests
         Assert.Equal("1.0", Assert.Single(card.SupportedInterfaces).ProtocolVersion);
         Assert.Equal("JSONRPC", Assert.Single(card.SupportedInterfaces).ProtocolBinding);
         Assert.True(card.Capabilities.Streaming);
-        Assert.Contains("application/json", card.DefaultInputModes);
+        Assert.Equal(["text/plain"], card.DefaultInputModes);
+        Assert.Equal(["text/plain"], card.Skills[0].InputModes);
         Assert.Equal(HttpStatusCode.OK, (await http.GetAsync("/health")).StatusCode);
     }
 
     [Fact]
-    public async Task JsonRpcCompletesBuyerTaskAndPreservesStructuredInput()
+    public async Task JsonRpcCompletesBuyerTaskWithTextInput()
     {
         Message? received = null;
         await using var app = await StartAsync(new StubHarness((turn, _) =>
@@ -38,14 +39,30 @@ public sealed class BuyerServiceTests
         }));
         using var http = app.GetTestClient();
         using var client = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
-        var request = Request("Request a quote", data: """{"wine":"Barolo","cases":12}""");
+        var request = Request("Request a quote");
         var response = await client.SendMessageAsync(request);
         var task = Assert.IsType<AgentTask>(response.Task);
         Assert.Equal(TaskState.Completed, task.Status.State);
-        Assert.Equal(12, received!.Parts[1].Data!.Value.GetProperty("cases").GetInt32());
+        Assert.Equal("Request a quote", Assert.Single(received!.Parts).Text);
         Assert.Contains(task.Artifacts!, artifact => artifact.Name == "buyer-response");
         var saved = await client.GetTaskAsync(new GetTaskRequest { Id = task.Id });
         Assert.Equal(TaskState.Completed, saved.Status.State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RejectsJsonInputsWithoutInvokingHarness(bool jsonText)
+    {
+        await using var app = await StartAsync(new StubHarness((_, _) =>
+            throw new InvalidOperationException("Invalid input must not invoke inference.")));
+        using var http = app.GetTestClient();
+        using var client = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
+        var request = Request("Quote wine", data: """{"cases":12}""");
+        if (jsonText) request.Message.Parts = [new Part { Text = """{"cases":12}""", MediaType = "application/json" }];
+        var response = await client.SendMessageAsync(request);
+        Assert.Equal(TaskState.Failed, response.Task!.Status.State);
+        Assert.Contains("text/plain input only", response.Task.Status.Message!.Parts[0].Text);
     }
 
     [Fact]
@@ -129,7 +146,7 @@ public sealed class BuyerServiceTests
                 }
             });
             return Task.FromResult("Supplier response received.");
-        }));
+        }), "--Buyer:CommunicationMode=Native");
         using var http = app.GetTestClient();
         using var client = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
         var response = await client.SendMessageAsync(Request("Buy demo wine"));
@@ -137,7 +154,7 @@ public sealed class BuyerServiceTests
         var artifact = Assert.Single(response.Task.Artifacts!, item => item.Name == "purchase-order");
         Assert.Equal("demo-po", artifact.Parts[0].Data!.Value.GetProperty("orderId").GetString());
         Assert.Equal("demo-order", artifact.Metadata!["profile"].GetString());
-        Assert.Contains(response.Task.Artifacts!, item => item.Name == "supplier-responses");
+        Assert.DoesNotContain(response.Task.Artifacts!, item => item.Name == "supplier-responses");
         if (supplierState == TaskState.AuthRequired)
         {
             Assert.Equal(metadata[BuyerCard.AuthorizationExtensionUri].GetRawText(),

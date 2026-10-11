@@ -26,6 +26,10 @@ public static class BuyerApplication
         builder.WebHost.UseUrls(options.ListenUrl);
         builder.WebHost.ConfigureKestrel(server => server.Limits.MaxRequestBodySize = 128 * 1024);
         builder.Services.AddSingleton(options);
+        builder.Services.AddSingleton<ExchangeStore>();
+        builder.Services.AddTransient<ExchangeCaptureHandler>();
+        builder.Services.AddHttpClient<ExchangeDashboard>(client => client.Timeout = TimeSpan.FromSeconds(2))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
         BuyerTelemetry.Configure(builder);
         builder.Services.AddSingleton<BuyerConversationStore>();
         builder.Services.AddSingleton<CopilotRuntime>();
@@ -40,7 +44,7 @@ public static class BuyerApplication
         {
             client.Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds);
             client.DefaultRequestHeaders.Add("A2A-Extensions", BuyerCard.AuthorizationExtensionUri);
-        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        }).AddHttpMessageHandler<ExchangeCaptureHandler>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
         {
             UseCookies = false,
             AllowAutoRedirect = false
@@ -59,6 +63,16 @@ public static class BuyerApplication
         });
         app.Use(async (context, next) =>
         {
+            if (context.Request.Path.StartsWithSegments("/demo"))
+            {
+                if (!ExchangeDashboard.IsLocalRequest(context, options))
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    return;
+                }
+                await next(context);
+                return;
+            }
             if (context.Request.Headers.ContainsKey("Origin") ||
                 (context.Connection.RemoteIpAddress is { } remote && !IPAddress.IsLoopback(remote)))
             {
@@ -69,7 +83,12 @@ public static class BuyerApplication
         });
         app.MapGet("/health", () => Results.Ok(new { status = "ok", agent = card.Name }));
         app.MapA2A("/a2a");
-        app.MapWellKnownAgentCard(card);
+        app.MapGet("/.well-known/agent-card.json", (HttpContext context) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Json(BuyerCard.Create(options.WithMode(options.CommunicationMode)), A2A.A2AJsonUtilities.DefaultOptions);
+        });
+        if (options.ExchangeCaptureEnabled) ExchangeDashboard.Map(app);
         return app;
     }
 }

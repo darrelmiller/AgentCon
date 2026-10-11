@@ -22,8 +22,9 @@ public static class BuyerCard
                 ProtocolVersion = "1.0"
             }
         ],
-        DefaultInputModes = ["text/plain", "application/json"],
-        DefaultOutputModes = ["text/plain", "application/json"],
+        DefaultInputModes = ["text/plain"],
+        DefaultOutputModes = options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage
+            ? ["text/plain"] : ["text/plain", "application/json", SupplierFormats.Quote, SupplierFormats.Receipt],
         Capabilities = new AgentCapabilities
         {
             Streaming = true,
@@ -47,6 +48,9 @@ public static class BuyerCard
                 Name = "Wine buyer",
                 Description = "Search the AI Catalog for wine suppliers, select one by catalog identifier, request quotes, send text or structured messages, and inspect supplier tasks.",
                 Tags = ["wine", "buyer", "a2a", "demo"],
+                InputModes = ["text/plain"],
+                OutputModes = options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage
+                    ? ["text/plain"] : ["text/plain", "application/json", SupplierFormats.Quote, SupplierFormats.Receipt],
                 Examples = ["Ask the supplier for a quote for 12 cases of 2019 Barolo delivered to San Jose."]
             }
         ]

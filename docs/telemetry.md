@@ -1,6 +1,13 @@
 # AgentCon OTLP tracing and Aspire
 
 Both services export OpenTelemetry **traces** (not metrics or application logs).
+For an opt-in payload viewer, see the buyer's
+[live exchange dashboard](../BuyerAgent/README.md#live-exchange-dashboard).
+It captures A2A wire bodies separately in local memory, never in trace attributes.
+The viewer also shows `agentcon.llmCalls` message metadata, based on actual SDK
+assistant-turn/retry events. These per-message counts are separate from token
+usage (which remains sourced only from SDK usage events). Structured seller
+replies report zero; the Copilot-powered buyer still uses inference.
 Default resource `service.name` values are `agentcon-buyer` and
 `agentcon-supplier`; `OTEL_SERVICE_NAME` overrides each independently.
 `service.version` comes from the .NET assembly informational version and Rust
@@ -183,7 +190,7 @@ Cleanup failures are logged. .NET timeouts abort the SDK session before disposal
 
 ## Validation without a live dashboard
 
-Build the **test-only ephemeral** Rust fixture, then test:
+Build the ephemeral Rust fixture, then test:
 
 ```powershell
 & $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc test --manifest-path SupplierAgent\Cargo.toml --locked --quiet && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --example trace_fixture --locked --quiet'

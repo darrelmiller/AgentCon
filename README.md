@@ -17,13 +17,13 @@ A buyer agent (GitHub Copilot driving the official `a2a` CLI) buys wine from Luc
 
 - `docs/outline.md`: talk outline and timings.
 - `docs/proposal-for-luca.md`: the plan as shared with Luca.
-- `catalog.json`: local AI Catalog pointing to live buyer and test-only supplier Agent Cards; the buyer discovers suppliers from this catalog.
+- `catalog.json`: local AI Catalog pointing to live buyer and supplier Agent Cards; the buyer discovers suppliers from this catalog.
 - `stage-map/index.html`: offline HTML slide deck, starting with the session title slide. Open in a browser; arrow keys navigate, and `F` toggles fullscreen.
 - `tools/credentials/`: local demo age-credential signing; phone-wallet issuance is a separate step.
 - `BuyerAgent/`: C# A2A v1 buyer service with a GitHub Copilot SDK harness.
 - `BuyerAgent.Tests/`: buyer protocol and supplier-tool tests.
 - `SupplierAgent/`: Rust A2A v1 supplier using the official A2A and Copilot Rust SDKs; demo quotes and simulated orders, including deterministic typed profiles.
-- `IssuerAgent/`: test-only OpenID4VCI issuer for the phone wallet.
+- `IssuerAgent/`: demo OpenID4VCI issuer for the phone wallet.
 - `deployment/Deploy-Issuer.ps1`: validate and redeploy the issuer to Azure App Service.
 
 ## Buyer implementation
