@@ -78,10 +78,12 @@ public sealed class OtlpIntegrationTests
             Assert.NotNull(origin);
             var drain = process.StandardOutput.ReadToEndAsync();
             using var http = new HttpClient();
-            var options = new BuyerOptions();
+            var options = new BuyerOptions { CommunicationMode = SupplierCommunicationMode.Native };
             var gateway = new SupplierGateway(http, options, new AiCatalogClient(http, options));
+            var card = await gateway.ResolveCardAsync(new Uri(origin + "/.well-known/agent-card.json"), CancellationToken.None);
             var binding = new SupplierBinding("urn:test:supplier", null, "SupplierAgent",
-                new Uri(origin + "/.well-known/agent-card.json"), new Uri(origin + "/a2a"), "test");
+                new Uri(origin + "/.well-known/agent-card.json"), new Uri(origin + "/a2a"), "test")
+            { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = SupplierFormats.Native(card) };
             ActivityTraceId traceId;
             using (var agent = BuyerTelemetry.Agent("integration", "integration"))
             {
@@ -89,11 +91,11 @@ public sealed class OtlpIntegrationTests
                 var response = await gateway.SendAsync(binding, new Message
                 {
                     MessageId = Guid.NewGuid().ToString("N"), Role = Role.User,
-                    Parts = [Part.FromData(System.Text.Json.JsonSerializer.SerializeToElement(new
+                    Parts = [new Part { MediaType = SupplierFormats.Rfq, Data = System.Text.Json.JsonSerializer.SerializeToElement(new
                     {
                         kind = "rfq", schemaVersion = "1", demoOnly = true,
                         wine = "Barolo", vintage = 2019, cases = 12, deliveryCity = "San Jose"
-                    }))]
+                    }) }]
                 }, CancellationToken.None);
                 Assert.NotNull(response.Task);
                 var completed = false;

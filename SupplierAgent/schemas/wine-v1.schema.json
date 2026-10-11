@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AgentCon test-only wine profiles v1 (unregistered demo media types)",
+  "title": "AgentCon wine profiles v1 (unregistered demo media types)",
   "oneOf": [
     { "$ref": "#/$defs/rfq" },
     { "$ref": "#/$defs/purchaseOrder" },
@@ -19,7 +19,8 @@
         "wine": { "type": "string", "description": "Only Barolo is quoted, case-insensitive." },
         "vintage": { "const": 2019 },
         "cases": { "type": "integer", "minimum": 1, "maximum": 48 },
-        "deliveryCity": { "type": "string", "description": "Only San Jose is priced, case-insensitive." }
+        "deliveryCity": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$", "description": "Any city in the declared US or Canadian destination." },
+        "deliveryCountry": { "type": "string", "enum": ["US", "CA"], "default": "US", "description": "Declared destination country. Omitted country defaults to US for existing v1 requests." }
       }
     },
     "purchaseOrder": {
@@ -47,7 +48,8 @@
         "vintage": { "const": 2019 },
         "cases": { "type": "integer", "minimum": 1, "maximum": 48 },
         "bottlesPerCase": { "const": 12 },
-        "deliveryCity": { "const": "San Jose" },
+        "deliveryCity": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "deliveryCountry": { "type": "string", "enum": ["US", "CA"] },
         "currency": { "const": "USD" },
         "casePriceMinor": { "const": 14400 },
         "deliveryMinor": { "const": 2500 },

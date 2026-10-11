@@ -64,12 +64,13 @@ fn prices_bounds_isolation_and_idempotency() {
                 .is_err()
         );
     }
+
     for (field, value) in [
         ("demoOnly", json!(false)),
         ("schemaVersion", json!("2")),
         ("wine", json!("Chianti")),
         ("vintage", json!(2020)),
-        ("deliveryCity", json!("Rome")),
+        ("deliveryCity", json!("")),
     ] {
         let mut invalid = rfq(1);
         invalid[field] = value;
@@ -89,6 +90,65 @@ fn prices_bounds_isolation_and_idempotency() {
     assert!(serde_json::from_value::<Request>(assertion).is_err());
 }
 
+#[test]
+fn quotes_any_us_or_canadian_destination_and_preserves_country() {
+    let mut store = WineStore::default();
+    for (index, (city, country)) in [
+        ("Seattle", "US"),
+        ("Anchorage", "US"),
+        ("Honolulu", "US"),
+        ("Toronto", "CA"),
+        ("Montréal", "CA"),
+        ("St. John's", "CA"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut request = rfq(12);
+        request["deliveryCity"] = json!(city);
+        request["deliveryCountry"] = json!(country);
+        let context = format!("shipping-{index}");
+        let (_, quote, text) = store
+            .apply(serde_json::from_value(request).unwrap(), &context)
+            .unwrap();
+        assert_eq!(quote["deliveryCity"], city);
+        assert_eq!(quote["deliveryCountry"], country);
+        assert_eq!(quote["currency"], "USD");
+        assert_eq!(quote["totalMinor"], 175300);
+        assert!(text.contains(&format!("to {city}, {country}.")));
+        assert!(!text.contains("TEST-ONLY"));
+        let (_, receipt, text) = store
+            .apply(
+                serde_json::from_value(order(
+                    quote["quoteId"].as_str().unwrap(),
+                    &format!("po-{index}"),
+                ))
+                .unwrap(),
+                &context,
+            )
+            .unwrap();
+        assert_eq!(receipt["status"], "simulated");
+        assert!(!text.contains("TEST-ONLY"));
+    }
+    let (_, legacy, _) = store
+        .apply(serde_json::from_value(rfq(1)).unwrap(), "legacy")
+        .unwrap();
+    assert_eq!(legacy["deliveryCountry"], "US");
+    for country in ["IT", "MX", "", "us"] {
+        let mut request = rfq(1);
+        request["deliveryCountry"] = json!(country);
+        assert!(serde_json::from_value::<Request>(request).is_err());
+    }
+    for city in ["   ".to_owned(), "Toronto\n".to_owned(), "x".repeat(129)] {
+        let mut request = rfq(1);
+        request["deliveryCity"] = json!(city);
+        assert!(
+            store
+                .apply(serde_json::from_value(request).unwrap(), "invalid-city")
+                .is_err()
+        );
+    }
+}
 struct TestServer {
     url: String,
     supplier: Arc<Supplier>,
@@ -154,6 +214,29 @@ async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
     assert_eq!(card["supportedInterfaces"][0]["protocolBinding"], "JSONRPC");
     assert_eq!(card["supportedInterfaces"][0]["protocolVersion"], "1.0");
     assert!(
+        !card["defaultInputModes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("application/json"))
+    );
+    assert!(
+        !card["skills"][0]["inputModes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("application/json"))
+    );
+    let discovery = &card["capabilities"]["extensions"][0]["params"]["schemas"];
+    assert_eq!(discovery.as_array().unwrap().len(), 4);
+    let schema_response = reqwest::get(discovery[0]["url"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        schema_response.headers()["content-type"],
+        "application/schema+json"
+    );
+    let schema: Value = schema_response.json().await.unwrap();
+    assert_eq!(schema["$defs"]["rfq"]["properties"]["kind"]["const"], "rfq");
+    assert!(
         card["defaultInputModes"]
             .as_array()
             .unwrap()
@@ -215,6 +298,8 @@ async fn invalid_structured_input_never_falls_back_to_inference() {
     for parts in [
         vec![Part::data(json!({"wine":"Barolo"}))],
         vec![Part::data(rfq(1)).with_media_type(PURCHASE)],
+        vec![Part::data(rfq(1)).with_media_type("application/json")],
+        vec![Part::data(rfq(1))],
         vec![Part::data(rfq(1)), Part::data(rfq(2))],
     ] {
         let response = server.send(parts, "invalid").await;
@@ -242,6 +327,71 @@ async fn invalid_structured_input_never_falls_back_to_inference() {
 
 struct AuthInterpreter;
 
+#[tokio::test]
+async fn output_negotiation_and_per_message_zero_inference_counts() {
+    let server = TestServer::new(Arc::new(NoInference)).await;
+    for (index, modes) in [
+        json!(["text/plain"]),
+        json!(["text/plain", QUOTE]),
+        json!([QUOTE]),
+        json!([]),
+        json!(["application/json"]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut message = Message::new(Role::User, vec![Part::data(rfq(12)).with_media_type(RFQ)]);
+        message.context_id = Some(format!("negotiation-{index}"));
+        let value: Value = reqwest::Client::new()
+            .post(format!("{}/a2a", server.url))
+            .header("A2A-Version", "1.0")
+            .json(
+                &json!({"jsonrpc":"2.0","id":7,"method":"SendMessage","params":{
+                    "message":message, "metadata":null, "configuration":{"acceptedOutputModes":modes}
+                }}),
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if index >= 3 {
+            assert_eq!(value["error"]["code"], -32005, "{value}");
+            continue;
+        }
+        let task = &value["result"]["task"];
+        assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED", "{value}");
+        assert_eq!(task["metadata"]["agentcon.llmCalls"].as_f64(), Some(0.0));
+        if index == 0 {
+            assert_eq!(task["artifacts"][0]["name"], "quote");
+            assert_eq!(task["artifacts"][0]["parts"][0]["mediaType"], "text/plain");
+            assert!(task["artifacts"][0]["parts"][0].get("data").is_none());
+            assert!(
+                task["status"]["message"]["parts"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("1753.00")
+            );
+        } else {
+            assert_eq!(task["artifacts"][0]["parts"][0]["mediaType"], QUOTE);
+            if index == 2 {
+                assert!(task["status"]["message"].is_null(), "{value}");
+            }
+        }
+        let saved = server.rpc("GetTask", json!({"id":task["id"]})).await;
+        assert_eq!(saved["artifacts"], task["artifacts"]);
+    }
+    assert_eq!(
+        server
+            .supplier
+            .metrics
+            .structured_requests
+            .load(Ordering::Relaxed),
+        3
+    );
+}
+
 #[async_trait]
 impl Interpreter for AuthInterpreter {
     async fn interpret(&self, _: &str, _: Option<&str>, _: &str) -> Result<Intent, String> {
@@ -266,5 +416,5 @@ async fn authorization_remains_unimplemented_and_cannot_be_asserted() {
     let text = response["task"]["status"]["message"]["parts"][0]["text"]
         .as_str()
         .unwrap();
-    assert!(text.contains("NOT IMPLEMENTED"));
+    assert!(text.contains("requires authorization"));
 }

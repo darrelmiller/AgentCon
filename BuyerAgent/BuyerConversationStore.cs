@@ -39,6 +39,7 @@ public sealed class BuyerConversation
 
     /// <summary>Supplier context IDs returned in this conversation, bound to the supplier that issued them.</summary>
     public SupplierOwnership SupplierContexts { get; } = new();
+    public Dictionary<(string Supplier, string TaskId), A2A.TaskState> SupplierTaskStates { get; } = [];
 
     public void Remember(BuyerHistoryTurn turn)
     {
@@ -64,7 +65,13 @@ public sealed class SupplierOwnership
         {
             _owners[id] = owners = [];
         }
-        if (!owners.Contains(supplier))
+        var existing = owners.FindIndex(owner => owner.Identifier == supplier.Identifier &&
+            owner.Version == supplier.Version && owner.Endpoint == supplier.Endpoint);
+        if (existing >= 0)
+        {
+            owners[existing] = supplier;
+        }
+        else
         {
             owners.Add(supplier);
         }
@@ -73,7 +80,8 @@ public sealed class SupplierOwnership
     public bool Contains(string id) => _owners.ContainsKey(id);
 
     public bool IsOwnedBy(string id, SupplierBinding supplier) =>
-        _owners.TryGetValue(id, out var owners) && owners.Contains(supplier);
+        _owners.TryGetValue(id, out var owners) && owners.Any(owner =>
+            owner.Identifier == supplier.Identifier && owner.Version == supplier.Version && owner.Endpoint == supplier.Endpoint);
 
     public SupplierBinding Resolve(string id, string? supplierIdentifier, string kind)
     {

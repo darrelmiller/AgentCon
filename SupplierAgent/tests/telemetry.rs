@@ -15,6 +15,7 @@ use opentelemetry_sdk::{
     trace::{InMemorySpanExporter, SdkTracerProvider},
 };
 use serde_json::json;
+use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 struct NoInference;
@@ -22,6 +23,19 @@ struct NoInference;
 impl Interpreter for NoInference {
     async fn interpret(&self, _: &str, _: Option<&str>, _: &str) -> Result<Intent, String> {
         panic!("structured tracing must not call inference")
+    }
+}
+
+struct RetainedRuntime(Arc<std::sync::Mutex<Option<tracing::Span>>>);
+#[async_trait]
+impl Interpreter for RetainedRuntime {
+    async fn interpret(&self, _: &str, _: Option<&str>, _: &str) -> Result<Intent, String> {
+        async {
+            *self.0.lock().unwrap() = Some(tracing::Span::current());
+            Ok(Intent::Help)
+        }
+        .instrument(telemetry::runtime_start())
+        .await
     }
 }
 
@@ -128,6 +142,50 @@ async fn sdk_background_executor_is_child_of_http_and_preserves_remote_trace() {
             .attributes
             .iter()
             .any(|a| a.value.to_string().contains("PRIVATE"))
+    );
+    let retained = Arc::new(std::sync::Mutex::new(None));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let router = app(
+        Arc::new(Supplier::new(Arc::new(RetainedRuntime(retained.clone())))),
+        &origin,
+    );
+    let runtime_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let response: serde_json::Value = reqwest::Client::new()
+        .post(format!("{origin}/a2a"))
+        .header("traceparent", "00-55555555555555555555555555555555-5555555555555555-01")
+        .header("A2A-Version", "1.0")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{
+            "message":{"messageId":"runtime-test","role":"ROLE_USER","parts":[{"text":"Describe your role"}]},
+            "configuration":{"returnImmediately":false}}}))
+        .send().await.unwrap().json().await.unwrap();
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(retained.lock().unwrap().is_some());
+    let spans = exporter.get_finished_spans().unwrap();
+    assert!(spans.iter().any(|s| s.name == "invoke_agent SupplierAgent"
+        && s.span_context.trace_id().to_string() == "55555555555555555555555555555555"));
+    retained.lock().unwrap().take();
+    runtime_server.abort();
+    telemetry::usage(
+        &json!({"type":"assistant.usage","data":{"model":"finish-test","finishReason":"error"}}),
+        &parent,
+        "SupplierAgent",
+    );
+    let spans = exporter.get_finished_spans().unwrap();
+    let chat = spans.iter().find(|s| s.name == "chat finish-test").unwrap();
+    assert!(matches!(chat.status, Status::Error { .. }));
+    assert_eq!(
+        chat.attributes
+            .iter()
+            .filter(|a| a.key.as_str() == "gen_ai.response.finish_reasons")
+            .count(),
+        1
+    );
+    assert!(
+        !chat
+            .attributes
+            .iter()
+            .any(|a| a.key.as_str().starts_with("gen_ai.usage."))
     );
     server.abort();
     provider.shutdown().unwrap();

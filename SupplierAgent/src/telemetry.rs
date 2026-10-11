@@ -102,6 +102,12 @@ pub fn executor_parent(params: &HashMap<String, Vec<String>>) -> Context {
     global::get_text_map_propagator(|p| p.extract(&Params(params)))
 }
 
+pub fn runtime_start() -> tracing::Span {
+    // SDK background readers retain the current tracing span for their lifetime.
+    // Keep process lifetime work off request spans and outside the exported target.
+    tracing::info_span!(target: "agentcon_runtime", parent: None, "copilot.runtime_start")
+}
+
 pub async fn http(mut request: Request, next: Next) -> Response {
     let parent = global::get_text_map_propagator(|p| p.extract(&Headers(request.headers())));
     let route = match request.uri().path() {
@@ -173,14 +179,14 @@ pub fn usage(evt: &serde_json::Value, parent: &Context, agent: &'static str) {
         if let Some(tokens) = data.get(field).and_then(|v| v.as_i64()).filter(|n| *n >= 0) {
             attrs.push(KeyValue::new(attr, tokens));
         }
-        if let Some(reason) = data.get("finishReason").and_then(|v| v.as_str()) {
-            attrs.push(KeyValue::new(
-                "gen_ai.response.finish_reasons",
-                opentelemetry::Value::Array(opentelemetry::Array::String(vec![
-                    reason.to_owned().into(),
-                ])),
-            ));
-        }
+    }
+    if let Some(reason) = data.get("finishReason").and_then(|v| v.as_str()) {
+        attrs.push(KeyValue::new(
+            "gen_ai.response.finish_reasons",
+            opentelemetry::Value::Array(opentelemetry::Array::String(vec![
+                reason.to_owned().into(),
+            ])),
+        ));
     }
     let mut span = tracer
         .span_builder(

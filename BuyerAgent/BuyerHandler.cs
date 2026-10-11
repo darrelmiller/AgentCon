@@ -4,7 +4,8 @@ using System.Text.Json;
 namespace BuyerAgent;
 
 public sealed class BuyerHandler(
-    IBuyerHarness harness, BuyerConversationStore conversations, BuyerOptions options, ILogger<BuyerHandler> logger) : IAgentHandler
+    IBuyerHarness harness, BuyerConversationStore conversations, BuyerOptions options, ILogger<BuyerHandler> logger,
+    ExchangeStore exchanges) : IAgentHandler
 {
     private readonly Dictionary<string, ActiveExecution> _activeTasks = new(StringComparer.Ordinal);
     private readonly object _activeLock = new();
@@ -12,6 +13,9 @@ public sealed class BuyerHandler(
     public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
         using var activity = BuyerTelemetry.Agent(context.TaskId, context.ContextId);
+        var mode = options.CommunicationMode;
+        void Observe(string state) => exchanges.BuyerTask(context.TaskId, context.ContextId, state);
+        Observe("TASK_STATE_SUBMITTED");
         var updater = new TaskUpdater(eventQueue, context.TaskId, context.ContextId);
         if (!context.IsContinuation)
         {
@@ -31,17 +35,19 @@ public sealed class BuyerHandler(
         try
         {
             if (context.Message.Parts.Count == 0 ||
-                context.Message.Parts.Any(part => part.ContentCase is not (PartContentCase.Text or PartContentCase.Data)))
+                context.Message.Parts.Any(part => part.ContentCase != PartContentCase.Text ||
+                    part.MediaType is not (null or "text/plain")))
             {
-                throw new ArgumentException("The buyer accepts text and JSON data parts only.");
+                throw new ArgumentException("The buyer accepts text/plain input only.");
             }
             conversation = conversations.Get(context.ContextId);
             await conversation.Gate.WaitAsync(deadline.Token);
             entered = true;
-            turn = new BuyerTurn(context.Message, conversation);
+            turn = new BuyerTurn(context.Message, conversation) { CommunicationMode = mode };
             await updater.StartWorkAsync(cancellationToken: deadline.Token);
+            Observe("TASK_STATE_WORKING");
             reply = await harness.RunAsync(turn, deadline.Token);
-            await ForwardSupplierArtifactsAsync(turn, updater, eventQueue, deadline.Token);
+            var forwardedArtifacts = await ForwardSupplierArtifactsAsync(turn, updater, eventQueue, deadline.Token);
             if (turn.ToolFailure is { } toolFailure)
             {
                 throw new InvalidOperationException($"Supplier tool failed: {toolFailure.Message}", toolFailure);
@@ -49,29 +55,41 @@ public sealed class BuyerHandler(
 
             var supplierTask = turn.SupplierResponses.LastOrDefault()?.Task;
             var message = CreateReply(reply, context);
+            if (turn.QuoteAssessments.Count > 0)
+                message.Metadata = new() { ["agentcon.quoteAssessments"] = JsonSerializer.SerializeToElement(turn.QuoteAssessments) };
             if (supplierTask?.Status.State == TaskState.AuthRequired)
             {
-                message.Metadata = supplierTask.Status.Message?.Metadata;
+                message.Metadata ??= new();
+                foreach (var item in supplierTask.Status.Message?.Metadata ?? [])
+                    message.Metadata[item.Key] = item.Value;
                 await updater.RequireAuthAsync(message, cancellationToken: deadline.Token);
+                Observe("TASK_STATE_AUTH_REQUIRED");
             }
-            else if (supplierTask?.Status.State is TaskState.InputRequired or TaskState.Submitted or TaskState.Working)
+            else if (turn.PriceApprovalRequired ||
+                supplierTask?.Status.State is TaskState.InputRequired or TaskState.Submitted or TaskState.Working)
             {
                 await updater.RequireInputAsync(message, cancellationToken: deadline.Token);
+                Observe("TASK_STATE_INPUT_REQUIRED");
             }
             else if (supplierTask?.Status.State is TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
             {
                 BuyerTelemetry.Error(activity, "supplier_task_failed");
                 await updater.FailAsync(message, cancellationToken: deadline.Token);
+                Observe("TASK_STATE_FAILED");
             }
             else
             {
-                await updater.AddArtifactAsync([Part.FromText(reply)], name: "buyer-response", cancellationToken: deadline.Token);
+                if (!forwardedArtifacts)
+                    await updater.AddArtifactAsync([Part.FromText(reply)], name: "buyer-response", cancellationToken: deadline.Token);
                 await updater.CompleteAsync(message, cancellationToken: deadline.Token);
+                Observe("TASK_STATE_COMPLETED");
             }
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
             BuyerTelemetry.Error(activity, execution.CancellationRequested ? "canceled" : "timeout");
+            Observe(execution.CancellationRequested || cancellationToken.IsCancellationRequested
+                ? "TASK_STATE_CANCELED" : "TASK_STATE_FAILED");
             if (execution.CancellationRequested)
             {
                 reply = "Buyer task canceled. Supplier tasks are not automatically canceled; inspect them before retrying an order.";
@@ -89,6 +107,7 @@ public sealed class BuyerHandler(
         catch (Exception exception)
         {
             BuyerTelemetry.Error(activity, exception);
+            Observe("TASK_STATE_FAILED");
             reply = $"Buyer request failed: {exception.Message}";
             logger.LogError(exception, "Buyer task {TaskId} failed", context.TaskId);
             await updater.FailAsync(CreateReply(reply, context), cancellationToken: cancellationToken);
@@ -126,6 +145,7 @@ public sealed class BuyerHandler(
         }
         var updater = new TaskUpdater(eventQueue, context.TaskId, context.ContextId);
         await updater.CancelAsync(cancellationToken: cancellationToken);
+        exchanges.BuyerTask(context.TaskId, context.ContextId, "TASK_STATE_CANCELED");
     }
 
     private sealed class ActiveExecution(CancellationTokenSource deadline)
@@ -143,7 +163,7 @@ public sealed class BuyerHandler(
         Parts = [Part.FromText(text)]
     };
 
-    private static async Task ForwardSupplierArtifactsAsync(
+    private static async Task<bool> ForwardSupplierArtifactsAsync(
         BuyerTurn turn, TaskUpdater updater, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
         var artifacts = turn.SupplierResponses
@@ -151,8 +171,13 @@ public sealed class BuyerHandler(
             .SelectMany(response => response.Task!.Artifacts ?? [])
             .GroupBy(artifact => artifact.ArtifactId)
             .Select(group => group.Last());
+        var forwarded = false;
         foreach (var artifact in artifacts)
         {
+            if (turn.CommunicationMode == SupplierCommunicationMode.NaturalLanguage &&
+                artifact.Parts.Any(part => part.ContentCase != PartContentCase.Text))
+                continue;
+            forwarded = true;
             await eventQueue.EnqueueArtifactUpdateAsync(new TaskArtifactUpdateEvent
             {
                 TaskId = updater.TaskId,
@@ -168,13 +193,6 @@ public sealed class BuyerHandler(
                 LastChunk = true
             }, cancellationToken);
         }
-        if (turn.SupplierResponses.Count > 0)
-        {
-            await updater.AddArtifactAsync(
-                [Part.FromData(JsonSerializer.SerializeToElement(turn.SupplierResponses, A2AJsonUtilities.DefaultOptions))],
-                name: "supplier-responses",
-                description: "Original supplier A2A responses, including task IDs and authorization metadata.",
-                cancellationToken: cancellationToken);
-        }
+        return forwarded;
     }
 }

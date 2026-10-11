@@ -9,6 +9,24 @@ pub const QUOTE: &str = "application/vnd.agentcon.demo.wine-quote.v1+json";
 pub const PURCHASE: &str = "application/vnd.agentcon.demo.wine-purchase-order.v1+json";
 pub const RECEIPT: &str = "application/vnd.agentcon.demo.wine-order-receipt.v1+json";
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+pub enum DeliveryCountry {
+    #[default]
+    #[serde(rename = "US")]
+    UnitedStates,
+    #[serde(rename = "CA")]
+    Canada,
+}
+
+impl DeliveryCountry {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::UnitedStates => "US",
+            Self::Canada => "CA",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Request {
@@ -24,6 +42,8 @@ pub enum Request {
         cases: u32,
         #[serde(rename = "deliveryCity")]
         delivery_city: String,
+        #[serde(rename = "deliveryCountry", default)]
+        delivery_country: DeliveryCountry,
     },
     PurchaseOrder {
         #[serde(rename = "schemaVersion")]
@@ -82,6 +102,7 @@ pub struct WineQuote {
     pub cases: u32,
     pub bottles_per_case: u32,
     pub delivery_city: String,
+    pub delivery_country: DeliveryCountry,
     pub currency: &'static str,
     pub case_price_minor: u32,
     pub delivery_minor: u32,
@@ -120,6 +141,7 @@ impl WineStore {
                 vintage,
                 cases,
                 delivery_city,
+                delivery_country,
             } => {
                 validate_demo(&schema_version, demo_only)?;
                 if !wine.eq_ignore_ascii_case("Barolo") || vintage != 2019 {
@@ -131,9 +153,13 @@ impl WineStore {
                 if !(1..=48).contains(&cases) {
                     return Err("Demo quote quantity must be 1 through 48 cases.".into());
                 }
-                if !delivery_city.eq_ignore_ascii_case("San Jose") {
-                    return Err("Demo delivery pricing is defined only for San Jose.".into());
+                if delivery_city.trim().is_empty()
+                    || delivery_city.chars().count() > 128
+                    || delivery_city.chars().any(char::is_control)
+                {
+                    return Err("Demo delivery city must contain 1-128 characters without control characters.".into());
                 }
+                let delivery_city = delivery_city.trim();
                 self.quotes
                     .retain(|_, bound| bound.quote.expires_at > Utc::now());
                 self.latest.retain(|_, id| self.quotes.contains_key(id));
@@ -149,7 +175,8 @@ impl WineStore {
                     vintage: 2019,
                     cases,
                     bottles_per_case: 12,
-                    delivery_city: "San Jose".into(),
+                    delivery_city: delivery_city.into(),
+                    delivery_country,
                     currency: "USD",
                     case_price_minor: 14_400,
                     delivery_minor: 2_500,
@@ -157,11 +184,13 @@ impl WineStore {
                     expires_at: Utc::now() + Duration::minutes(15),
                 };
                 let text = format!(
-                    "TEST-ONLY quote {}: {} cases of 2019 Barolo (12 bottles/case) to San Jose. \
+                    "Quote {}: {} cases of 2019 Barolo (12 bottles/case) to {}, {}. \
                      USD 144.00/case + USD 25.00 demo delivery = USD {:.2}. \
-                     Valid 15 minutes. No real stock, payment, delivery or age verification.",
+                     Valid 15 minutes.",
                     quote.quote_id,
                     cases,
+                    quote.delivery_city,
+                    quote.delivery_country.code(),
                     f64::from(quote.total_minor) / 100.0
                 );
                 let value = serde_json::to_value(&quote).map_err(|e| e.to_string())?;
@@ -236,8 +265,5 @@ fn validate_demo(version: &str, demo_only: bool) -> Result<(), String> {
 }
 
 fn receipt_text(id: &str) -> String {
-    format!(
-        "TEST-ONLY purchase order {id} recorded as SIMULATED. No real purchase, payment, delivery \
-             or age verification occurred. This is not proof of buying authority."
-    )
+    format!("Purchase order {id} recorded.")
 }

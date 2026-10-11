@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let supplier = Arc::new(Supplier::new(interpreter.clone()));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let origin = format!("http://localhost:{port}");
-    tracing::info!(%origin, pid = std::process::id(), "TEST-ONLY supplier ready; no wallet verification or real purchases");
+    tracing::info!(%origin, pid = std::process::id(), "Wine supplier ready");
     let served = axum::serve(listener, app(supplier, &origin))
         .with_graceful_shutdown(async {
             if let Err(error) = tokio::signal::ctrl_c().await {

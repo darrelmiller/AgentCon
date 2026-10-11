@@ -9,6 +9,15 @@ namespace BuyerAgent.Tests;
 public sealed class TelemetryTests
 {
     [Fact]
+    public void DisablingCliTelemetryPreservesInheritedRuntimeEnvironment()
+    {
+        var environment = CopilotRuntime.CreateEnvironment();
+        Assert.Equal(Environment.GetEnvironmentVariable("PATH"), environment["PATH"]);
+        Assert.Equal("false", environment["COPILOT_OTEL_ENABLED"]);
+        Assert.Equal("false", environment["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"]);
+    }
+
+    [Fact]
     public void AgentAndActualUsageHaveConventionalShapesAndNoContent()
     {
         var spans = new ConcurrentBag<Activity>();

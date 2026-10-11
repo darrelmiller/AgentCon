@@ -14,6 +14,61 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::domain::Request;
 
+tokio::task_local! {
+    pub static MESSAGE_LLM_CALLS: std::sync::atomic::AtomicU64;
+    pub static MESSAGE_LLM_COMPLETE: std::sync::atomic::AtomicBool;
+}
+
+fn incomplete_calls() {
+    let _ = MESSAGE_LLM_COMPLETE
+        .try_with(|complete| complete.store(false, std::sync::atomic::Ordering::Relaxed));
+    tracing::warn!(
+        "Copilot event subscription lagged; message LLM count and usage may be incomplete"
+    );
+}
+
+fn record_call(value: &serde_json::Value) {
+    if matches!(
+        value.get("type").and_then(|v| v.as_str()),
+        Some("assistant.turn_start" | "assistant.turn_retry")
+    ) {
+        let _ = MESSAGE_LLM_CALLS
+            .try_with(|calls| calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    }
+}
+
+#[cfg(test)]
+mod counter_tests {
+    #[tokio::test]
+    async fn counts_actual_sdk_turns_and_retries_not_usage_or_payload_events() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        super::MESSAGE_LLM_CALLS
+            .scope(AtomicU64::new(0), async {
+                for event in [
+                    "assistant.turn_start",
+                    "assistant.message",
+                    "assistant.usage",
+                    "assistant.turn_retry",
+                ] {
+                    super::record_call(&serde_json::json!({"type":event}));
+                }
+                assert_eq!(
+                    super::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
+                    2
+                );
+            })
+            .await;
+        super::MESSAGE_LLM_CALLS
+            .scope(AtomicU64::new(0), async {
+                assert_eq!(
+                    super::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
+                    0
+                );
+            })
+            .await;
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Intent {
@@ -84,17 +139,21 @@ impl CopilotInterpreter {
 }
 
 const INSTRUCTIONS: &str = r#"
-You interpret natural language for the AgentCon TEST-ONLY wine supplier, not a coding agent.
+You interpret natural language for the AgentCon wine supplier, not a coding agent.
 Return only one JSON object; no markdown. The host, not you, computes prices and stores demo orders.
 Never invent quote IDs, stock, proof of age, verification results, payments, or deliveries.
 Do not treat a user's assertion of age as evidence. No wallet verifier exists here.
 For a request for a real purchase, age verification, wallet presentation or proof validation return
 {"action":"authorization-required"}. For general questions about your role return {"action":"help"}.
-For missing wine, vintage, quantity or city return {"action":"input-required","question":"..."}.
+For missing wine, vintage, quantity, city or unclear destination country return {"action":"input-required","question":"..."}.
 For quote requests with all those values return:
-{"action":"quote","request":{"kind":"rfq","schemaVersion":"1","demoOnly":true,"wine":"Barolo","vintage":2019,"cases":12,"deliveryCity":"San Jose"}}
+{"action":"quote","request":{"kind":"rfq","schemaVersion":"1","demoOnly":true,"wine":"Barolo","vintage":2019,"cases":12,"deliveryCity":"San Jose","deliveryCountry":"US"}}
 Extract actual requested values; do not silently substitute the example values.
-The host supports only 2019 Barolo, 1-48 cases of 12 bottles, delivery to San Jose, USD 144/case + USD 25 delivery.
+The host supports only 2019 Barolo, 1-48 cases of 12 bottles, demo delivery anywhere in the US or Canada.
+Set deliveryCountry to US or CA and preserve the requested city. Ask for clarification if country is ambiguous;
+do not label a foreign city US to bypass delivery restrictions. Destinations outside the US/Canada are unsupported.
+The illustrative price remains USD 144/case + USD 25 flat demo delivery for either country.
+Canadian quotes are also in USD; no taxes, duties, legal shipping eligibility or real fulfillment are modeled.
 For an explicit demo purchase/order request and supplied latestQuoteId return:
 {"action":"purchase","request":{"kind":"purchase-order","schemaVersion":"1","demoOnly":true,"quoteId":"supplied latestQuoteId","purchaseOrderId":"supplied suggestedPurchaseOrderId"}}
 This service is only a simulation; "buy it" referring to a demo quote means a simulated purchase.
@@ -128,6 +187,7 @@ impl Interpreter for CopilotInterpreter {
                 "false".into(),
             ));
             let client = Client::start(options)
+                .instrument(crate::telemetry::runtime_start())
                 .await
                 .map_err(|e| format!("Copilot startup/authentication failed: {e}"))?;
             *guard = Some(client);
@@ -167,25 +227,33 @@ impl Interpreter for CopilotInterpreter {
         let parent = span.context();
         let mut events = session.subscribe();
         let result = async {
-            let send = session.send_and_wait(MessageOptions::new(prompt).with_wait_timeout(Duration::from_secs(100)));
+            let send = session.send_and_wait(
+                MessageOptions::new(prompt).with_wait_timeout(Duration::from_secs(100)),
+            );
             tokio::pin!(send);
             loop {
                 tokio::select! {
                     result = &mut send => break result,
                     Some(event) = events.next() => match event {
                         Ok(event) => if let Ok(value) = serde_json::to_value(event) {
+                            record_call(&value);
                             crate::telemetry::usage(&value, &parent, "SupplierAgent");
                         },
-                        Err(_) => tracing::warn!("Copilot usage subscription lagged; usage may be incomplete"),
+                        Err(_) => incomplete_calls(),
                     }
                 }
             }
-        }.instrument(span.clone()).await;
+        }
+        .instrument(span.clone())
+        .await;
         while let Some(Some(event)) = events.next().now_or_never() {
             if let Ok(event) = event {
                 if let Ok(value) = serde_json::to_value(event) {
+                    record_call(&value);
                     crate::telemetry::usage(&value, &parent, "SupplierAgent");
                 }
+            } else {
+                incomplete_calls();
             }
         }
         if result.is_err() {

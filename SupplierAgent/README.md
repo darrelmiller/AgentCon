@@ -1,8 +1,6 @@
 # Rust wine supplier
 
-**Test only.** This supplier quotes invented 2019 Barolo inventory and records
-simulated purchase receipts. Nothing purchases wine, charges money, ships
-anything, validates credentials or establishes buying authority.
+This demo supplier quotes 2019 Barolo and records simulated purchase receipts.
 
 The HTTP server, Agent Card, JSON-RPC dispatch, protobuf-JSON wire conversion,
 task store and SSE are the official
@@ -114,15 +112,42 @@ part discriminator or JSON embedded in a text part:
 ```
 
 Exactly one data part is processed deterministically, without even starting
-Copilot. Accompanying text is commentary and **not interpreted**. For the
-existing .NET buyer's `Part.FromData` tool, which does not set `mediaType`,
-the same required `kind`/`schemaVersion` envelope is accepted with absent
-media type or `application/json`. Unknown fields, mismatched media types,
+Copilot. Accompanying text is commentary and **not interpreted**. A data part
+must explicitly declare the matching vendor `mediaType`: absent media types
+and generic `application/json` are rejected, not inferred from the envelope.
+The Agent Card advertises only `text/plain`, the RFQ type and purchase-order
+type as accepted inputs, both globally and on its skill. Unknown fields, mismatched media types,
 unsupported versions, arbitrary JSON and file parts explicitly fail, never
 fall back to inference.
 
+### Schema discovery
+
+The seller respects each send's `configuration.acceptedOutputModes`, including
+queued execution. Text-only callers receive a text quote/receipt artifact rather than typed data.
+Typed-only callers receive the accepted quote/receipt artifact without a text
+status message. Omitted modes retain the default outputs; empty or incompatible
+modes fail with A2A `CONTENT_TYPE_NOT_SUPPORTED`. Incompatible order outputs are
+checked before recording a simulated order. A bounded middleware bridge preserves
+the configuration in executor metadata because the pinned SDK omits it from
+`ExecutorContext`; it does not implement a replacement A2A transport.
+
+The live Agent Card advertises the demo-only, unregistered
+`urn:agentcon:extension:structured-schemas:v1` extension. Its `params.schemas`
+maps each input/output media type to an HTTP URL and a local `$defs` definition.
+`GET /schemas/wine-v1.schema.json` returns the agreed schema with
+`Content-Type: application/schema+json`. This is discovery metadata, not an A2A
+business task and not inference. The buyer's `LearnStructures` mode fetches and
+validates these schemas before sending typed data. `Native` uses installed
+wine-v1 codecs; `NaturalLanguage` sends only text. See the
+[buyer modes](../BuyerAgent/README.md#supplier-communication-modes).
+
 Quotes are USD cents: `cases * 14400 + 2500`, 12 bottles/case, 1-48 cases,
-2019 Barolo only, San Jose only; no taxes modeled. A 12-case quote totals
+2019 Barolo only, delivery anywhere in the US or Canada; no taxes or duties modeled.
+The USD 25 flat delivery fee applies in both countries; Canadian quotes are also
+in USD. Set `deliveryCountry` to `US` or `CA`; existing RFQs without it default to
+`US`. Any nonempty destination city (up to 128 characters) is accepted in the
+declared country. Destinations are not geocoded or checked for legal wine-shipping
+eligibility. A 12-case quote totals
 **USD 1753.00**. Quotes expire after 15 minutes and are bound to their A2A
 context. Order fields are `kind:"purchase-order"`, `schemaVersion:"1"`,
 `demoOnly:true`, `quoteId`, `purchaseOrderId` (1-128 characters).

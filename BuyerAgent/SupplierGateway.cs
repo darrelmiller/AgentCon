@@ -7,6 +7,10 @@ namespace BuyerAgent;
 public sealed record SupplierBinding(
     string Identifier, string? Version, string? DisplayName, Uri CardUrl, Uri Endpoint, string Catalog)
 {
+    public IReadOnlyList<string> InputModes { get; init; } = ["text/plain"];
+    public IReadOnlyList<string> OutputModes { get; init; } = ["text/plain"];
+    public IReadOnlyList<SupplierFormat> Formats { get; init; } = [];
+    public SupplierCommunicationMode Mode { get; init; }
     public object Describe() => new
     {
         identifier = Identifier,
@@ -14,7 +18,10 @@ public sealed record SupplierBinding(
         displayName = DisplayName,
         cardUrl = CardUrl.AbsoluteUri,
         endpoint = Endpoint.AbsoluteUri,
-        catalog = Catalog
+        catalog = Catalog,
+        inputModes = InputModes,
+        communicationMode = Mode.ToString(),
+        understoodStructures = Formats.Select(format => new { format.MediaType, format.Direction, format.Schema })
     };
 }
 
@@ -22,6 +29,28 @@ public sealed record SupplierSelection(SupplierBinding Binding, AgentCard Card);
 
 public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options, AiCatalogClient catalog)
 {
+    public object AssessPrice(string wine, int vintage, string currency, int cases, int bottlesPerCase,
+        decimal casePriceMinor, decimal deliveryMinor, decimal totalMinor, decimal? maxTotalUsd)
+    {
+        if (cases is < 1 or > 48 || bottlesPerCase is < 1 or > 100 ||
+            casePriceMinor <= 0 || deliveryMinor < 0 || totalMinor <= 0)
+            throw new ArgumentException("Quote quantities and amounts must be positive and bounded; delivery cannot be negative.");
+        if (totalMinor != cases * casePriceMinor + deliveryMinor)
+            return new { withinBallpark = false, reason = "Quote total does not match quantity, case price and delivery." };
+        if (!wine.Equals("Barolo", StringComparison.OrdinalIgnoreCase) || vintage != 2019 || currency != "USD")
+            return new { withinBallpark = false, reason = "No configured demo price reference for this wine, vintage or currency. Ask the caller before ordering." };
+        var bottlePrice = casePriceMinor / bottlesPerCase / 100;
+        var allowed = bottlePrice >= options.DemoMinBottlePriceUsd && bottlePrice <= options.DemoMaxBottlePriceUsd &&
+            (maxTotalUsd is null || totalMinor / 100 <= maxTotalUsd);
+        return new { withinBallpark = allowed, bottlePriceUsd = bottlePrice, totalUsd = totalMinor / 100,
+            reference = "Configured 2019 Barolo demo price range.",
+            minBottlePriceUsd = options.DemoMinBottlePriceUsd, maxBottlePriceUsd = options.DemoMaxBottlePriceUsd,
+            reason = allowed ? "Within demo price range and supplied budget." : "Outside demo price range or caller budget; stop and ask the caller." };
+    }
+    public SupplierGateway ForMode(SupplierCommunicationMode mode) => new(httpClient, options.WithMode(mode), catalog);
+    public async Task<SupplierBinding> RefreshModeAsync(SupplierBinding supplier, CancellationToken cancellationToken) =>
+        supplier.Mode == options.CommunicationMode ? supplier :
+            (await SelectAsync(supplier.Identifier, supplier.Version, cancellationToken)).Binding;
     public Task<CatalogSearchResult> SearchAsync(string? query, CancellationToken cancellationToken) =>
         catalog.SearchAsync(query, cancellationToken);
 
@@ -30,9 +59,112 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         var entry = await catalog.FindAsync(identifier, version, cancellationToken);
         var card = await ResolveCardAsync(entry.CardUrl, cancellationToken);
         var endpoint = SelectEndpoint(card, entry.CardUrl);
+        var formats = options.CommunicationMode switch
+        {
+            SupplierCommunicationMode.LearnStructures => await LearnAsync(card, entry.CardUrl, cancellationToken),
+            SupplierCommunicationMode.Native => SupplierFormats.Native(card),
+            _ => []
+        };
+        if (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage &&
+            !card.DefaultInputModes.Contains("text/plain"))
+            throw new InvalidOperationException("NaturalLanguage mode requires a seller accepting text/plain.");
+        if (options.CommunicationMode != SupplierCommunicationMode.NaturalLanguage &&
+            !formats.Any(format => format.Direction == "input"))
+            throw new InvalidOperationException("Seller has no input structures understood in the configured communication mode.");
         return new SupplierSelection(
-            new SupplierBinding(entry.Identifier, entry.Version, entry.DisplayName ?? card.Name, entry.CardUrl, endpoint, entry.Catalog),
+            new SupplierBinding(entry.Identifier, entry.Version, entry.DisplayName ?? card.Name, entry.CardUrl, endpoint, entry.Catalog)
+            { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = formats,
+                Mode = options.CommunicationMode },
             card);
+    }
+
+    private async Task<IReadOnlyList<SupplierFormat>> LearnAsync(AgentCard card, Uri cardUrl, CancellationToken cancellationToken)
+    {
+        var extension = card.Capabilities.Extensions?.SingleOrDefault(item => item.Uri == SupplierFormats.Extension)
+            ?? throw new InvalidOperationException("Seller does not advertise the schema-discovery extension.");
+        var parameters = JsonSerializer.SerializeToElement(extension.Params);
+        if (!parameters.TryGetProperty("schemas", out var schemas) || schemas.ValueKind != JsonValueKind.Array ||
+            schemas.GetArrayLength() > 8)
+            throw new InvalidOperationException("Seller schema discovery must contain at most eight schema entries.");
+        var result = new List<SupplierFormat>();
+        var documents = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var descriptor in schemas.EnumerateArray())
+        {
+            var mediaType = descriptor.GetProperty("mediaType").GetString()!;
+            var direction = descriptor.GetProperty("direction").GetString()!;
+            if (direction is not ("input" or "output") ||
+                !(direction == "input" ? card.DefaultInputModes : card.DefaultOutputModes).Contains(mediaType) ||
+                mediaType == "application/json" || !mediaType.EndsWith("+json", StringComparison.Ordinal))
+                throw new InvalidOperationException("Schema must describe an advertised typed JSON media type.");
+            if (result.Any(format => format.MediaType == mediaType && format.Direction == direction))
+                throw new InvalidOperationException("Seller advertised duplicate schema descriptors.");
+            var url = new Uri(descriptor.GetProperty("url").GetString()!, UriKind.Absolute);
+            options.ValidateRemoteUri(url, "Schema");
+            if (url.GetLeftPart(UriPartial.Authority) != cardUrl.GetLeftPart(UriPartial.Authority))
+                throw new InvalidOperationException("Schema URL must remain on the seller Agent Card origin.");
+            if (!documents.TryGetValue(url.AbsoluteUri, out var document))
+            {
+                using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                if (response.Content.Headers.ContentType?.MediaType != "application/schema+json")
+                    throw new InvalidOperationException("Schema endpoint must return application/schema+json.");
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var bytes = new MemoryStream();
+                var buffer = new byte[4096];
+                int count;
+                while ((count = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                {
+                    if (bytes.Length + count > 65536) throw new InvalidOperationException("Seller schema exceeds 64 KiB.");
+                    bytes.Write(buffer, 0, count);
+                }
+                using var parsed = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions { MaxDepth = 32 });
+                document = parsed.RootElement.Clone();
+                documents.Add(url.AbsoluteUri, document);
+            }
+            result.Add(SupplierFormats.Build(mediaType, direction, document, descriptor.GetProperty("definition").GetString()!));
+        }
+        return result;
+    }
+
+    public Part CreatePart(SupplierBinding supplier, string text, string? dataJson, string? mediaType)
+    {
+        if (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage)
+        {
+            if (dataJson is not null || mediaType is not (null or "text/plain"))
+                throw new InvalidOperationException("NaturalLanguage mode permits only text/plain; do not send JSON data.");
+            if (!supplier.InputModes.Contains("text/plain") || string.IsNullOrWhiteSpace(text))
+                throw new InvalidOperationException("Seller must accept a nonempty text/plain message.");
+            return new Part { Text = text, MediaType = "text/plain" };
+        }
+        if (dataJson is null || mediaType is null)
+            throw new InvalidOperationException("Structured mode requires dataJson and an understood advertised mediaType.");
+        if (!supplier.InputModes.Contains(mediaType))
+            throw new InvalidOperationException("Seller does not advertise this input mediaType.");
+        var format = supplier.Formats.SingleOrDefault(item => item.Direction == "input" && item.MediaType == mediaType)
+            ?? throw new InvalidOperationException("No understood seller input schema/codec for this mediaType.");
+        using var data = JsonDocument.Parse(dataJson);
+        return new Part { Data = SupplierFormats.Validate(format, data.RootElement,
+            options.CommunicationMode == SupplierCommunicationMode.Native), MediaType = mediaType };
+    }
+
+    private void ValidateOutputs(SupplierBinding supplier, IEnumerable<Part> parts)
+    {
+        foreach (var part in parts)
+        {
+            if (part.Text is not null)
+            {
+                if (part.MediaType is not (null or "text/plain")) throw new InvalidOperationException("Unknown seller text type.");
+                continue;
+            }
+            if (part.Data is not { } data) throw new InvalidOperationException("Unsupported seller output part.");
+            if (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage)
+            {
+                throw new InvalidOperationException("NaturalLanguage mode accepts only text/plain seller replies.");
+            }
+            var format = supplier.Formats.SingleOrDefault(item => item.Direction == "output" && item.MediaType == part.MediaType)
+                ?? throw new InvalidOperationException("Seller output has no understood schema/codec.");
+            SupplierFormats.Validate(format, data, options.CommunicationMode == SupplierCommunicationMode.Native);
+        }
     }
 
     public async Task<AgentCard> ResolveCardAsync(Uri cardUrl, CancellationToken cancellationToken)
@@ -54,11 +186,27 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         using var client = new A2AClient(supplier.Endpoint, httpClient);
         try
         {
+            message.Metadata ??= new();
+            message.Metadata.TryAdd(MessageInferenceCounter.MetadataKey, JsonSerializer.SerializeToElement(0));
+            if (message.Parts.Count == 0 || options.CommunicationMode != SupplierCommunicationMode.NaturalLanguage && message.Parts.Count != 1)
+                throw new InvalidOperationException("Send a nonempty natural-language message or exactly one understood typed data part.");
+            foreach (var part in message.Parts)
+            {
+                if (part.ContentCase is not (PartContentCase.Text or PartContentCase.Data))
+                    throw new InvalidOperationException("Unsupported outbound part type.");
+                CreatePart(supplier, part.Text ?? "", part.Data?.GetRawText(), part.MediaType);
+            }
             var response = await client.SendMessageAsync(new SendMessageRequest
             {
                 Message = message,
-                Configuration = new SendMessageConfiguration { ReturnImmediately = true }
+                Configuration = new SendMessageConfiguration { ReturnImmediately = true,
+                    AcceptedOutputModes = (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage
+                        ? new[] { "text/plain" }
+                        : supplier.Formats.Where(format => format.Direction == "output").Select(format => format.MediaType)
+                            .Append("text/plain").Distinct()).ToList() }
             }, cancellationToken);
+            ValidateOutputs(supplier, (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
+                .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
             activity?.SetTag("agentcon.a2a.task.id", response.Task?.Id);
             activity?.SetTag("agentcon.a2a.context.id", response.Task?.ContextId);
             if (response.Task?.Status.State is TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
@@ -75,7 +223,9 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     public async Task<AgentTask> GetTaskAsync(SupplierBinding supplier, string taskId, CancellationToken cancellationToken)
     {
         using var client = new A2AClient(supplier.Endpoint, httpClient);
-        return await client.GetTaskAsync(new GetTaskRequest { Id = taskId }, cancellationToken);
+        var task = await client.GetTaskAsync(new GetTaskRequest { Id = taskId }, cancellationToken);
+        ValidateOutputs(supplier, (task.Artifacts ?? []).SelectMany(artifact => artifact.Parts).Concat(task.Status.Message?.Parts ?? []));
+        return task;
     }
 
     public Uri SelectEndpoint(AgentCard card, Uri cardUrl)
@@ -147,32 +297,23 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
     });
 
     public Task<string> SendAsync(
-        string text, string? dataJson = null, string? taskId = null, string? contextId = null, string? supplierIdentifier = null) => ExecuteAsync("send_supplier_message", async () =>
+        string text = "", string? dataJson = null, string? taskId = null, string? contextId = null, string? supplierIdentifier = null,
+        string? mediaType = null) => ExecuteAsync("send_supplier_message", async () =>
     {
+        if (turn.PriceApprovalRequired)
+            throw new InvalidOperationException("Price assessment requires caller input. Do not send an order in this turn.");
         if (string.IsNullOrWhiteSpace(text) && dataJson is null)
         {
             throw new ArgumentException("Provide text or a structured JSON data part.");
         }
-        var supplier = ResolveDestination(taskId, contextId, supplierIdentifier);
-        var parts = new List<Part>();
-        if (!string.IsNullOrWhiteSpace(text))
-        {
-            parts.Add(Part.FromText(text));
-        }
-        if (dataJson is not null)
-        {
-            using var document = JsonDocument.Parse(dataJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                throw new ArgumentException("The supplier data part must be a JSON object.");
-            }
-            parts.Add(Part.FromData(document.RootElement.Clone()));
-        }
+        var supplier = await gateway.RefreshModeAsync(ResolveDestination(taskId, contextId, supplierIdentifier), turnCancellation);
+        var parts = new List<Part> { gateway.CreatePart(supplier, text, dataJson, mediaType) };
         var response = await gateway.SendAsync(supplier, new Message
         {
             MessageId = Guid.NewGuid().ToString("N"),
             Role = Role.User,
             Parts = parts,
+            Metadata = new() { [MessageInferenceCounter.MetadataKey] = JsonSerializer.SerializeToElement(turn.Inference.SinceLastMessage()) },
             TaskId = taskId,
             ContextId = contextId
         }, turnCancellation);
@@ -186,7 +327,8 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
 
     public Task<string> GetTaskAsync(string taskId, string? supplierIdentifier = null) => ExecuteAsync("get_supplier_task", async () =>
     {
-        var supplier = turn.Conversation.SupplierTasks.Resolve(taskId, supplierIdentifier, "task");
+        var supplier = await gateway.RefreshModeAsync(
+            turn.Conversation.SupplierTasks.Resolve(taskId, supplierIdentifier, "task"), turnCancellation);
         var task = await gateway.GetTaskAsync(supplier, taskId, turnCancellation);
         Capture(supplier, new SendMessageResponse { Task = task });
         return JsonSerializer.Serialize(new
@@ -196,12 +338,58 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
         }, JsonOptions);
     });
 
+    public Task<string> AssessQuoteAsync(string quoteId, decimal? maxTotalUsd = null) => ExecuteAsync("assess_supplier_quote", () =>
+    {
+        var parts = turn.SupplierResponses.SelectMany(response =>
+            (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
+                .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? [])).ToArray();
+        var dataQuote = parts.Where(part => part.Data is not null).Select(part => part.Data!.Value)
+            .FirstOrDefault(data => data.ValueKind == JsonValueKind.Object && data.TryGetProperty("quoteId", out var id) &&
+                id.GetString() == quoteId);
+        object assessment;
+        if (dataQuote.ValueKind != JsonValueKind.Undefined)
+        {
+            assessment = gateway.AssessPrice(dataQuote.GetProperty("wine").GetString()!,
+                decimal.ToInt32(dataQuote.GetProperty("vintage").GetDecimal()),
+                dataQuote.GetProperty("currency").GetString()!,
+                decimal.ToInt32(dataQuote.GetProperty("cases").GetDecimal()),
+                decimal.ToInt32(dataQuote.GetProperty("bottlesPerCase").GetDecimal()),
+                dataQuote.GetProperty("casePriceMinor").GetDecimal(), dataQuote.GetProperty("deliveryMinor").GetDecimal(),
+                dataQuote.GetProperty("totalMinor").GetDecimal(), maxTotalUsd);
+        }
+        else
+        {
+            var text = parts.Select(part => part.Text).FirstOrDefault(text =>
+                !string.IsNullOrWhiteSpace(quoteId) && text?.Contains($"Quote {quoteId}:", StringComparison.Ordinal) == true);
+            if (text is null)
+                throw new InvalidOperationException("Inspect the supplier quote in this turn before assessing its price; do not invent a quote ID.");
+            var match = System.Text.RegularExpressions.Regex.Match(text,
+                @"^Quote [^:]+: (?<cases>\d+) cases of (?<vintage>\d{4}) (?<wine>[^()]+) \((?<bottles>\d+) bottles/case\) to .+?\. (?<currency>[A-Z]{3}) (?<case>\d+\.\d{2})/case \+ \k<currency> (?<delivery>\d+\.\d{2}) demo delivery = \k<currency> (?<total>\d+\.\d{2})\.",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            if (!match.Success)
+                assessment = new { withinBallpark = false, reason = "Cannot verify this text quote's pricing. Ask the caller; do not order." };
+            else
+            {
+                decimal Amount(string group) => decimal.Parse(match.Groups[group].Value, System.Globalization.CultureInfo.InvariantCulture);
+                assessment = gateway.AssessPrice(match.Groups["wine"].Value.Trim(), (int)Amount("vintage"),
+                    match.Groups["currency"].Value, (int)Amount("cases"), (int)Amount("bottles"),
+                    Amount("case") * 100, Amount("delivery") * 100, Amount("total") * 100, maxTotalUsd);
+            }
+        }
+        turn.QuoteAssessments.Add(new { quoteId, assessment });
+        turn.PriceApprovalRequired = !JsonSerializer.SerializeToElement(assessment).GetProperty("withinBallpark").GetBoolean();
+        return Task.FromResult(JsonSerializer.Serialize(assessment, JsonOptions));
+    });
+
     private SupplierBinding ResolveDestination(string? taskId, string? contextId, string? supplierIdentifier)
     {
         var conversation = turn.Conversation;
         if (taskId is not null)
         {
             var owner = conversation.SupplierTasks.Resolve(taskId, supplierIdentifier, "task");
+            if (conversation.SupplierTaskStates.TryGetValue((owner.Identifier, taskId), out var state) &&
+                state is TaskState.Completed or TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
+                throw new InvalidOperationException("Seller task is terminal. Start a new task by omitting taskId; retain its contextId to use the quote.");
             if (contextId is not null && !conversation.SupplierContexts.IsOwnedBy(contextId, owner))
             {
                 throw new InvalidOperationException("The supplier context does not belong to the supplier that owns this task.");
@@ -246,6 +434,7 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
         turn.SupplierResponses.Add(response);
         if (response.Task is { } task)
         {
+            turn.Conversation.SupplierTaskStates[(supplier.Identifier, task.Id)] = task.Status.State;
             turn.Conversation.SupplierTasks.Add(task.Id, supplier);
             if (!string.IsNullOrEmpty(task.ContextId))
             {

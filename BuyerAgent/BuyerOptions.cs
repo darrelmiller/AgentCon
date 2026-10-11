@@ -2,6 +2,8 @@ using System.Reflection;
 
 namespace BuyerAgent;
 
+public enum SupplierCommunicationMode { NaturalLanguage, LearnStructures, Native }
+
 public sealed class BuyerOptions
 {
     public const string SectionName = "Buyer";
@@ -11,8 +13,23 @@ public sealed class BuyerOptions
     /// <summary>AI Catalog location: absolute or relative local path, file URI, or HTTP(S) URL. Defaults to the repository catalog.json.</summary>
     public string? CatalogUrl { get; set; }
     public bool AllowInsecureSupplierHttp { get; set; }
+    public bool ExchangeCaptureEnabled { get; set; }
+    private int _communicationMode;
+    public SupplierCommunicationMode CommunicationMode
+    {
+        get => (SupplierCommunicationMode)Volatile.Read(ref _communicationMode);
+        set => Volatile.Write(ref _communicationMode, (int)value);
+    }
+    public BuyerOptions WithMode(SupplierCommunicationMode mode)
+    {
+        var snapshot = (BuyerOptions)MemberwiseClone();
+        snapshot.CommunicationMode = mode;
+        return snapshot;
+    }
     public int RequestTimeoutSeconds { get; set; } = 120;
     public int MaxConversations { get; set; } = 32;
+    public decimal DemoMinBottlePriceUsd { get; set; } = 8;
+    public decimal DemoMaxBottlePriceUsd { get; set; } = 30;
     public string CopilotStateDirectory { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentConDemo", "buyer-copilot");
 
@@ -22,6 +39,11 @@ public sealed class BuyerOptions
 
     public void Validate()
     {
+        if (!Enum.IsDefined(CommunicationMode))
+            throw new InvalidOperationException("Buyer:CommunicationMode must be NaturalLanguage, LearnStructures, or Native.");
+        if (DemoMinBottlePriceUsd <= 0 || DemoMaxBottlePriceUsd < DemoMinBottlePriceUsd ||
+            DemoMaxBottlePriceUsd > 10000)
+            throw new InvalidOperationException("Configure a positive, ordered demo bottle-price range of at most USD 10000.");
         if (!Uri.TryCreate(ListenUrl, UriKind.Absolute, out var listen) ||
             listen.Scheme != Uri.UriSchemeHttp || !listen.IsLoopback ||
             listen.AbsolutePath != "/" || listen.Query.Length > 0 || listen.UserInfo.Length > 0)

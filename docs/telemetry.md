@@ -1,6 +1,13 @@
 # AgentCon OTLP tracing and Aspire
 
 Both services export OpenTelemetry **traces** (not metrics or application logs).
+For an opt-in payload viewer, see the buyer's
+[live exchange dashboard](../BuyerAgent/README.md#live-exchange-dashboard).
+It captures A2A wire bodies separately in local memory, never in trace attributes.
+The viewer also shows `agentcon.llmCalls` message metadata, based on actual SDK
+assistant-turn/retry events. These per-message counts are separate from token
+usage (which remains sourced only from SDK usage events). Structured seller
+replies report zero; the Copilot-powered buyer still uses inference.
 Default resource `service.name` values are `agentcon-buyer` and
 `agentcon-supplier`; `OTEL_SERVICE_NAME` overrides each independently.
 `service.version` comes from the .NET assembly informational version and Rust
@@ -19,8 +26,11 @@ aspire dashboard run
 
 UI defaults to `http://localhost:18888`, OTLP gRPC to `http://localhost:4317`,
 OTLP HTTP to `http://localhost:4318`. Open the token-bearing login URL printed
-by the CLI. Keep authentication and loopback binding enabled. No dashboard was
-started as part of this implementation; Docker was unavailable on this machine.
+by the CLI. Keep UI token authentication and loopback binding enabled. The
+standalone CLI dashboard was run and verified on Windows ARM64 without Docker.
+Its default OTLP receiver is unauthenticated (the UI displays a warning);
+do not expose these ports to other machines. Tokens are ephemeral and must not
+be committed.
 
 Where Docker is available, the equivalent container mappings are:
 
@@ -69,15 +79,32 @@ SDK/exporter warnings go to stderr through the tracing subscriber. Invalid
 exporter configuration is not silently ignored. Graceful application shutdown
 flushes traces; forcibly terminating a process cannot guarantee delivery.
 
-Start only new/approved service processes:
+Start only new/approved service processes. To leave existing demo services at
+5100/6000 untouched, create an isolated catalog for 5101/6001:
 
 ```powershell
-dotnet run --project BuyerAgent\BuyerAgent.csproj --artifacts-path .\artifacts\otel-dotnet
+$catalog = Get-Content .\catalog.json -Raw | ConvertFrom-Json
+($catalog.entries | Where-Object identifier -eq 'urn:agentcon:agent:buyer').url = 'http://localhost:5101/.well-known/agent-card.json'
+($catalog.entries | Where-Object identifier -eq 'urn:agentcon:agent:demo-wine-supplier').url = 'http://localhost:6001/.well-known/agent-card.json'
+$catalogPath = Join-Path $env:TEMP 'agentcon-otel-catalog.json'
+$catalog | ConvertTo-Json -Depth 10 | Set-Content $catalogPath
+
+# Buyer terminal (with the OTLP environment above):
+dotnet run --project BuyerAgent\BuyerAgent.csproj --artifacts-path .\artifacts\otel-dotnet -- `
+  --Buyer:ListenUrl=http://localhost:5101 --Buyer:CatalogUrl="$catalogPath" `
+  --Buyer:CopilotStateDirectory="$env:LOCALAPPDATA\AgentConDemo\otel-buyer"
+
+# Supplier terminal (with the OTLP environment above):
 & $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --locked'
+$env:SUPPLIER_PORT = '6001'
+$env:SUPPLIER_COPILOT_STATE = "$env:LOCALAPPDATA\AgentConDemo\otel-supplier"
 .\SupplierAgent\target\debug\agentcon-supplier.exe
 ```
 
-No existing live buyer/supplier was restarted or changed by this work.
+Existing live services at 5100/6000 and their worktrees were not changed.
+The isolated service processes and dashboard remain attached to this session,
+not detached system services. Check readiness with `curl.exe --noproxy '*'
+http://localhost:5101/health` and the equivalent supplier URL.
 
 ## Span conventions and privacy
 
@@ -114,7 +141,10 @@ capture. This implementation **disables that CLI exporter explicitly**
 (`COPILOT_OTEL_ENABLED=false`, capture=false) to avoid duplicate spans,
 separate uncorrelated service traces, and accidental inherited content capture.
 It instead consumes their real `assistant.usage` events. No SDK version was
-changed.
+changed. The .NET SDK **replaces** a supplied child environment, so the buyer
+copies its inherited environment before setting these two overrides; otherwise
+authentication and runtime settings disappear. Credentials remain process
+environment values, never trace attributes or configuration files.
 
 Each usage event yields one chat observation with the SDK-reported model,
 timestamp and API-call duration when available. Token/cache/reasoning counts are
@@ -147,6 +177,11 @@ The executor explicitly extracts that context and instruments its future:
 work completing after an immediate HTTP response retains the same trace and
 server parent. No prompts or modified A2A message metadata are needed.
 .NET tools similarly capture the parent explicitly for SDK callback tasks.
+Rust SDK startup runs in a detached, non-exported `agentcon_runtime` tracing
+scope. Its long-lived background readers must not retain the first request's
+agent span; session interpretation itself remains in the request trace. A
+regression test retains a simulated runtime reader span and asserts the agent
+span is still exported before runtime shutdown.
 
 Cancellation marks interrupted execution as an error (`error.type=canceled`);
 Rust's dropped executor future schedules an explicitly parented abort/disconnect
@@ -155,11 +190,11 @@ Cleanup failures are logged. .NET timeouts abort the SDK session before disposal
 
 ## Validation without a live dashboard
 
-Build the **test-only ephemeral** Rust fixture, then test:
+Build the ephemeral Rust fixture, then test:
 
 ```powershell
 & $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc test --manifest-path SupplierAgent\Cargo.toml --locked --quiet && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --example trace_fixture --locked --quiet'
-dotnet test BuyerAgent.Tests\BuyerAgent.Tests.csproj --artifacts-path .\artifacts\otel-dotnet --filter 'FullyQualifiedName~TelemetryTests|FullyQualifiedName~OtlpIntegrationTests'
+dotnet test BuyerAgent.Tests\BuyerAgent.Tests.csproj --artifacts-path .\artifacts\otel-dotnet
 ```
 
 The cross-language test uses the **real .NET A2A client/SupplierGateway** and
@@ -170,12 +205,34 @@ doesn't call Copilot or touch existing listeners. In-memory tests additionally
 assert error statuses, tool callback parenting, real-event usage mappings,
 and absence of chat/token spans for structured requests.
 
-Live Copilot event delivery and Aspire rendering remain a separate runtime
-smoke check after an approved restart/dashboard startup. The tests verify
-event mapping with fixtures, not authenticated live inference.
+The full suites passed: **77 .NET tests and 5 Rust tests**. Repository catalog
+tests now assert the integrated `urn:agentcon:agent:demo-wine-supplier` candidate,
+its live card URL and buyer self-exclusion, without fetching the supplier card.
 
-The current full buyer suite has two pre-existing stale expectations:
-`RepositoryCatalogIsTheDefaultAndContainsNoSupplier` and
-`ProductionServicesResolveCatalogBackedSupplierTools` assert an empty supplier
-catalog despite the integrated `urn:agentcon:agent:demo-wine-supplier` entry.
-The tracing change does not modify that catalog or these unrelated assertions.
+## Live runtime verification
+
+Authenticated SDK inference and the standalone Aspire UI were additionally
+verified on 2026-10-10, using the isolated ports and a session-local catalog.
+Select **Traces** in the dashboard. These opaque trace IDs identify the smoke
+checks while this dashboard process is alive:
+
+| Trace ID | Verified result |
+| --- | --- |
+| `22222222222222222222222222222222` | Buyer SDK chat observation with real model, input/output/cache/reasoning usage and finish reason; no content events |
+| `33333333333333333333333333333333` | 19 spans, two services: buyer catalog/tools -> HTTP -> Rust agent -> structured business quote; USD 1753.00; supplier inference attempts unchanged at zero |
+| `66666666666666666666666666666666` | 21 spans, two services, depth 10: natural-language buyer -> supplier quote, including both agent spans, real chat observations in both languages and supplier business work |
+
+The structured trace contains **buyer** chat spans: it is zero supplier
+inference, not an end-to-end zero-inference transaction. Natural-language
+supplier usage was verified from the real Rust SDK subscription, not fixture
+data. SDK-reported counts alone populate token attributes; no prompts,
+completions, tool payloads or credentials appear in these trace attributes or
+events. Initial failed/superseded smoke traces may remain in the in-memory
+dashboard; use the successful IDs above.
+
+The automated cross-language test additionally exercises the SDK's
+return-immediately/background-executor path and checks exact trace and parent
+IDs from actual OTLP exports. A wrapper span or health counter is not proof of
+provider request counts. Failed inference without usage has no fabricated chat
+span. OID4VP, SLIM, real purchasing and production telemetry retention remain
+outside this demo's implemented scope.

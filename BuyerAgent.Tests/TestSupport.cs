@@ -13,6 +13,7 @@ internal sealed class FakeNetwork : HttpMessageHandler
     private readonly Dictionary<string, Func<HttpResponseMessage>> _documents = new(StringComparer.Ordinal);
     public List<(Uri Uri, string? Method, Message? Message)> Requests { get; } = [];
     public string? SharedTaskId { get; set; }
+    public List<SendMessageConfiguration> Configurations { get; } = [];
 
     public FakeNetwork Document(string url, object value) => Route(url, () => Json(value));
 
@@ -31,6 +32,8 @@ internal sealed class FakeNetwork : HttpMessageHandler
     {
         var card = BuyerCard.Create(new BuyerOptions { ListenUrl = $"http://localhost:{port}" });
         card.Name = name;
+        card.DefaultInputModes = ["text/plain", SupplierFormats.Rfq, SupplierFormats.Purchase];
+        card.DefaultOutputModes = ["text/plain", SupplierFormats.Quote, SupplierFormats.Receipt];
         return Document($"http://localhost:{port}/.well-known/agent-card.json", card);
     }
 
@@ -56,6 +59,7 @@ internal sealed class FakeNetwork : HttpMessageHandler
             var send = rpc.RootElement.GetProperty("params").Deserialize<SendMessageRequest>(A2AJsonUtilities.DefaultOptions)!;
             Requests.Add((uri, method, send.Message));
             Assert.True(send.Configuration!.ReturnImmediately);
+            Configurations.Add(send.Configuration);
             return Json(new
             {
                 jsonrpc = "2.0",

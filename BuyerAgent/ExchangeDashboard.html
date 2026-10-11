@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentCon - live A2A exchanges</title>
+<script nonce="{{NONCE}}">
+(() => {
+  const param = new URLSearchParams(window.location.search).get("scoutTheme");
+  const theme =
+    param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", theme);
+})();
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --cp-bg: #f7f4ef;
+  --cp-bg-elevated: #fcfbf8;
+  --cp-surface: #ffffff;
+  --cp-surface-soft: #f5f5f5;
+  --cp-border: #dedede;
+  --cp-border-strong: #919191;
+  --cp-text: #242424;
+  --cp-text-muted: #5c5c5c;
+  --cp-text-soft: #6f6f6f;
+  --cp-accent: #b11f4b;
+  --cp-accent-hover: #9a1a41;
+  --cp-accent-soft: rgba(177, 31, 75, 0.08);
+  --cp-accent-fg: #ffffff;
+  --cp-success: #16a34a;
+  --cp-danger: #dc2626;
+  --cp-warning: #f59e0b;
+  --cp-link: #0078d4;
+  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+  --cp-overlay: rgba(255, 255, 255, 0.8);
+  --cp-panel: rgba(255, 255, 255, 0.86);
+  --cp-panel-strong: rgba(255, 255, 255, 0.96);
+  --cp-sheen: rgba(255, 255, 255, 0.55);
+  --cp-highlight: rgba(177, 31, 75, 0.12);
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --cp-bg: #3d3b3a;
+  --cp-bg-elevated: #343231;
+  --cp-surface: #292929;
+  --cp-surface-soft: #2e2e2e;
+  --cp-border: #474747;
+  --cp-border-strong: #5f5f5f;
+  --cp-text: #dedede;
+  --cp-text-muted: #919191;
+  --cp-text-soft: #b0b0b0;
+  --cp-accent: #fd8ea1;
+  --cp-accent-hover: #fb7b91;
+  --cp-accent-soft: rgba(253, 142, 161, 0.14);
+  --cp-accent-fg: #1a1a1a;
+  --cp-success: #4ade80;
+  --cp-danger: #f87171;
+  --cp-warning: #fbbf24;
+  --cp-link: #4da6ff;
+  --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+  --cp-overlay: rgba(41, 41, 41, 0.88);
+  --cp-panel: rgba(41, 41, 41, 0.72);
+  --cp-panel-strong: rgba(41, 41, 41, 0.96);
+  --cp-sheen: rgba(255, 255, 255, 0.04);
+  --cp-highlight: rgba(253, 142, 161, 0.12);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font: 15px/1.5 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
+main { max-width: 1600px; margin: auto; padding: 24px; }
+header, .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 28px; margin: 0; } h2 { font-size: 18px; margin: 0 0 12px; } h3 { font-size: 14px; margin: 16px 0 8px; }
+p { margin: 8px 0; } .muted, small { color: var(--cp-text-muted); } .eyebrow { color: var(--cp-accent); font-weight: 600; letter-spacing: 1px; font-size: 12px; }
+button, select { font: inherit; border: 1px solid var(--cp-border); border-radius: .625rem; background: var(--cp-surface); color: var(--cp-text); padding: 8px 12px; }
+button { cursor: pointer; } button:hover { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
+button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 3px; }
+button[aria-pressed="true"], .selected { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
+button:disabled { cursor: wait; opacity: .65; }
+.notice { padding: 12px 16px; margin: 16px 0; border: 1px solid var(--cp-border); border-left: 4px solid var(--cp-warning); border-radius: .625rem; background: var(--cp-bg-elevated); }
+.error { color: var(--cp-danger); } .ready { color: var(--cp-success); } .busy { color: var(--cp-accent); }
+.layout { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(360px, 2.5fr) minmax(220px, 1fr); gap: 20px; align-items: start; }
+.card { border: 1px solid var(--cp-border); border-radius: 16px; padding: 20px; background: var(--cp-surface); min-width: 0; }
+.agent-icon { width: 56px; height: 56px; display: grid; place-items: center; border: 1px solid var(--cp-border); border-radius: 16px; background: var(--cp-accent-soft); color: var(--cp-accent); font-weight: bold; margin-bottom: 12px; }
+.agent-card-button { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; margin-bottom: 12px; }
+.agent-card-button .agent-icon { margin: 0; flex-shrink: 0; }
+.agent-card-button strong, .agent-card-button small { display: block; }
+dialog { width: min(900px, calc(100vw - 40px)); max-height: calc(100vh - 40px); box-sizing: border-box; overflow: auto; padding: 20px; background: var(--cp-surface); color: var(--cp-text); border: 1px solid var(--cp-border); border-radius: 16px; }
+dialog::backdrop { background: var(--cp-overlay); }
+dialog pre { max-height: 60vh; }
+.endpoint, code, pre { font-family: Consolas, "Courier New", Courier, monospace; overflow-wrap: anywhere; }
+.endpoint { font-size: 12px; }
+.lanes { display: grid; gap: 20px; }
+.lane-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.direction { color: var(--cp-accent); font-size: 24px; }
+.messages { max-height: 580px; overflow-y: auto; display: grid; gap: 12px; padding: 4px; }
+.message { text-align: left; width: 100%; min-width: 0; overflow: hidden; display: block; padding: 12px; }
+.message.outgoing { width: 92%; margin-right: auto; border-left: 4px solid var(--cp-accent); }
+.message.incoming { width: 92%; margin-left: auto; border-right: 4px solid var(--cp-border-strong); }
+.message .preview { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message small { display: block; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: .625rem; background: var(--cp-surface-soft); border: 1px solid var(--cp-border); }
+.task { padding: 8px 0; border-top: 1px solid var(--cp-border); overflow-wrap: anywhere; } .task code { display: block; font-size: 12px; }
+.task small { display: block; }
+.task-list { max-height: 340px; overflow-y: auto; }
+.inspector { margin-top: 20px; }
+.inspector-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.parts { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+pre { white-space: pre-wrap; background: var(--cp-surface-soft); border: 1px solid var(--cp-border); border-radius: .625rem; padding: 16px; max-height: 420px; overflow: auto; margin: 12px 0 0; font-size: 13px; }
+.metadata { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; font-size: 12px; }
+a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; }
+.empty { padding: 20px 8px; color: var(--cp-text-muted); text-align: center; }
+@media (max-width: 950px) { .layout { grid-template-columns: 1fr 1fr; } .lanes { grid-column: 1 / -1; grid-row: 2; } }
+@media (max-width: 600px) { main { padding: 12px; } .layout { grid-template-columns: 1fr; } .lanes { grid-row: auto; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><div class="eyebrow">AGENTCON / LIVE A2A</div><h1>Between the agents</h1><p class="muted">Actual supplier exchanges, not model-generated summaries.</p></div>
+    <div class="row"><span id="connection" role="status">Connecting...</span><button id="pause">Pause view</button><button id="clear">Clear captured content</button></div>
+  </header>
+  <div class="notice"><strong>Demo content capture is ON.</strong> Message bodies may contain sensitive information. Local, in-memory only; no headers, internal Copilot prompts, or content export to OTEL. <span id="limits"></span></div>
+  <div id="problem" class="error" role="alert"></div>
+  <div class="layout">
+    <section class="card" aria-labelledby="buyer-title">
+      <h2 id="buyer-title"><button id="buyer-card" class="agent-card-button" aria-haspopup="dialog"><span class="agent-icon" aria-hidden="true">B</span><span><strong>Buyer Agent</strong><small>View Agent Card</small></span></button></h2>
+      <div id="buyer-endpoint" class="endpoint"></div><p id="buyer-status"></p>
+      <label for="buyer-mode">Communication mode</label>
+      <select id="buyer-mode">
+        <option>NaturalLanguage</option><option>LearnStructures</option><option>Native</option>
+      </select>
+      <small>Applies to new turns. Active turns keep their mode.</small>
+      <small>Readiness is HTTP availability, not proof of Copilot authentication.</small>
+      <h3 id="buyer-task-heading">Buyer tasks</h3><div id="buyer-tasks" class="task-list"></div>
+    </section>
+    <div class="lanes">
+      <section class="card" aria-labelledby="conversation-title">
+        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span class="muted">Oldest to newest</span></div>
+        <div id="conversation" class="messages"></div>
+      </section>
+    </div>
+    <section class="card" aria-labelledby="seller-title">
+      <h2 id="seller-title"><button id="seller-card" class="agent-card-button" aria-haspopup="dialog" disabled><span class="agent-icon" aria-hidden="true">S</span><span><strong>Seller Agent</strong><small>View Agent Card</small></span></button></h2>
+      <select id="seller-select" aria-label="Catalog seller to view"></select>
+      <div id="seller-name"></div><div id="seller-endpoint" class="endpoint"></div><p id="seller-status"></p>
+      <small>Task states are the latest observed A2A responses, not automatic task polling.</small>
+      <h3 id="seller-task-heading">Seller tasks</h3><div id="seller-tasks" class="task-list"></div>
+    </section>
+  </div>
+  <section class="card inspector" aria-labelledby="inspector-title">
+    <div class="row"><h2 id="inspector-title">Message inspector</h2><div class="inspector-toolbar"><button id="content-tab" aria-pressed="true">Content &amp; artifacts</button><button id="raw-tab" aria-pressed="false">Raw wire body</button><button id="copy" disabled>Copy displayed content</button></div></div>
+    <p id="inspector-hint" class="muted">Click a sent message or seller reply above to inspect its content here.</p>
+    <div id="metadata" class="metadata"></div><div id="parts" class="parts"></div>
+    <pre id="payload" tabindex="0" aria-label="Selected message or artifact content">No message selected.</pre>
+  </section>
+</main>
+<dialog id="agent-card-dialog" aria-labelledby="agent-card-title">
+  <div class="row"><h2 id="agent-card-title">Agent Card</h2><button id="agent-card-close" autofocus>Close</button></div>
+  <p id="agent-card-source" class="endpoint"></p>
+  <p id="agent-card-status" role="status"></p>
+  <pre id="agent-card-json" tabindex="0" aria-label="Full Agent Card JSON"></pre>
+</dialog>
+<script nonce="{{NONCE}}">
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  let state, sellerOrigin = "", selected = null, partKey = "", raw = false, paused = false, rendered = "", generation;
+  let messageSignature = "", inspectorSignature = "", sellerSignature = "";
+  const pretty = value => typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const label = value => (value || "unknown").replace(/^TASK_STATE_/, "").replaceAll("_", " ").toLowerCase();
+  const active = value => /submitted|working|input_required|auth_required|continuation sent/i.test(value);
+  function node(tag, text, cls) {
+    const element = document.createElement(tag);
+    if (text !== undefined) element.textContent = text;
+    if (cls) element.className = cls;
+    return element;
+  }
+  function roots(body) {
+    try { return [JSON.parse(body)]; } catch {
+      const frames = body.replaceAll("\r\n", "\n").split("\n\n").slice(0, -1);
+      return frames.flatMap(frame => {
+        const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+        try { return [JSON.parse(data)]; } catch { return []; }
+      });
+    }
+  }
+  function contents(body) {
+    const parts = [];
+    function message(value, prefix) {
+      if (!Array.isArray(value?.parts)) return;
+      value.parts.forEach((part, index) => {
+        if (!part || typeof part !== "object") return;
+        const type = part.text !== undefined ? "Text" : part.data !== undefined ? "Data" : "File / other";
+        parts.push({ key: `${prefix}/${index}`, label: `${prefix}: ${type}${part.mediaType ? ` (${part.mediaType})` : ""}`,
+          value: part.text ?? part.data ?? part });
+      });
+    }
+    const events = roots(body);
+    events.forEach((root, index) => {
+      if (!root || typeof root !== "object") return;
+      const prefix = events.length > 1 ? `Event ${index + 1} ` : "";
+      message(root.params?.message, `${prefix}Message`);
+      const result = root.result;
+      const task = result?.task ?? (result?.status ? result : null);
+      message(result?.message, `${prefix}Message`);
+      message(task?.status?.message ?? result?.statusUpdate?.status?.message, `${prefix}Reply`);
+      const artifacts = task?.artifacts ?? (result?.artifactUpdate?.artifact ? [result.artifactUpdate.artifact] : []);
+      if (Array.isArray(artifacts)) artifacts.forEach((artifact, i) => message(artifact, `${prefix}Artifact ${i + 1}${artifact?.name ? ` - ${artifact.name}` : ""}`));
+      if (root.error) parts.push({ key: `${prefix}error`, label: `${prefix}JSON-RPC error`, value: root.error });
+    });
+    return parts;
+  }
+  function updateTasks(agent, origin) {
+    const tasks = (state?.capture.tasks || []).filter(task => task.agent === agent && (!origin || task.endpoint.startsWith(`${origin}/`)));
+    $(`${agent}-task-heading`).textContent = `${agent === "buyer" ? "Buyer" : "Seller"} tasks - ${tasks.filter(task => active(task.state)).length} active`;
+    const area = $(`${agent}-tasks`);
+    area.replaceChildren();
+    if (!tasks.length) area.append(node("p", "No tasks observed yet.", "muted"));
+    [...tasks].sort((a, b) => Number(active(b.state)) - Number(active(a.state)) || b.updatedAt.localeCompare(a.updatedAt)).forEach(task => {
+      const item = node("div", undefined, "task");
+      item.append(node("span", label(task.state), active(task.state) ? "busy" : ""), node("code", task.id),
+        node("small", `Context: ${task.contextId || "not reported"}`), node("small", `Observed ${new Date(task.updatedAt).toLocaleTimeString()}`));
+      area.append(item);
+    });
+  }
+  function renderMessages() {
+    const exchanges = (state?.capture.exchanges || []).filter(entry => !sellerOrigin || entry.endpoint.startsWith(`${sellerOrigin}/`));
+    const signature = JSON.stringify([exchanges, selected, sellerOrigin]);
+    if (signature === messageSignature) return;
+    messageSignature = signature;
+      const area = $("conversation");
+      const scroll = area.scrollTop;
+      const nearBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 60;
+      area.replaceChildren();
+      const events = exchanges.flatMap(entry => [
+        { entry, direction: "outgoing", time: entry.startedAt },
+        ...(entry.responseStartedAt || entry.errorType ? [{ entry, direction: "incoming", time: entry.responseStartedAt ?? entry.startedAt }] : [])
+      ]).sort((a, b) => a.time.localeCompare(b.time) || a.entry.id - b.entry.id || (a.direction === "outgoing" ? -1 : 1));
+      events.forEach(({ entry, direction, time }) => {
+        const response = direction === "incoming", body = response ? entry.response : entry.request;
+        if (!body && !response) return;
+        const button = node("button", undefined, `message ${direction}`);
+        button.dataset.exchange = entry.id;
+        button.dataset.direction = direction;
+        const chosen = selected?.id === entry.id && selected.direction === direction;
+        button.setAttribute("aria-pressed", String(chosen));
+        const root = roots(entry.request)[0];
+        button.append(node("strong", `${response ? "Seller → Buyer" : "Buyer → Seller"} · #${entry.id} ${root?.method || "A2A request"}`),
+          node("small", `${new Date(time).toLocaleTimeString()} - ${entry.status}${entry.httpStatus ? ` - HTTP ${entry.httpStatus}` : ""}`));
+        const allParts = contents(body);
+        const messages = roots(body).map(root => response
+          ? root.result?.task?.status?.message ?? root.result?.message ?? root.task?.status?.message ?? root.message ?? root.result?.task ?? root.task
+          : root.params?.message);
+        const calls = messages.map(message => message?.metadata?.["agentcon.llmCalls"])
+          .filter(value => Number.isInteger(value) && value >= 0);
+        const incomplete = messages.some(message => message?.metadata?.["agentcon.llmCallsComplete"] === false);
+        button.append(node("small", calls.length ? `LLM calls: ${calls.join(", ")}${incomplete ? " (incomplete SDK events)" : ""}` : "LLM calls: not reported", "muted"));
+        button.append(node("span", allParts.length ? pretty(allParts[0].value) : body || (entry.errorType ? `Transport error: ${entry.errorType}` : "Waiting for response..."), "preview"));
+        if (allParts.some(part => part.label.includes("Artifact"))) button.append(node("small", "Contains artifacts - click to inspect"));
+        if (response ? entry.responseTruncated : entry.requestTruncated) button.append(node("small", "TRUNCATED - capture limit reached", "error"));
+        button.addEventListener("click", () => { selected = { id: entry.id, direction }; partKey = ""; renderMessages(); inspect(); });
+        area.append(button);
+      });
+      if (!area.children.length) area.append(node("div", "No exchanges captured. Send a request to the buyer using your A2A client.", "empty"));
+      area.scrollTop = nearBottom ? area.scrollHeight : scroll;
+  }
+  function inspect() {
+    const entry = state?.capture.exchanges.find(item => item.id === selected?.id);
+    const signature = JSON.stringify([entry, selected, partKey, raw]);
+    if (signature === inspectorSignature) return;
+    inspectorSignature = signature;
+    $("metadata").replaceChildren(); $("parts").replaceChildren();
+    $("content-tab").setAttribute("aria-pressed", String(!raw));
+    $("raw-tab").setAttribute("aria-pressed", String(raw));
+    if (!entry) {
+      rendered = "No message selected."; $("payload").textContent = rendered; $("copy").disabled = true;
+      $("inspector-hint").textContent = selected ? "The selected exchange was cleared or evicted from the bounded capture." : "Click a sent message or seller reply above to inspect its content here.";
+      return;
+    }
+    $("copy").disabled = false;
+    const response = selected.direction === "incoming", body = response ? entry.response : entry.request;
+    const truncated = response ? entry.responseTruncated : entry.requestTruncated;
+    $("inspector-hint").textContent = `Exchange #${entry.id} - ${response ? "Seller to buyer" : "Buyer to seller"} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
+    $("metadata").append(node("code", entry.endpoint), node("span", `HTTP ${entry.httpStatus ?? "pending"}`));
+    if (entry.durationMs !== null) $("metadata").append(node("span", `${entry.durationMs.toFixed(1)} ms`));
+    if (entry.errorType) $("metadata").append(node("span", entry.errorType, "error"));
+    if (entry.traceId) {
+      const link = node("a", `Trace ${entry.traceId}`);
+      link.href = `http://localhost:18888/traces/detail/${encodeURIComponent(entry.traceId)}`;
+      link.target = "_blank"; link.rel = "noopener noreferrer";
+      $("metadata").append(link);
+    }
+    const parts = contents(body);
+    let part = parts.find(item => item.key === partKey) ?? parts[0];
+    if (!raw) {
+      parts.forEach(item => {
+        const button = node("button", item.label);
+        button.setAttribute("aria-pressed", String(item.key === part?.key));
+        button.addEventListener("click", () => { partKey = item.key; inspect(); });
+        $("parts").append(button);
+      });
+    }
+    if (raw) {
+      try { rendered = JSON.stringify(JSON.parse(body), null, 2); } catch { rendered = body || "No response body received."; }
+    } else rendered = part ? pretty(part.value) : body || "No message content received. Inspect the raw response for errors or task-only status.";
+    $("payload").textContent = rendered;
+  }
+  function render() {
+    if (generation !== undefined && generation !== state.capture.generation) { selected = null; partKey = ""; }
+    generation = state.capture.generation;
+    $("buyer-endpoint").textContent = `${state.buyer.origin}/a2a`;
+    const buyerActive = state.capture.tasks.filter(task => task.agent === "buyer" && active(task.state)).length;
+    $("buyer-status").textContent = `${state.buyer.status} - ${state.buyer.communicationMode || "NaturalLanguage"} - ${buyerActive} active tasks`;
+    $("buyer-status").className = buyerActive ? "busy" : "ready";
+    if (!$("buyer-mode").disabled) $("buyer-mode").value = state.buyer.communicationMode;
+    $("limits").textContent = `Last ${state.capture.maxExchanges} exchanges; ${state.capture.maxBodyBytes / 1024} KiB per body. ${state.capture.droppedExchanges} older exchanges evicted.`;
+    $("problem").textContent = [state.catalogError, ...state.warnings].filter(Boolean).join(" ");
+    const select = $("seller-select");
+    const sellers = state.sellers;
+    if (!sellers.some(seller => seller.origin === sellerOrigin)) sellerOrigin = sellers.length === 1 ? sellers[0].origin : "";
+    const optionsSignature = JSON.stringify(sellers.map(seller => [seller.origin, seller.identifier]));
+    if (optionsSignature !== sellerSignature) {
+      sellerSignature = optionsSignature;
+      select.replaceChildren();
+      if (sellers.length !== 1) {
+        const option = node("option", sellers.length ? "Choose a catalog seller" : "No seller in catalog");
+        option.value = ""; select.append(option);
+      }
+      sellers.forEach(seller => { const option = node("option", seller.identifier); option.value = seller.origin; select.append(option); });
+    }
+    select.value = sellerOrigin;
+    const seller = sellers.find(item => item.origin === sellerOrigin);
+    $("seller-card").disabled = !seller;
+    $("seller-name").textContent = seller?.name || "No seller selected for viewing";
+    $("seller-endpoint").textContent = seller?.origin || "";
+    const inflight = state.capture.exchanges.filter(entry => (!sellerOrigin || entry.endpoint.startsWith(`${sellerOrigin}/`)) &&
+      (entry.status === "sending" || entry.status === "receiving")).length;
+    $("seller-status").textContent = seller ? `${seller.status}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` - ${inflight} A2A request(s) in flight` : ""}` : "Unknown";
+    $("seller-status").className = seller?.status === "HTTP ready" ? (inflight ? "busy" : "ready") : "error";
+    updateTasks("buyer"); updateTasks("seller", sellerOrigin); renderMessages(); inspect();
+  }
+  async function refresh() {
+    if (!paused) {
+      try {
+        const response = await fetch("/demo/state", { cache: "no-store" });
+        if (!response.ok) throw new Error(`Dashboard returned HTTP ${response.status}`);
+        state = await response.json(); render();
+        $("connection").textContent = `Live - ${new Date(state.capturedAt).toLocaleTimeString()}`;
+        $("connection").className = "ready";
+      } catch (error) {
+        $("connection").textContent = "Disconnected - displayed data is stale";
+        $("connection").className = "error"; $("problem").textContent = error.message;
+        $("buyer-status").textContent = "Unreachable / stale"; $("buyer-status").className = "error";
+        $("seller-status").textContent = "Unknown - dashboard disconnected"; $("seller-status").className = "error";
+      }
+    }
+    window.setTimeout(refresh, 1500);
+  }
+  $("seller-select").addEventListener("change", () => { sellerOrigin = $("seller-select").value; selected = null; render(); });
+  let cardRequest;
+  async function showAgentCard(seller) {
+    cardRequest?.abort();
+    const request = new AbortController();
+    cardRequest = request;
+    $("agent-card-title").textContent = `${seller ? seller.name : "Buyer Agent"} - Agent Card`;
+    $("agent-card-source").textContent = seller ? seller.cardUrl : `${location.origin}/.well-known/agent-card.json`;
+    $("agent-card-json").textContent = "";
+    $("agent-card-status").textContent = "Loading current Agent Card...";
+    $("agent-card-status").className = "muted";
+    if (!$("agent-card-dialog").open) $("agent-card-dialog").showModal();
+    try {
+      const response = await fetch(`/demo/agent-card${seller ? `?identifier=${encodeURIComponent(seller.identifier)}` : ""}`,
+        { cache: "no-store", signal: request.signal });
+      const card = await response.json();
+      if (!response.ok) throw new Error(card.error || `Agent Card returned HTTP ${response.status}`);
+      if (cardRequest !== request || !$("agent-card-dialog").open) return;
+      $("agent-card-json").textContent = JSON.stringify(card, null, 2);
+      $("agent-card-status").textContent = "Full Agent Card fetched on opening. Close and reopen to refresh.";
+    } catch (error) {
+      if (request.signal.aborted) return;
+      $("agent-card-status").textContent = error.message;
+      $("agent-card-status").className = "error";
+    }
+  }
+  $("buyer-card").addEventListener("click", () => showAgentCard());
+  $("seller-card").addEventListener("click", () => {
+    const seller = state?.sellers.find(item => item.origin === sellerOrigin);
+    if (seller) showAgentCard(seller);
+  });
+  $("agent-card-close").addEventListener("click", () => $("agent-card-dialog").close());
+  $("agent-card-dialog").addEventListener("close", () => { cardRequest?.abort(); cardRequest = null; });
+  $("buyer-mode").addEventListener("change", async () => {
+    const control = $("buyer-mode");
+    control.disabled = true;
+    try {
+      const response = await fetch("/demo/mode", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: control.value }) });
+      if (!response.ok) throw new Error(`Mode change failed: HTTP ${response.status}`);
+      const result = await response.json();
+      if (state) { state.buyer.communicationMode = result.communicationMode; render(); }
+      $("problem").textContent = "";
+    } catch (error) {
+      $("problem").textContent = error.message;
+      if (state) control.value = state.buyer.communicationMode;
+    } finally { control.disabled = false; }
+  });
+  $("content-tab").addEventListener("click", () => { raw = false; inspect(); });
+  $("raw-tab").addEventListener("click", () => { raw = true; inspect(); });
+  $("copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(rendered); $("copy").textContent = "Copied"; }
+    catch { $("problem").textContent = "Clipboard unavailable. Select and copy the inspector text directly."; }
+    setTimeout(() => { $("copy").textContent = "Copy displayed content"; }, 1500);
+  });
+  $("pause").addEventListener("click", () => {
+    paused = !paused; $("pause").textContent = paused ? "Resume view" : "Pause view";
+    if (paused) { $("connection").textContent = "View paused - capture continues"; $("connection").className = "busy"; }
+  });
+  $("clear").addEventListener("click", async () => {
+    $("clear").disabled = true;
+    try {
+      const response = await fetch("/demo/clear", { method: "POST" });
+      if (!response.ok) throw new Error(`Clear failed: HTTP ${response.status}`);
+      selected = null; partKey = "";
+      if (state) { state.capture.exchanges = []; state.capture.tasks = []; renderMessages(); inspect(); updateTasks("buyer"); updateTasks("seller", sellerOrigin); }
+    } catch (error) { $("problem").textContent = error.message; }
+    finally { $("clear").disabled = false; }
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

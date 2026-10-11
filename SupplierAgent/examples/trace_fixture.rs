@@ -1,4 +1,4 @@
-//! Test-only ephemeral supplier, real A2A SDK, no Copilot process or inference.
+//! Ephemeral supplier fixture, real A2A SDK, no Copilot process or inference.
 use agentcon_supplier::{
     Supplier, app,
     inference::{Intent, Interpreter},
