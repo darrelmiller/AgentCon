@@ -5,7 +5,7 @@ namespace BuyerAgent;
 
 public sealed class BuyerHandler(
     IBuyerHarness harness, BuyerConversationStore conversations, BuyerOptions options, ILogger<BuyerHandler> logger,
-    ExchangeStore exchanges) : IAgentHandler
+    ExchangeStore exchanges, ITaskStore taskStore, ChannelEventNotifier notifier) : IAgentHandler
 {
     private readonly Dictionary<string, ActiveExecution> _activeTasks = new(StringComparer.Ordinal);
     private readonly object _activeLock = new();
@@ -20,6 +20,11 @@ public sealed class BuyerHandler(
         if (!context.IsContinuation)
         {
             await updater.SubmitAsync(cancellationToken: cancellationToken);
+        }
+        else
+        {
+            // preview2 materializes synchronous replies only after an initial Task event.
+            await eventQueue.EnqueueTaskAsync(context.Task!, cancellationToken);
         }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.RequestTimeoutSeconds));
@@ -62,6 +67,9 @@ public sealed class BuyerHandler(
                 message.Metadata ??= new();
                 foreach (var item in supplierTask.Status.Message?.Metadata ?? [])
                     message.Metadata[item.Key] = item.Value;
+                var instructions = SupplierAuthorization.Instructions(supplierTask);
+                message.Parts = [Part.FromText(instructions)];
+                reply = instructions;
                 await updater.RequireAuthAsync(message, cancellationToken: deadline.Token);
                 Observe("TASK_STATE_AUTH_REQUIRED");
             }
@@ -98,6 +106,22 @@ public sealed class BuyerHandler(
             }
             if (cancellationToken.IsCancellationRequested)
             {
+                // A disconnected synchronous caller stops the SDK event reader. Persist
+                // cancellation independently so GetTask cannot remain permanently working.
+                using (await notifier.AcquireTaskLockAsync(context.TaskId, CancellationToken.None))
+                {
+                    var stored = await taskStore.GetTaskAsync(context.TaskId, CancellationToken.None);
+                    if (stored is not null && stored.Status.State is TaskState.Submitted or TaskState.Working)
+                    {
+                        stored.Status = new A2A.TaskStatus
+                        {
+                            State = TaskState.Canceled,
+                            Message = CreateReply("Caller disconnected; buyer execution canceled. Inspect supplier tasks before retrying.", context),
+                            Timestamp = DateTimeOffset.UtcNow
+                        };
+                        await taskStore.SaveTaskAsync(context.TaskId, stored, CancellationToken.None);
+                    }
+                }
                 throw;
             }
             reply = "Buyer execution was canceled or exceeded its configured timeout. A supplier order may already have been accepted; inspect its task before retrying.";

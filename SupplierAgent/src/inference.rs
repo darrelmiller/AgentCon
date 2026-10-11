@@ -186,6 +186,9 @@ impl Interpreter for CopilotInterpreter {
                 "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT".into(),
                 "false".into(),
             ));
+            options
+                .env
+                .push(("SUPPLIER_VERIFIER_TOKEN".into(), "".into()));
             let client = Client::start(options)
                 .instrument(crate::telemetry::runtime_start())
                 .await

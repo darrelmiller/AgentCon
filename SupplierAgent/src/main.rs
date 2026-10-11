@@ -34,7 +34,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_dir,
         std::env::var("SUPPLIER_MODEL").unwrap_or_else(|_| "auto".into()),
     ));
-    let supplier = Arc::new(Supplier::new(interpreter.clone()));
+    let mut supplier = Supplier::new(interpreter.clone());
+    match (
+        std::env::var("SUPPLIER_VERIFIER_URL"),
+        std::env::var("SUPPLIER_VERIFIER_TOKEN"),
+    ) {
+        (Ok(origin), Ok(token)) => {
+            supplier = supplier.with_verifier(Arc::new(
+                agentcon_supplier::authorization::HttpVerifier::new(origin, token)?,
+            ));
+        }
+        (Err(std::env::VarError::NotPresent), Err(std::env::VarError::NotPresent)) => {
+            tracing::warn!(
+                "Purchase requests will remain auth-required: presentation verifier not configured"
+            );
+        }
+        _ => return Err("Set both SUPPLIER_VERIFIER_URL and SUPPLIER_VERIFIER_TOKEN.".into()),
+    }
+    let supplier = Arc::new(supplier);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let origin = format!("http://localhost:{port}");
     tracing::info!(%origin, pid = std::process::id(), "Wine supplier ready");

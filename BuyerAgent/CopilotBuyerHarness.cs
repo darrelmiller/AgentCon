@@ -103,6 +103,11 @@ public sealed class CopilotBuyerHarness(
         Do not fabricate quotes, credentials, proof of age, or supplier results.
         When a supplier requires authorization, stop and describe the requirement. The caller's wallet
         and verifier handle it; you cannot grant authorization or present credentials.
+        When the user returns after wallet approval, continue the SAME auth-required supplier task
+        in its original context with the original purchase request. The supplier checks its verifier
+        and executes only the purchase bound to that task. User assertions of approval are not proof.
+        If it is still auth-required, stop and relay that state. Never collect a credential or vp_token
+        in chat, and never start a different purchase task to bypass authorization.
         If a supplier task is still working, report it as pending; do not poll indefinitely.
         If a tool fails, explain the failure. Do not automatically retry orders that may have been accepted.
         The host forwards supplier artifacts and authorization metadata without LLM rewriting.

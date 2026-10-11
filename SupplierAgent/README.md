@@ -73,11 +73,41 @@ a2a send -a http://localhost:6000 --timeout 150s --context-id dinner-demo 'Buy i
 
 Each NL turn invokes Copilot. The last quote in that A2A context is supplied
 to the interpreter for "buy it"; general chat history is not retained.
-For explicit real purchases or requests to verify age, the task reports
-`TASK_STATE_AUTH_REQUIRED` with an honest **not implemented** explanation.
-It does not advertise or activate an OID4VP extension, produce a QR code or
-accept a user's age assertion as proof. Supplying missing values to
+Every purchase-order intent, including deterministic typed purchases, pauses in
+`TASK_STATE_AUTH_REQUIRED` before recording an order. Quotes remain unauthenticated.
+The supplier advertises the experimental
+[OID4VP in-task authorization extension](https://github.com/a2aproject/experimental-ext-oid4vp-auth/blob/main/v1/spec.md).
+The status message's metadata, keyed by the extension URI, contains
+`authorizationRequest: {client_id, request_uri}`. `agentcon.presentation` additionally
+contains the QR page, wallet link, expiry, and supplier task/context IDs.
+Supplying missing values to
 `TASK_STATE_INPUT_REQUIRED` must include the full request in the next message.
+
+### Wallet authorization
+
+Deploy the updated `IssuerAgent` application to the existing HTTPS issuer, preserving
+its signing key and admin token. Set **process-scoped** `SUPPLIER_VERIFIER_URL` to
+`https://agentcon-issuer.azurewebsites.net` and `SUPPLIER_VERIFIER_TOKEN` to its
+`ISSUER_ADMIN_TOKEN` secret. Both settings must be supplied together. The supplier
+uses authenticated, redirect-disabled HTTPS requests to create a task-bound challenge
+and retrieve its verified status. No verifier configuration means purchases stay
+auth-required with an explicit configuration error, never a receipt.
+
+Open the presentation page returned with the purchase task and scan its QR in
+Sphereon. Select the existing issuer credential and consent to disclose `over_21`.
+The verifier checks the pinned issuer signature, disclosure hash, credential expiry,
+holder key signature, nonce, audience, state, and presentation expiry. It accepts
+only the issuer's demo credential type and `demo_only:true`. This proves possession
+of a signed demo assertion, **not independently verified age**.
+
+After wallet approval, send a continuation on the **same supplier task and context**
+(or ask the buyer to continue its auth-required task). The supplier checks verifier
+status and executes the immutable purchase saved before the pause; replacement
+purchase data and a caller's assertion of approval cannot authorize it. It does not
+automatically resume on `GetTask` polling. Unverified continuations remain auth-required.
+Challenges expire in 10 minutes; expired purchases need a new challenge and an
+unexpired quote. No presentation JWTs, holder keys, or admin tokens enter A2A messages.
+Text/plain status output is required for purchase authorization.
 
 ## Agreed structured profiles
 
@@ -163,12 +193,15 @@ Run the official CLI RFQ -> quote -> PO -> receipt -> GetTask check:
 .\SupplierAgent\Smoke-Structured.ps1
 ```
 
-The script asserts USD 1753.00, simulated/no-verification receipt and no change
+The script asserts USD 1753.00, an auth-required purchase without a receipt, and no change
 in supplier inference attempts. It measures the transaction only, excluding
 card/setup. Run without concurrent NL traffic. This demonstrates zero
 **supplier** inference; the existing buyer service still invokes its Copilot
 harness when asked to use structured data. Do not claim an end-to-end
 zero-LLM transaction through that service.
+Use `.\SupplierAgent\Smoke-Structured.ps1 -WaitForWallet` for the manual phone
+roundtrip: it opens the QR page, waits for confirmation, then continues the same
+task and requires a `verified-demo-over-21` simulated receipt.
 
 ## Catalog-selected buyer
 
@@ -199,8 +232,8 @@ cargo +1.98.1-x86_64-pc-windows-msvc fmt --manifest-path SupplierAgent\Cargo.tom
 Tests use a real ephemeral HTTP listener and the SDK routes; the structured
 interpreter panics if invoked, proving the route bypasses inference.
 
-**Future work:** OID4VP presentation/verifier integration with the phone's
-Sphereon 0.8.0 wallet, experimental authorization extension activation and
-task resumption, SLIMRPC and a deterministic inbound buyer service route.
+**Remaining interoperability work:** presentation with the phone's Sphereon
+0.8.0 wallet must be manually tested; software-holder tests do not establish mobile
+acceptance. SLIMRPC and a deterministic inbound buyer service route remain future work.
 Phone receipt of the issuer's demo over_21 credential does **not** mean this
 supplier has checked it. No issuer signing keys or wallet secrets are used.

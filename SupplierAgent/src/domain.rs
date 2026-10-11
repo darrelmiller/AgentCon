@@ -128,11 +128,54 @@ impl WineStore {
         self.latest.get(context).map(String::as_str)
     }
 
+    pub fn validate_purchase(&self, request: &Request, context: &str) -> Result<(), String> {
+        let Request::PurchaseOrder {
+            schema_version,
+            demo_only,
+            quote_id,
+            purchase_order_id,
+        } = request
+        else {
+            return Err("Expected a purchase order.".into());
+        };
+        validate_demo(schema_version, *demo_only)?;
+        if purchase_order_id.is_empty() || purchase_order_id.len() > 128 {
+            return Err("purchaseOrderId must contain 1-128 characters.".into());
+        }
+        if let Some((prior_quote, _)) = self
+            .orders
+            .get(&(context.into(), purchase_order_id.clone()))
+        {
+            return if prior_quote == quote_id {
+                Ok(())
+            } else {
+                Err("purchaseOrderId already used for a different quote; no order changed.".into())
+            };
+        }
+        let bound = self
+            .quotes
+            .get(quote_id)
+            .ok_or("Unknown or expired quoteId; request a new quote before ordering.")?;
+        if bound.context != context {
+            return Err("Quote belongs to another A2A context; no order created.".into());
+        }
+        if bound.quote.expires_at <= Utc::now() {
+            return Err("Quote expired; no order created.".into());
+        }
+        if self.orders.len() >= 128 {
+            return Err("Demo order capacity reached; restart to clear in-memory records.".into());
+        }
+        Ok(())
+    }
+
     pub fn apply(
         &mut self,
         request: Request,
         context: &str,
     ) -> Result<(&'static str, Value, String), String> {
+        if matches!(&request, Request::PurchaseOrder { .. }) {
+            self.validate_purchase(&request, context)?;
+        }
         match request {
             Request::Rfq {
                 schema_version,
@@ -205,40 +248,18 @@ impl WineStore {
                 Ok((QUOTE, value, text))
             }
             Request::PurchaseOrder {
-                schema_version,
-                demo_only,
                 quote_id,
                 purchase_order_id,
+                ..
             } => {
-                validate_demo(&schema_version, demo_only)?;
-                if purchase_order_id.is_empty() || purchase_order_id.len() > 128 {
-                    return Err("purchaseOrderId must contain 1-128 characters.".into());
-                }
                 let key = (context.to_string(), purchase_order_id.clone());
-                if let Some((prior_quote, receipt)) = self.orders.get(&key) {
-                    if prior_quote != &quote_id {
-                        return Err(
-                            "purchaseOrderId already used for a different quote; no order changed."
-                                .into(),
-                        );
-                    }
+                if let Some((_, receipt)) = self.orders.get(&key) {
                     return Ok((RECEIPT, receipt.clone(), receipt_text(&purchase_order_id)));
                 }
                 let bound = self
                     .quotes
                     .get(&quote_id)
                     .ok_or("Unknown or expired quoteId; request a new quote before ordering.")?;
-                if bound.context != context {
-                    return Err("Quote belongs to another A2A context; no order created.".into());
-                }
-                if bound.quote.expires_at <= Utc::now() {
-                    return Err("Quote expired; no order created.".into());
-                }
-                if self.orders.len() >= 128 {
-                    return Err(
-                        "Demo order capacity reached; restart to clear in-memory records.".into(),
-                    );
-                }
                 let receipt = json!({
                     "kind": "order-receipt", "schemaVersion": "1", "demoOnly": true,
                     "orderId": format!("demo-order-{}", uuid::Uuid::new_v4()),
@@ -259,7 +280,7 @@ fn validate_demo(version: &str, demo_only: bool) -> Result<(), String> {
         return Err("Only schemaVersion \"1\" is supported.".into());
     }
     if !demo_only {
-        return Err("Only demoOnly:true is allowed. Real purchases and wallet verification are not implemented.".into());
+        return Err("Only demoOnly:true is allowed. Real purchases are not implemented.".into());
     }
     Ok(())
 }

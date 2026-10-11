@@ -1,4 +1,4 @@
-param([string]$Supplier = 'http://localhost:6000')
+param([string]$Supplier = 'http://localhost:6000', [switch]$WaitForWallet)
 $ErrorActionPreference = 'Stop'
 
 function Invoke-A2aJson {
@@ -29,9 +29,29 @@ $orderResponse = Invoke-A2aJson @('send', '-a', $Supplier, '--context-id', $cont
     '--data-part', $po, '--media-type', 'application/vnd.agentcon.demo.wine-purchase-order.v1+json', '-o', 'json')
 $orderTask = $orderResponse.task
 $timer.Stop()
-if ($orderTask.status.state -ne 'TASK_STATE_COMPLETED') { throw 'Demo order did not complete' }
+if ($orderTask.status.state -ne 'TASK_STATE_AUTH_REQUIRED') { throw 'Purchase must pause for wallet authorization' }
+if ($orderTask.artifacts) { throw 'Unauthenticated purchase returned an artifact' }
+$page = $orderTask.status.message.metadata.'agentcon.presentation'.presentationUrl
+if (!$WaitForWallet) {
+    $after = Invoke-RestMethod "$Supplier/health"
+    if ($after.inferenceAttempts -ne $before.inferenceAttempts) { throw 'Inference occurred during structured smoke' }
+    [pscustomobject]@{
+        quoteId = $quote.quoteId; taskId = $orderTask.id; contextId = $context
+        state = $orderTask.status.state; presentationUrl = $page
+        instructions = $orderTask.status.message.parts[0].text
+        supplierInferenceAttempts = $after.inferenceAttempts - $before.inferenceAttempts
+    }
+    return
+}
+if (!$page) { throw 'Supplier verifier is not configured; no wallet presentation page supplied' }
+Start-Process $page
+Read-Host 'Approve the presentation in Sphereon Wallet, then press Enter to continue the SAME purchase task' | Out-Null
+$orderResponse = Invoke-A2aJson @('send', '-a', $Supplier, '--context-id', $context, '--task-id', $orderTask.id,
+    '--data-part', $po, '--media-type', 'application/vnd.agentcon.demo.wine-purchase-order.v1+json', '-o', 'json')
+$orderTask = $orderResponse.task
+if ($orderTask.status.state -ne 'TASK_STATE_COMPLETED') { throw "Purchase is still pending or failed: $($orderTask.status.state)" }
 $receipt = $orderTask.artifacts[0].parts[0].data
-if ($receipt.status -ne 'simulated' -or $receipt.ageVerification -ne 'not-performed') { throw 'Invalid demo receipt' }
+if ($receipt.status -ne 'simulated' -or $receipt.ageVerification -ne 'verified-demo-over-21') { throw 'Invalid demo receipt' }
 $fetchedResponse = Invoke-A2aJson @('task', 'get', '-a', $Supplier, $orderTask.id, '-o', 'json')
 $fetched = $fetchedResponse.task
 if ($fetched.artifacts[0].parts[0].data.orderId -ne $receipt.orderId) { throw 'GetTask receipt differs' }

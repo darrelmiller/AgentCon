@@ -234,5 +234,7 @@ The automated cross-language test additionally exercises the SDK's
 return-immediately/background-executor path and checks exact trace and parent
 IDs from actual OTLP exports. A wrapper span or health counter is not proof of
 provider request counts. Failed inference without usage has no fabricated chat
-span. OID4VP, SLIM, real purchasing and production telemetry retention remain
-outside this demo's implemented scope.
+span. OID4VP presentation exchange runs directly between the phone and the
+issuer-hosted verifier, outside GenAI content capture. A2A contains only request/page
+links and task IDs, never credentials or presentations. SLIM, real purchasing and
+production telemetry retention remain outside this demo's implemented scope.
