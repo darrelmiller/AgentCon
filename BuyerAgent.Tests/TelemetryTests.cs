@@ -15,6 +15,10 @@ public sealed class TelemetryTests
         Assert.Equal(Environment.GetEnvironmentVariable("PATH"), environment["PATH"]);
         Assert.Equal("false", environment["COPILOT_OTEL_ENABLED"]);
         Assert.Equal("false", environment["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"]);
+        Assert.DoesNotContain("Buyer__SupplierControlToken", environment.Keys);
+        Assert.DoesNotContain("SUPPLIER_DEMO_CONTROL_TOKEN", environment.Keys);
+        Assert.DoesNotContain("SUPPLIER_VERIFIER_TOKEN", environment.Keys);
+        Assert.DoesNotContain("ISSUER_ADMIN_TOKEN", environment.Keys);
     }
 
     [Fact]

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentCon - live A2A exchanges</title>
+<title>AgentCon 2026 - Extensible A2A Demo</title>
 <script nonce="{{NONCE}}">
 (() => {
   const param = new URLSearchParams(window.location.search).get("scoutTheme");
@@ -69,19 +69,35 @@ html[data-theme="dark"] {
 body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font: 15px/1.5 "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; }
 main { max-width: 1600px; margin: auto; padding: 24px; }
 header, .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+header { margin-bottom: 20px; }
+header > .row { margin-left: auto; justify-content: flex-end; }
 h1 { font-size: 28px; margin: 0; } h2 { font-size: 18px; margin: 0 0 12px; } h3 { font-size: 14px; margin: 16px 0 8px; }
 p { margin: 8px 0; } .muted, small { color: var(--cp-text-muted); } .eyebrow { color: var(--cp-accent); font-weight: 600; letter-spacing: 1px; font-size: 12px; }
 button, select { font: inherit; border: 1px solid var(--cp-border); border-radius: .625rem; background: var(--cp-surface); color: var(--cp-text); padding: 8px 12px; }
 button { cursor: pointer; } button:hover { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
-button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 3px; }
+button:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 3px; }
 button[aria-pressed="true"], .selected { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
 button:disabled { cursor: wait; opacity: .65; }
-.notice { padding: 12px 16px; margin: 16px 0; border: 1px solid var(--cp-border); border-left: 4px solid var(--cp-warning); border-radius: .625rem; background: var(--cp-bg-elevated); }
+.tip { position: relative; display: inline-flex; align-items: center; }
+.tip > button { border: 0; background: transparent; color: var(--cp-text-muted); padding: 2px 6px; font-size: 13px; cursor: help; }
+.tip-text { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 10; width: min(320px, calc(100vw - 48px)); padding: 12px; border: 1px solid var(--cp-border); border-radius: .625rem; background: var(--cp-surface); color: var(--cp-text); font-size: 13px; font-weight: normal; line-height: 1.5; text-align: left; }
+.tip:hover .tip-text, .tip:focus-within .tip-text { display: block; }
+body.tips-dismissed .tip-text { display: none; }
+header .tip-text { left: auto; right: 0; }
+.control-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.control-row label { display: flex; align-items: center; gap: 8px; }
+input[type="checkbox"] { accent-color: var(--cp-accent); width: 16px; height: 16px; margin: 0; }
+#problem:empty, .metadata:empty, .parts:empty { display: none; }
+#problem:not(:empty) { margin-bottom: 16px; }
 .error { color: var(--cp-danger); } .ready { color: var(--cp-success); } .busy { color: var(--cp-accent); }
 .layout { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(360px, 2.5fr) minmax(220px, 1fr); gap: 20px; align-items: start; }
 .card { border: 1px solid var(--cp-border); border-radius: 16px; padding: 20px; background: var(--cp-surface); min-width: 0; }
-.agent-icon { width: 56px; height: 56px; display: grid; place-items: center; border: 1px solid var(--cp-border); border-radius: 16px; background: var(--cp-accent-soft); color: var(--cp-accent); font-weight: bold; margin-bottom: 12px; }
-.agent-card-button { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; margin-bottom: 12px; }
+.agent-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: .625rem; background: var(--cp-accent-soft); color: var(--cp-accent); font-weight: bold; }
+.agent-icon svg { width: 32px; height: 32px; }
+.logo-outline { fill: none; stroke: var(--cp-text); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.logo-wine { fill: var(--cp-accent); }
+.logo-crate { fill: var(--cp-bg-elevated); stroke: var(--cp-text); stroke-width: 1.8; stroke-linejoin: round; }
+.agent-card-button { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 0; border: 0; background: transparent; }
 .agent-card-button .agent-icon { margin: 0; flex-shrink: 0; }
 .agent-card-button strong, .agent-card-button small { display: block; }
 dialog { width: min(900px, calc(100vw - 40px)); max-height: calc(100vh - 40px); box-sizing: border-box; overflow: auto; padding: 20px; background: var(--cp-surface); color: var(--cp-text); border: 1px solid var(--cp-border); border-radius: 16px; }
@@ -100,6 +116,8 @@ dialog pre { max-height: 60vh; }
 .message small { display: block; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: .625rem; background: var(--cp-surface-soft); border: 1px solid var(--cp-border); }
 .task { padding: 8px 0; border-top: 1px solid var(--cp-border); overflow-wrap: anywhere; } .task code { display: block; font-size: 12px; }
+.task summary { cursor: pointer; }
+.task summary code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cp-text-muted); }
 .task small { display: block; }
 .task-list { max-height: 340px; overflow-y: auto; }
 .inspector { margin-top: 20px; }
@@ -116,47 +134,55 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
 <body>
 <main>
   <header>
-    <div><div class="eyebrow">AGENTCON / LIVE A2A</div><h1>Between the agents</h1><p class="muted">Actual supplier exchanges, not model-generated summaries.</p></div>
-    <div class="row"><span id="connection" role="status">Connecting...</span><button id="pause">Pause view</button><button id="clear">Clear captured content</button></div>
+    <h1>AgentCon 2026 - Extensible A2A Demo</h1>
+    <div class="row"><span id="connection" role="status">Connecting...</span><button id="catalog-link" type="button" aria-haspopup="dialog" title="View the agents' configured AI Catalog">AI Catalog</button><button id="pause" title="Pause display updates. Content capture continues.">Pause</button><button id="clear" title="Clear captured messages and observed task listings, not the agents' tasks.">Clear</button><span class="tip"><button type="button" aria-label="About this view and content capture" aria-describedby="capture-tip">i</button><span id="capture-tip" class="tip-text" role="tooltip">Actual A2A supplier exchanges, not model-generated summaries. Content capture is enabled and may contain sensitive information. Local, in-memory only; no headers, internal Copilot prompts, or content export to OTEL. <span id="limits"></span></span></span></div>
   </header>
-  <div class="notice"><strong>Demo content capture is ON.</strong> Message bodies may contain sensitive information. Local, in-memory only; no headers, internal Copilot prompts, or content export to OTEL. <span id="limits"></span></div>
   <div id="problem" class="error" role="alert"></div>
   <div class="layout">
     <section class="card" aria-labelledby="buyer-title">
-      <h2 id="buyer-title"><button id="buyer-card" class="agent-card-button" aria-haspopup="dialog"><span class="agent-icon" aria-hidden="true">B</span><span><strong>Buyer Agent</strong><small>View Agent Card</small></span></button></h2>
+      <h2 id="buyer-title"><button id="buyer-card" class="agent-card-button" aria-haspopup="dialog" title="View the buyer's live Agent Card"><span class="agent-icon" aria-hidden="true">
+        <svg viewBox="0 0 32 32" focusable="false" data-logo="wine-glass">
+          <path class="logo-wine" d="M8.3 11c3-1.5 6 1.5 9 .3 2.2-.9 3.8-1.1 6.4-.3-.5 5.3-3.5 8-7.7 8s-7.2-2.7-7.7-8Z"/>
+          <path class="logo-outline" d="M9 3h14l1 8c.6 5-3.1 9-8 9s-8.6-4-8-9l1-8ZM16 20v8m-6 1h12"/>
+          <path class="logo-outline" d="m11 6-.4 3" opacity=".5"/>
+        </svg>
+      </span><strong>Buyer Agent</strong></button></h2>
       <div id="buyer-endpoint" class="endpoint"></div><p id="buyer-status"></p>
-      <label for="buyer-mode">Communication mode</label>
-      <select id="buyer-mode">
-        <option>NaturalLanguage</option><option>LearnStructures</option><option>Native</option>
-      </select>
-      <small>Applies to new turns. Active turns keep their mode.</small>
-      <small>Readiness is HTTP availability, not proof of Copilot authentication.</small>
+      <div class="control-row"><label><input id="buyer-native" type="checkbox" aria-describedby="native-tip"> Native structures</label><span class="tip"><button type="button" aria-label="Native structured support details" aria-describedby="native-tip">i</button><span id="native-tip" class="tip-text" role="tooltip">Off: learn advertised supplier schemas. On: installed codecs and deterministic typed inbound requests. Text input still invokes Copilot. Outbound negotiation is automatic. Active turns keep their snapshot.</span></span></div>
       <h3 id="buyer-task-heading">Buyer tasks</h3><div id="buyer-tasks" class="task-list"></div>
     </section>
     <div class="lanes">
       <section class="card" aria-labelledby="conversation-title">
-        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span class="muted">Oldest to newest</span></div>
+        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts. LLM counts are actual per-message SDK calls, not estimated tokens or whole-transaction totals. Missing counts are not assumed to be zero.</span></span></div>
         <div id="conversation" class="messages"></div>
       </section>
     </div>
     <section class="card" aria-labelledby="seller-title">
-      <h2 id="seller-title"><button id="seller-card" class="agent-card-button" aria-haspopup="dialog" disabled><span class="agent-icon" aria-hidden="true">S</span><span><strong>Seller Agent</strong><small>View Agent Card</small></span></button></h2>
-      <select id="seller-select" aria-label="Catalog seller to view"></select>
-      <div id="seller-name"></div><div id="seller-endpoint" class="endpoint"></div><p id="seller-status"></p>
-      <small>Task states are the latest observed A2A responses, not automatic task polling.</small>
+      <h2 id="seller-title"><button id="seller-card" class="agent-card-button" aria-haspopup="dialog" title="View the selected supplier's live Agent Card" disabled><span class="agent-icon" aria-hidden="true">
+        <svg viewBox="0 0 32 32" focusable="false" data-logo="wine-crate">
+          <path class="logo-wine" d="M7 4h4v5l2 3v9H5v-9l2-3ZM14 2h4v7l2 3v9h-8v-9l2-3ZM21 4h4v5l2 3v9h-8v-9l2-3Z"/>
+          <path class="logo-outline" d="M7 4h4m3-2h4m3 2h4"/>
+          <path class="logo-crate" d="M3 15h26v14H3Z"/>
+          <path class="logo-outline" d="M3 20h26M3 24h26M7 15v14m18-14v14"/>
+          <path class="logo-wine" d="M13 19h6v6h-6Z"/>
+        </svg>
+      </span><strong>Seller Agent</strong></button></h2>
+      <select id="seller-select" aria-label="Catalog supplier to view" title="Filters this view only; does not select a supplier for buyer conversations."></select>
+      <div id="seller-endpoint" class="endpoint"></div><p id="seller-status"></p>
+      <div class="control-row"><label><input id="seller-structures" type="checkbox" aria-describedby="structures-tip" disabled> Advertise structures</label><span class="tip"><button type="button" aria-label="Supplier structured advertisement details" aria-describedby="structures-tip">i</button><span id="structures-tip" class="tip-text" role="tooltip">On: advertise and accept typed data parts. Off: accept and return text only. New supplier executions use the live capability. Requires configured local supplier controls.</span></span></div>
       <h3 id="seller-task-heading">Seller tasks</h3><div id="seller-tasks" class="task-list"></div>
     </section>
   </div>
   <section class="card inspector" aria-labelledby="inspector-title">
-    <div class="row"><h2 id="inspector-title">Message inspector</h2><div class="inspector-toolbar"><button id="content-tab" aria-pressed="true">Content &amp; artifacts</button><button id="raw-tab" aria-pressed="false">Raw wire body</button><button id="copy" disabled>Copy displayed content</button></div></div>
-    <p id="inspector-hint" class="muted">Click a sent message or seller reply above to inspect its content here.</p>
+    <div class="row"><h2 id="inspector-title">Message inspector</h2><div class="inspector-toolbar"><button id="content-tab" aria-pressed="true" title="Inspect individual message and artifact parts">Content</button><button id="raw-tab" aria-pressed="false" title="Full HTTP JSON-RPC body or SSE frames">Wire</button><button id="copy" title="Copy the displayed content" disabled>Copy</button></div></div>
+    <p id="inspector-hint" class="muted">Select a message.</p>
     <div id="metadata" class="metadata"></div><div id="parts" class="parts"></div>
     <pre id="payload" tabindex="0" aria-label="Selected message or artifact content">No message selected.</pre>
   </section>
 </main>
 <dialog id="agent-card-dialog" aria-labelledby="agent-card-title">
   <div class="row"><h2 id="agent-card-title">Agent Card</h2><button id="agent-card-close" autofocus>Close</button></div>
-  <p id="agent-card-source" class="endpoint"></p>
+  <div class="row"><a id="agent-card-source" class="endpoint" target="_blank" rel="noopener noreferrer"></a><button id="agent-card-copy-link" type="button">Copy link</button></div>
   <p id="agent-card-status" role="status"></p>
   <pre id="agent-card-json" tabindex="0" aria-label="Full Agent Card JSON"></pre>
 </dialog>
@@ -166,6 +192,13 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
   const $ = id => document.getElementById(id);
   let state, sellerOrigin = "", selected = null, partKey = "", raw = false, paused = false, rendered = "", generation;
   let messageSignature = "", inspectorSignature = "", sellerSignature = "";
+  let controlError = "";
+  const openTasks = new Set(), taskSignatures = new Map();
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") document.body.classList.add("tips-dismissed");
+  });
+  document.addEventListener("focusin", () => document.body.classList.remove("tips-dismissed"));
+  document.addEventListener("pointerover", () => document.body.classList.remove("tips-dismissed"));
   const pretty = value => typeof value === "string" ? value : JSON.stringify(value, null, 2);
   const label = value => (value || "unknown").replace(/^TASK_STATE_/, "").replaceAll("_", " ").toLowerCase();
   const active = value => /submitted|working|input_required|auth_required|continuation sent/i.test(value);
@@ -212,14 +245,28 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
   }
   function updateTasks(agent, origin) {
     const tasks = (state?.capture.tasks || []).filter(task => task.agent === agent && (!origin || task.endpoint.startsWith(`${origin}/`)));
-    $(`${agent}-task-heading`).textContent = `${agent === "buyer" ? "Buyer" : "Seller"} tasks - ${tasks.filter(task => active(task.state)).length} active`;
+    const signature = JSON.stringify([tasks, origin, state?.capture.generation]);
+    if (taskSignatures.get(agent) === signature) return;
+    taskSignatures.set(agent, signature);
+    const heading = $(`${agent}-task-heading`);
+    heading.textContent = `Tasks · ${tasks.filter(task => active(task.state)).length} active`;
+    heading.title = "Latest observed A2A states, not automatic task polling. Expand a task for full IDs, context and observation time.";
     const area = $(`${agent}-tasks`);
     area.replaceChildren();
-    if (!tasks.length) area.append(node("p", "No tasks observed yet.", "muted"));
+    if (!tasks.length) area.append(node("p", "No tasks yet.", "muted"));
     [...tasks].sort((a, b) => Number(active(b.state)) - Number(active(a.state)) || b.updatedAt.localeCompare(a.updatedAt)).forEach(task => {
-      const item = node("div", undefined, "task");
-      item.append(node("span", label(task.state), active(task.state) ? "busy" : ""), node("code", task.id),
-        node("small", `Context: ${task.contextId || "not reported"}`), node("small", `Observed ${new Date(task.updatedAt).toLocaleTimeString()}`));
+      const item = node("details", undefined, "task");
+      const summary = node("summary");
+      summary.append(node("span", label(task.state), active(task.state) ? "busy" : ""), node("code", task.id));
+      summary.title = `Task: ${task.id}\nContext: ${task.contextId || "not reported"}\nObserved: ${new Date(task.updatedAt).toLocaleTimeString()}`;
+      item.open = openTasks.has(`${agent}:${task.id}`);
+      item.addEventListener("toggle", () => {
+        if (!item.isConnected) return;
+        const key = `${agent}:${task.id}`;
+        if (item.open) openTasks.add(key); else openTasks.delete(key);
+      });
+      item.append(summary, node("code", task.id), node("small", `Context: ${task.contextId || "not reported"}`),
+        node("small", `Observed ${new Date(task.updatedAt).toLocaleTimeString()}`));
       area.append(item);
     });
   }
@@ -245,8 +292,8 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         const chosen = selected?.id === entry.id && selected.direction === direction;
         button.setAttribute("aria-pressed", String(chosen));
         const root = roots(entry.request)[0];
-        button.append(node("strong", `${response ? "Seller → Buyer" : "Buyer → Seller"} · #${entry.id} ${root?.method || "A2A request"}`),
-          node("small", `${new Date(time).toLocaleTimeString()} - ${entry.status}${entry.httpStatus ? ` - HTTP ${entry.httpStatus}` : ""}`));
+        button.append(node("strong", `${response ? "Supplier → Buyer" : "Buyer → Supplier"} · #${entry.id}`));
+        button.title = `${root?.method || "A2A request"} · ${new Date(time).toLocaleTimeString()} · ${entry.status}${entry.httpStatus ? ` · HTTP ${entry.httpStatus}` : ""}. Click to inspect all parts and artifacts.`;
         const allParts = contents(body);
         const messages = roots(body).map(root => response
           ? root.result?.task?.status?.message ?? root.result?.message ?? root.task?.status?.message ?? root.message ?? root.result?.task ?? root.task
@@ -254,14 +301,16 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         const calls = messages.map(message => message?.metadata?.["agentcon.llmCalls"])
           .filter(value => Number.isInteger(value) && value >= 0);
         const incomplete = messages.some(message => message?.metadata?.["agentcon.llmCallsComplete"] === false);
-        button.append(node("small", calls.length ? `LLM calls: ${calls.join(", ")}${incomplete ? " (incomplete SDK events)" : ""}` : "LLM calls: not reported", "muted"));
+        button.append(node("small", `${entry.status} · LLM calls: ${calls.length ? calls.join(", ") : "not reported"}${incomplete ? " (incomplete)" : ""}`,
+          incomplete || entry.errorType || entry.httpStatus >= 400 ? "error" : "muted"));
         button.append(node("span", allParts.length ? pretty(allParts[0].value) : body || (entry.errorType ? `Transport error: ${entry.errorType}` : "Waiting for response..."), "preview"));
-        if (allParts.some(part => part.label.includes("Artifact"))) button.append(node("small", "Contains artifacts - click to inspect"));
+        const artifactCount = new Set(allParts.filter(part => part.label.includes("Artifact")).map(part => part.key.slice(0, part.key.lastIndexOf("/")))).size;
+        if (artifactCount) button.append(node("small", `${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`));
         if (response ? entry.responseTruncated : entry.requestTruncated) button.append(node("small", "TRUNCATED - capture limit reached", "error"));
         button.addEventListener("click", () => { selected = { id: entry.id, direction }; partKey = ""; renderMessages(); inspect(); });
         area.append(button);
       });
-      if (!area.children.length) area.append(node("div", "No exchanges captured. Send a request to the buyer using your A2A client.", "empty"));
+      if (!area.children.length) area.append(node("div", "Waiting for exchanges.", "empty"));
       area.scrollTop = nearBottom ? area.scrollHeight : scroll;
   }
   function inspect() {
@@ -274,7 +323,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("raw-tab").setAttribute("aria-pressed", String(raw));
     if (!entry) {
       rendered = "No message selected."; $("payload").textContent = rendered; $("copy").disabled = true;
-      $("inspector-hint").textContent = selected ? "The selected exchange was cleared or evicted from the bounded capture." : "Click a sent message or seller reply above to inspect its content here.";
+      $("inspector-hint").textContent = selected ? "Selected exchange cleared or evicted." : "Select a message.";
       return;
     }
     $("copy").disabled = false;
@@ -285,7 +334,8 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     if (entry.durationMs !== null) $("metadata").append(node("span", `${entry.durationMs.toFixed(1)} ms`));
     if (entry.errorType) $("metadata").append(node("span", entry.errorType, "error"));
     if (entry.traceId) {
-      const link = node("a", `Trace ${entry.traceId}`);
+      const link = node("a", "Trace");
+      link.title = `Open Aspire trace ${entry.traceId}`;
       link.href = `http://localhost:18888/traces/detail/${encodeURIComponent(entry.traceId)}`;
       link.target = "_blank"; link.rel = "noopener noreferrer";
       $("metadata").append(link);
@@ -306,15 +356,16 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("payload").textContent = rendered;
   }
   function render() {
-    if (generation !== undefined && generation !== state.capture.generation) { selected = null; partKey = ""; }
+    if (generation !== undefined && generation !== state.capture.generation) { selected = null; partKey = ""; openTasks.clear(); }
     generation = state.capture.generation;
     $("buyer-endpoint").textContent = `${state.buyer.origin}/a2a`;
     const buyerActive = state.capture.tasks.filter(task => task.agent === "buyer" && active(task.state)).length;
-    $("buyer-status").textContent = `${state.buyer.status} - ${state.buyer.communicationMode || "NaturalLanguage"} - ${buyerActive} active tasks`;
+    $("buyer-status").textContent = state.buyer.status;
+    $("buyer-status").title = `HTTP availability, not proof of Copilot authentication. Automatic negotiation; ${buyerActive} active tasks.`;
     $("buyer-status").className = buyerActive ? "busy" : "ready";
-    if (!$("buyer-mode").disabled) $("buyer-mode").value = state.buyer.communicationMode;
+    if (!$("buyer-native").disabled) $("buyer-native").checked = state.buyer.nativeStructuredSupport;
     $("limits").textContent = `Last ${state.capture.maxExchanges} exchanges; ${state.capture.maxBodyBytes / 1024} KiB per body. ${state.capture.droppedExchanges} older exchanges evicted.`;
-    $("problem").textContent = [state.catalogError, ...state.warnings].filter(Boolean).join(" ");
+    $("problem").textContent = [state.catalogError, ...state.warnings, controlError].filter(Boolean).join(" ");
     const select = $("seller-select");
     const sellers = state.sellers;
     if (!sellers.some(seller => seller.origin === sellerOrigin)) sellerOrigin = sellers.length === 1 ? sellers[0].origin : "";
@@ -331,12 +382,17 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     select.value = sellerOrigin;
     const seller = sellers.find(item => item.origin === sellerOrigin);
     $("seller-card").disabled = !seller;
-    $("seller-name").textContent = seller?.name || "No seller selected for viewing";
+    $("seller-card").title = seller ? `${seller.name} (${seller.identifier}) — view live Agent Card` : "Choose a catalog supplier to view its Agent Card.";
     $("seller-endpoint").textContent = seller?.origin || "";
     const inflight = state.capture.exchanges.filter(entry => (!sellerOrigin || entry.endpoint.startsWith(`${sellerOrigin}/`)) &&
       (entry.status === "sending" || entry.status === "receiving")).length;
-    $("seller-status").textContent = seller ? `${seller.status}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` - ${inflight} A2A request(s) in flight` : ""}` : "Unknown";
+    $("seller-status").textContent = seller ? `${seller.status}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
+    $("seller-status").title = "HTTP availability, not proof of Copilot authentication. Task states are the latest observed responses, not automatic polling.";
     $("seller-status").className = seller?.status === "HTTP ready" ? (inflight ? "busy" : "ready") : "error";
+    if (!$("seller-structures").dataset.busy) {
+      $("seller-structures").checked = seller?.structuredDataParts === true;
+      $("seller-structures").disabled = !seller?.controlsEnabled;
+    }
     updateTasks("buyer"); updateTasks("seller", sellerOrigin); renderMessages(); inspect();
   }
   async function refresh() {
@@ -345,7 +401,8 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         const response = await fetch("/demo/state", { cache: "no-store" });
         if (!response.ok) throw new Error(`Dashboard returned HTTP ${response.status}`);
         state = await response.json(); render();
-        $("connection").textContent = `Live - ${new Date(state.capturedAt).toLocaleTimeString()}`;
+        $("connection").textContent = "Live";
+        $("connection").title = `Last updated ${new Date(state.capturedAt).toLocaleTimeString()}`;
         $("connection").className = "ready";
       } catch (error) {
         $("connection").textContent = "Disconnected - displayed data is stale";
@@ -358,62 +415,102 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
   }
   $("seller-select").addEventListener("change", () => { sellerOrigin = $("seller-select").value; selected = null; render(); });
   let cardRequest;
-  async function showAgentCard(seller) {
+  async function showAgentCard(seller, isCatalog = false) {
     cardRequest?.abort();
     const request = new AbortController();
     cardRequest = request;
-    $("agent-card-title").textContent = `${seller ? seller.name : "Buyer Agent"} - Agent Card`;
-    $("agent-card-source").textContent = seller ? seller.cardUrl : `${location.origin}/.well-known/agent-card.json`;
+    const kind = isCatalog ? "AI Catalog" : "Agent Card";
+    $("agent-card-title").textContent = isCatalog ? kind : `${seller ? seller.name : "Buyer Agent"} - ${kind}`;
+    $("agent-card-source").textContent = isCatalog ? `${location.origin}/demo/catalog` :
+      seller ? seller.cardUrl : `${location.origin}/.well-known/agent-card.json`;
+    $("agent-card-source").href = $("agent-card-source").textContent;
+    $("agent-card-copy-link").textContent = "Copy link";
     $("agent-card-json").textContent = "";
-    $("agent-card-status").textContent = "Loading current Agent Card...";
+    $("agent-card-json").setAttribute("aria-label", `Full ${kind} JSON`);
+    $("agent-card-source").title = "";
+    $("agent-card-status").textContent = `Loading current ${kind}...`;
     $("agent-card-status").className = "muted";
     if (!$("agent-card-dialog").open) $("agent-card-dialog").showModal();
     try {
-      const response = await fetch(`/demo/agent-card${seller ? `?identifier=${encodeURIComponent(seller.identifier)}` : ""}`,
+      const response = await fetch(isCatalog ? "/demo/catalog" :
+        `/demo/agent-card${seller ? `?identifier=${encodeURIComponent(seller.identifier)}` : ""}`,
         { cache: "no-store", signal: request.signal });
       const card = await response.json();
-      if (!response.ok) throw new Error(card.error || `Agent Card returned HTTP ${response.status}`);
+      if (!response.ok) throw new Error(card.error || `${kind} returned HTTP ${response.status}`);
       if (cardRequest !== request || !$("agent-card-dialog").open) return;
       $("agent-card-json").textContent = JSON.stringify(card, null, 2);
-      $("agent-card-status").textContent = "Full Agent Card fetched on opening. Close and reopen to refresh.";
+      $("agent-card-status").textContent = "";
+      $("agent-card-source").title = `Full live ${kind} fetched on opening. Close and reopen to refresh.`;
     } catch (error) {
       if (request.signal.aborted) return;
       $("agent-card-status").textContent = error.message;
       $("agent-card-status").className = "error";
     }
   }
+  $("catalog-link").addEventListener("click", event => {
+    event.preventDefault();
+    return showAgentCard(undefined, true);
+  });
   $("buyer-card").addEventListener("click", () => showAgentCard());
   $("seller-card").addEventListener("click", () => {
     const seller = state?.sellers.find(item => item.origin === sellerOrigin);
     if (seller) showAgentCard(seller);
   });
   $("agent-card-close").addEventListener("click", () => $("agent-card-dialog").close());
+  $("agent-card-copy-link").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("agent-card-source").textContent);
+      $("agent-card-copy-link").textContent = "Copied";
+    } catch {
+      $("agent-card-status").textContent = "Clipboard unavailable. Select and copy the link directly.";
+      $("agent-card-status").className = "error";
+    }
+  });
   $("agent-card-dialog").addEventListener("close", () => { cardRequest?.abort(); cardRequest = null; });
-  $("buyer-mode").addEventListener("change", async () => {
-    const control = $("buyer-mode");
+  $("buyer-native").addEventListener("change", async () => {
+    const control = $("buyer-native");
     control.disabled = true;
     try {
-      const response = await fetch("/demo/mode", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: control.value }) });
-      if (!response.ok) throw new Error(`Mode change failed: HTTP ${response.status}`);
+      const response = await fetch("/demo/native", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: control.checked }) });
+      if (!response.ok) throw new Error(`Native support change failed: HTTP ${response.status}`);
       const result = await response.json();
-      if (state) { state.buyer.communicationMode = result.communicationMode; render(); }
-      $("problem").textContent = "";
+      if (state) { state.buyer.nativeStructuredSupport = result.nativeStructuredSupport; render(); }
+      controlError = ""; $("problem").textContent = "";
     } catch (error) {
-      $("problem").textContent = error.message;
-      if (state) control.value = state.buyer.communicationMode;
+      controlError = error.message; $("problem").textContent = controlError;
+      if (state) control.checked = state.buyer.nativeStructuredSupport;
     } finally { control.disabled = false; }
+  });
+  $("seller-structures").addEventListener("change", async () => {
+    const control = $("seller-structures");
+    const seller = state?.sellers.find(item => item.origin === sellerOrigin);
+    if (!seller) return;
+    control.disabled = true; control.dataset.busy = "true";
+    try {
+      const response = await fetch("/demo/supplier-structures", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: seller.identifier, enabled: control.checked }) });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || `Supplier change failed: HTTP ${response.status}`);
+      }
+      seller.structuredDataParts = (await response.json()).structuredDataParts;
+      controlError = ""; $("problem").textContent = "";
+    } catch (error) {
+      controlError = error.message; $("problem").textContent = controlError;
+      control.checked = seller.structuredDataParts === true;
+    } finally { delete control.dataset.busy; render(); }
   });
   $("content-tab").addEventListener("click", () => { raw = false; inspect(); });
   $("raw-tab").addEventListener("click", () => { raw = true; inspect(); });
   $("copy").addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(rendered); $("copy").textContent = "Copied"; }
     catch { $("problem").textContent = "Clipboard unavailable. Select and copy the inspector text directly."; }
-    setTimeout(() => { $("copy").textContent = "Copy displayed content"; }, 1500);
+    setTimeout(() => { $("copy").textContent = "Copy"; }, 1500);
   });
   $("pause").addEventListener("click", () => {
-    paused = !paused; $("pause").textContent = paused ? "Resume view" : "Pause view";
-    if (paused) { $("connection").textContent = "View paused - capture continues"; $("connection").className = "busy"; }
+    paused = !paused; $("pause").textContent = paused ? "Resume" : "Pause";
+    if (paused) { $("connection").textContent = "Paused"; $("connection").title = "View paused; capture continues."; $("connection").className = "busy"; }
   });
   $("clear").addEventListener("click", async () => {
     $("clear").disabled = true;
@@ -421,6 +518,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
       const response = await fetch("/demo/clear", { method: "POST" });
       if (!response.ok) throw new Error(`Clear failed: HTTP ${response.status}`);
       selected = null; partKey = "";
+      openTasks.clear();
       if (state) { state.capture.exchanges = []; state.capture.tasks = []; renderMessages(); inspect(); updateTasks("buyer"); updateTasks("seller", sellerOrigin); }
     } catch (error) { $("problem").textContent = error.message; }
     finally { $("clear").disabled = false; }

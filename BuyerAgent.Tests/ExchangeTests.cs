@@ -209,6 +209,15 @@ public sealed class ExchangeTests
         Assert.Contains("frame-ancestors 'none'", page.Headers.GetValues("Content-Security-Policy").Single());
         var html = await page.Content.ReadAsStringAsync();
         Assert.Contains("Message inspector", html);
+        Assert.DoesNotContain("Demo content capture is ON.", html);
+        Assert.DoesNotContain("class=\"notice\"", html);
+        Assert.Contains("aria-describedby=\"capture-tip\"", html);
+        Assert.Contains("aria-describedby=\"native-tip\"", html);
+        Assert.Contains("aria-describedby=\"structures-tip\"", html);
+        Assert.Contains("role=\"tooltip\"", html);
+        Assert.Contains("tip:focus-within", html);
+        Assert.Contains("const openTasks", html);
+        Assert.Contains("LLM calls:", html);
         Assert.DoesNotContain("{{NONCE}}", html);
         client.DefaultRequestHeaders.Add("Origin", "http://untrusted.example");
         Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/demo/state")).StatusCode);
@@ -263,25 +272,33 @@ public sealed class ExchangeTests
     private static JsonElement Snapshot(ExchangeStore store) => JsonSerializer.SerializeToElement(store.Snapshot(), JsonOptions);
 
     [Fact]
-    public async Task DashboardChangesModeAndLiveCardWithoutRestarting()
+    public async Task DashboardChangesNativeSupportAndLiveCardWithoutRestarting()
     {
         await using var app = await App(true);
         using var http = app.GetTestClient();
         http.BaseAddress = new("http://localhost:5100");
         var before = await new A2ACardResolver(http.BaseAddress, http).GetAgentCardAsync();
-        Assert.Equal(["text/plain"], before.DefaultOutputModes);
-        Assert.Equal(["text/plain"], before.Skills[0].OutputModes);
-        Assert.Equal(HttpStatusCode.Forbidden, (await http.PostAsJsonAsync("/demo/mode", new { mode = "Native" })).StatusCode);
+        Assert.Equal(["text/plain"], before.DefaultInputModes);
+        Assert.DoesNotContain("application/json", before.DefaultOutputModes);
+        Assert.Equal(HttpStatusCode.Forbidden, (await http.PostAsJsonAsync("/demo/native", new { enabled = true })).StatusCode);
         http.DefaultRequestHeaders.Add("Origin", "http://localhost:5100");
-        foreach (var invalid in new[] { "unknown", "1", "native" })
-            Assert.Equal(HttpStatusCode.BadRequest, (await http.PostAsJsonAsync("/demo/mode", new { mode = invalid })).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await http.PostAsJsonAsync("/demo/mode", new { mode = "Native" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await http.PostAsJsonAsync("/demo/mode", new { mode = "Native" })).StatusCode);
+        foreach (var invalid in new[] { "{}", """{"enabled":"true"}""", """{"enabled":true,"mode":"Native"}""" })
+            Assert.Equal(HttpStatusCode.BadRequest, (await http.PostAsync("/demo/native",
+                new StringContent(invalid, Encoding.UTF8, "application/json"))).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await http.PostAsJsonAsync("/demo/native", new { enabled = true })).StatusCode);
         http.DefaultRequestHeaders.Remove("Origin");
         var card = await new A2ACardResolver(http.BaseAddress, http).GetAgentCardAsync();
         Assert.Contains(SupplierFormats.Quote, card.DefaultOutputModes);
+        Assert.Contains(SupplierFormats.Rfq, card.DefaultInputModes);
+        Assert.Contains(SupplierFormats.Purchase, card.Skills[0].InputModes!);
+        Assert.Contains(card.Capabilities.Extensions!, item => item.Uri == SupplierFormats.Extension);
         http.DefaultRequestHeaders.Add("Origin", "http://localhost:5100");
-        await http.PostAsJsonAsync("/demo/mode", new { mode = "NaturalLanguage" });
+        await http.PostAsJsonAsync("/demo/native", new { enabled = false });
         http.DefaultRequestHeaders.Remove("Origin");
+        var off = await new A2ACardResolver(http.BaseAddress, http).GetAgentCardAsync();
+        Assert.Equal(["text/plain"], off.DefaultInputModes);
+        Assert.DoesNotContain(off.Capabilities.Extensions!, item => item.Uri == SupplierFormats.Extension);
         using var sdk = new A2AClient(new Uri(http.BaseAddress, "/a2a"), http);
         var task = (await sdk.SendMessageAsync(BuyerServiceTests.Request("hello"))).Task!;
         Assert.All(task.Artifacts!.SelectMany(artifact => artifact.Parts), part => Assert.Equal(PartContentCase.Text, part.ContentCase));
@@ -314,10 +331,18 @@ public sealed class ExchangeTests
         Assert.Equal("/schemas/wine-v1.schema.json", seller.GetProperty("customExtension").GetProperty("schemaUrl").GetString());
         Assert.Equal(HttpStatusCode.BadRequest, (await http.GetAsync("/demo/agent-card?identifier=http://attacker.example")).StatusCode);
         Assert.Single(network.Requests);
+        using var catalogResponse = await http.GetAsync("/demo/catalog");
+        Assert.Equal(HttpStatusCode.OK, catalogResponse.StatusCode);
+        Assert.Equal("no-store", catalogResponse.Headers.CacheControl!.ToString());
+        var catalogJson = await catalogResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("1.0", catalogJson.GetProperty("specVersion").GetString());
+        Assert.Equal("urn:test:seller", catalogJson.GetProperty("entries")[0].GetProperty("identifier").GetString());
+        Assert.Single(network.Requests);
         network.Raw("http://localhost:6000/.well-known/agent-card.json", new string('x', 65537));
         Assert.Equal(HttpStatusCode.BadGateway, (await http.GetAsync("/demo/agent-card?identifier=urn:test:seller")).StatusCode);
         http.DefaultRequestHeaders.Add("Origin", "http://attacker.example");
         Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/demo/agent-card")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/demo/catalog")).StatusCode);
     }
 
     private sealed class Network(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler

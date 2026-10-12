@@ -6,15 +6,13 @@ pub mod telemetry;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
 
 use a2a::*;
-use a2a_server::{
-    AgentExecutor, DefaultRequestHandler, ExecutorContext, InMemoryTaskStore, StaticAgentCard,
-};
+use a2a_server::{AgentExecutor, DefaultRequestHandler, ExecutorContext, InMemoryTaskStore};
 use axum::{
     Json, Router,
     extract::Request as HttpRequest,
@@ -23,6 +21,7 @@ use axum::{
     response::Response,
 };
 use futures::stream::{self, BoxStream};
+use futures::StreamExt;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::Instrument;
@@ -43,6 +42,8 @@ pub struct Supplier {
     pub metrics: Arc<Metrics>,
     verifier: Option<Arc<dyn authorization::Verifier>>,
     pending: Mutex<std::collections::HashMap<String, PendingPurchase>>,
+    structured: AtomicBool,
+    control_token: Option<String>,
 }
 
 struct PendingPurchase {
@@ -58,6 +59,8 @@ impl Supplier {
             metrics: Arc::new(Metrics::default()),
             verifier: None,
             pending: Mutex::new(std::collections::HashMap::new()),
+            structured: AtomicBool::new(true),
+            control_token: None,
         }
     }
 
@@ -66,13 +69,64 @@ impl Supplier {
         self
     }
 
+    pub fn with_structured(self, enabled: bool) -> Self {
+        self.structured.store(enabled, Ordering::Relaxed);
+        self
+    }
+
+    pub fn with_control_token(mut self, token: String) -> Result<Self, String> {
+        if token.len() < 32
+            || token.len() > 256
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(
+                "Supplier control token must contain 32-256 ASCII letters, digits, '-' or '_'."
+                    .into(),
+            );
+        }
+        self.control_token = Some(token);
+        Ok(self)
+    }
+
     async fn run(
         &self,
         message: &Message,
         context: &str,
         task: &str,
         accepted: Option<&[String]>,
+        structured: bool,
     ) -> Result<Outcome, String> {
+        if message.role != Role::User || message.parts.is_empty() {
+            return Err("Expected a non-empty user message.".into());
+        }
+        let typed = message
+            .parts
+            .iter()
+            .any(|part| matches!(part.content, PartContent::Data(_)));
+        if typed {
+            if !structured {
+                return Err(
+                    "Structured input is disabled; send text/plain. No inference attempted.".into(),
+                );
+            }
+            if message.parts.len() != 1 {
+                return Err("Provide exactly one typed data part without text.".into());
+            }
+            let part = &message.parts[0];
+            if !matches!(part.media_type.as_deref(), Some(RFQ | PURCHASE)) {
+                return Err("Only advertised wine-v1 vendor input media types are accepted; no generic application/json.".into());
+            }
+        } else if message.parts.iter().any(|part| {
+            !matches!(part.content, PartContent::Text(_))
+                || part
+                    .media_type
+                    .as_deref()
+                    .is_some_and(|value| value != "text/plain")
+        }) {
+            return Err("Only text/plain text parts are accepted.".into());
+        }
         let mut pending = self.pending.lock().await;
         pending
             .retain(|_, purchase| purchase.challenge.expires_at > chrono::Utc::now().timestamp());
@@ -222,6 +276,33 @@ impl Supplier {
         self.apply_authorized(request, context, accepted).await
     }
 
+    async fn resume_verified(
+        &self, task: &str, context: &str, accepted: Option<&[String]>,
+    ) -> Result<Option<Outcome>, String> {
+        let mut pending = self.pending.lock().await;
+        let Some(purchase) = pending.get(task) else {
+            return Err("Pending purchase no longer exists; inspect the original task.".into());
+        };
+        if purchase.challenge.context_id != context {
+            return Err("Purchase authorization belongs to another context.".into());
+        }
+        if purchase.challenge.expires_at <= chrono::Utc::now().timestamp() {
+            pending.remove(task);
+            return Err("Wallet authorization expired; no order has been created.".into());
+        }
+        let verifier = self.verifier.as_ref().ok_or("Presentation verifier is not configured.")?;
+        if !verifier.verified(&purchase.challenge).await? {
+            return Ok(None);
+        }
+        let purchase = pending.remove(task).expect("Pending purchase exists while locked");
+        drop(pending);
+        let mut outcome = self.apply_authorized(purchase.request, context, accepted).await?;
+        if let Some((_, data)) = &mut outcome.data {
+            data["ageVerification"] = json!("verified-demo-over-21");
+        }
+        Ok(Some(outcome))
+    }
+
     async fn apply_authorized(
         &self,
         request: Request,
@@ -306,15 +387,27 @@ impl AgentExecutor for SupplierExecutor {
             agentcon.a2a.context.id = %ctx.context_id);
         let _ = span.set_parent(telemetry::executor_parent(&ctx.service_params));
         let execution_span = span.clone();
-        Box::pin(stream::once(async move {
+        let watcher_span = span.clone();
+        let watch_supplier = supplier.clone();
+        let watch_task = ctx.task_id.clone();
+        let watch_context = ctx.context_id.clone();
+        let watch_structured = supplier.structured.load(Ordering::Relaxed);
+        let watch_accepted: Option<Vec<String>> = ctx.metadata.as_ref()
+            .and_then(|metadata| metadata.get("agentcon.internal.acceptedOutputModes"))
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+        let watch_enabled = ctx.metadata.as_ref().and_then(|metadata|
+            metadata.get("agentcon.internal.watchAuthorization")).and_then(|value| value.as_bool()) == Some(true);
+        let initial = stream::once(async move {
             let mut execution = ExecutionTrace { span: execution_span.clone(), completed: false };
             let started = Instant::now();
+            let structured = watch_structured;
             let accepted: Option<Vec<String>> = ctx.metadata.as_ref()
                 .and_then(|metadata| metadata.get("agentcon.internal.acceptedOutputModes"))
                 .map(|value| serde_json::from_value(value.clone()))
                 .transpose().map_err(|_| A2AError::invalid_params("Invalid acceptedOutputModes"))?;
             let text_accepted = accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == "text/plain"));
-            if accepted.as_ref().is_some_and(|modes| !modes.iter().any(|mode| matches!(mode.as_str(), "text/plain" | QUOTE | RECEIPT))) {
+            if accepted.as_ref().is_some_and(|modes| !modes.iter().any(|mode|
+                mode == "text/plain" || structured && matches!(mode.as_str(), QUOTE | RECEIPT))) {
                 telemetry::error(&execution_span, "incompatible_output_modes");
                 execution.completed = true;
                 return Err(A2AError::content_type_not_supported());
@@ -322,7 +415,7 @@ impl AgentExecutor for SupplierExecutor {
             let (outcome, llm_calls, count_complete) = inference::MESSAGE_LLM_CALLS.scope(AtomicU64::new(0),
                 inference::MESSAGE_LLM_COMPLETE.scope(std::sync::atomic::AtomicBool::new(true), async {
                 let outcome = match &ctx.message {
-                    Some(message) => supplier.run(message, &ctx.context_id, &ctx.task_id, accepted.as_deref()).await,
+                    Some(message) => supplier.run(message, &ctx.context_id, &ctx.task_id, accepted.as_deref(), structured).await,
                     None => Err("Missing user message.".into()),
                 };
                 (outcome, inference::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
@@ -333,7 +426,7 @@ impl AgentExecutor for SupplierExecutor {
                 execution.completed = true;
                 return Err(A2AError::content_type_not_supported());
             }
-            let outcome = outcome.unwrap_or_else(|error| {
+            let mut outcome = outcome.unwrap_or_else(|error| {
                 telemetry::error(&execution_span, "supplier_request_failed");
                 tracing::warn!(task_id = %ctx.task_id, "supplier request failed");
                 Outcome {
@@ -343,6 +436,11 @@ impl AgentExecutor for SupplierExecutor {
                     authorization: None,
                 }
             });
+            if watch_enabled && let Some(challenge) = &outcome.authorization {
+                outcome.text = format!(
+                    "Wallet authorization is required before this purchase. Open {} and scan the QR code with Sphereon Wallet. Select the AgentCon over_21 credential and approve disclosure. This original purchase will complete automatically after task-bound verifier approval. Do not submit another order. No order has been created yet.",
+                    challenge.presentation_url);
+            }
             execution.completed = true;
             tracing::info!(task_id = %ctx.task_id, state = ?outcome.state, elapsed_ms = started.elapsed().as_millis(), "supplier execution");
             let result_text = outcome.text.clone();
@@ -362,7 +460,8 @@ impl AgentExecutor for SupplierExecutor {
             response.task_id = Some(ctx.task_id.clone());
             response.context_id = Some(ctx.context_id.clone());
             let artifacts = outcome.data.map(|(media_type, data)| {
-                let typed_accepted = accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == media_type));
+                let typed_accepted = structured &&
+                    accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == media_type));
                 vec![Artifact {
                     artifact_id: uuid::Uuid::new_v4().to_string(),
                     name: Some(if media_type == QUOTE { "quote" } else { "order-receipt" }.into()),
@@ -391,7 +490,62 @@ impl AgentExecutor for SupplierExecutor {
                     ("agentcon.llmCallsComplete".into(), json!(count_complete))
                 ])),
             }))
-        }.instrument(span)))
+        }.instrument(span));
+        Box::pin(initial.flat_map(move |event| {
+            let watching = watch_enabled && matches!(&event,
+                Ok(StreamResponse::Task(task)) if task.status.state == TaskState::AuthRequired &&
+                    task.status.message.as_ref().and_then(|message| message.metadata.as_ref())
+                        .is_some_and(|metadata| metadata.contains_key(authorization::EXTENSION)));
+            let supplier = watch_supplier.clone();
+            let task_id = watch_task.clone();
+            let context_id = watch_context.clone();
+            let accepted = watch_accepted.clone();
+            let updates = stream::once(async move {
+                if !watching { return Vec::new(); }
+                let outcome = loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    match supplier.resume_verified(&task_id, &context_id, accepted.as_deref()).await {
+                        Ok(None) => continue,
+                        Ok(Some(outcome)) => break outcome,
+                        Err(error) => {
+                            tracing::warn!(%task_id, "automatic authorization completion failed");
+                            break Outcome { state: TaskState::Failed, text: error, data: None, authorization: None };
+                        }
+                    }
+                };
+                let metadata = std::collections::HashMap::from([
+                    ("agentcon.llmCalls".into(), json!(0)),
+                    ("agentcon.llmCallsComplete".into(), json!(true))
+                ]);
+                let mut events = Vec::new();
+                if let Some((media_type, data)) = outcome.data {
+                    let typed = watch_structured &&
+                        accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == media_type));
+                    events.push(Ok(StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
+                        task_id: task_id.clone(), context_id: context_id.clone(),
+                        artifact: Artifact {
+                            artifact_id: uuid::Uuid::new_v4().to_string(), name: Some("order-receipt".into()),
+                            description: Some("Verified demo order receipt".into()),
+                            parts: if typed { vec![Part::data(data).with_media_type(media_type)] }
+                                else { vec![Part::text(outcome.text.clone()).with_media_type("text/plain")] },
+                            metadata: Some(metadata.clone()), extensions: None,
+                        },
+                        append: Some(false), last_chunk: Some(true), metadata: None,
+                    })));
+                }
+                let mut message = Message::new(Role::Agent, vec![Part::text(outcome.text)]);
+                message.task_id = Some(task_id.clone());
+                message.context_id = Some(context_id.clone());
+                message.metadata = Some(metadata);
+                events.push(Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+                    task_id, context_id, status: TaskStatus {
+                        state: outcome.state, message: Some(message), timestamp: Some(chrono::Utc::now()),
+                    }, metadata: None,
+                })));
+                events
+            }.instrument(watcher_span.clone())).flat_map(stream::iter);
+            stream::once(async move { event }).chain(updates)
+        }))
     }
 
     fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
@@ -468,6 +622,28 @@ pub fn card(origin: &str) -> AgentCard {
     }
 }
 
+pub fn configured_card(origin: &str, structured: bool) -> AgentCard {
+    let mut value = card(origin);
+    if !structured {
+        value.description = "Wine supplier: text/plain quotes and orders via Copilot. Structured data parts are disabled.".into();
+        value.default_input_modes = vec!["text/plain".into()];
+        value.default_output_modes = vec!["text/plain".into()];
+        for skill in &mut value.skills {
+            skill.input_modes = Some(vec!["text/plain".into()]);
+            skill.output_modes = Some(vec!["text/plain".into()]);
+            skill.description =
+                "2019 Barolo demo quotes/orders via Copilot text/plain. Typed data is disabled."
+                    .into();
+        }
+        if let Some(extensions) = &mut value.capabilities.extensions {
+            extensions.retain(|extension| {
+                extension.uri != "urn:agentcon:extension:structured-schemas:v1"
+            });
+        }
+    }
+    value
+}
+
 async fn reject_browser(request: HttpRequest, next: Next) -> Response {
     if request.headers().contains_key("origin") || request.headers().contains_key("sec-fetch-site")
     {
@@ -507,6 +683,8 @@ async fn preserve_output_modes(request: HttpRequest, next: Next) -> Response {
                 .await;
         }
     };
+    let streaming = matches!(value.get("method").and_then(|method| method.as_str()),
+        Some("SendStreamingMessage" | "message/stream"));
     if let Some(params) = value
         .get_mut("params")
         .and_then(|params| params.as_object_mut())
@@ -531,6 +709,7 @@ async fn preserve_output_modes(request: HttpRequest, next: Next) -> Response {
             *metadata = json!({});
         }
         if let Some(metadata) = metadata.as_object_mut() {
+            metadata.insert("agentcon.internal.watchAuthorization".into(), json!(streaming));
             metadata.remove("agentcon.internal.acceptedOutputModes");
             if let Some(accepted) = accepted {
                 metadata.insert("agentcon.internal.acceptedOutputModes".into(), accepted);
@@ -558,39 +737,86 @@ pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
     let metrics = supplier.metrics.clone();
     let verifier_configured = supplier.verifier.is_some();
     let handler = Arc::new(DefaultRequestHandler::new(
-        SupplierExecutor(supplier),
+        SupplierExecutor(supplier.clone()),
         InMemoryTaskStore::new(),
     ));
+    let schema_supplier = supplier.clone();
+    let card_supplier = supplier.clone();
+    let control_supplier = supplier.clone();
+    let health_supplier = supplier.clone();
+    let card_origin = origin.to_owned();
+    let control_host = origin.strip_prefix("http://").unwrap_or("").to_owned();
     Router::new()
         .route(
             "/schemas/wine-v1.schema.json",
-            axum::routing::get(|| async {
+            axum::routing::get(move || {
+                let supplier = schema_supplier.clone();
+                async move {
+                if !supplier.structured.load(Ordering::Relaxed) {
+                    return (StatusCode::NOT_FOUND, "Structured schema advertisement is disabled.").into_response();
+                }
                 (
                     [(axum::http::header::CONTENT_TYPE, "application/schema+json")],
                     include_str!("../schemas/wine-v1.schema.json"),
-                )
+                ).into_response()
+                }
             }),
         )
+        .route("/demo/structures", axum::routing::post(move |headers: axum::http::HeaderMap, Json(change): Json<StructuredChange>| {
+            let supplier = control_supplier.clone();
+            let host = control_host.clone();
+            async move {
+                let Some(token) = &supplier.control_token else {
+                    return (StatusCode::FORBIDDEN, "Supplier controls are not configured.").into_response();
+                };
+                let expected = format!("Bearer {token}");
+                let actual = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+                let equal = actual.len() == expected.len() &&
+                    actual.bytes().zip(expected.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0;
+                if !equal || headers.get("host").and_then(|v| v.to_str().ok()) != Some(host.as_str()) {
+                    return (StatusCode::FORBIDDEN, "Invalid supplier control authorization or host.").into_response();
+                }
+                supplier.structured.store(change.enabled, Ordering::Relaxed);
+                tracing::info!(enabled = change.enabled, "Supplier structured capability changed");
+                Json(json!({"structuredDataParts": change.enabled})).into_response()
+            }
+        }))
         .nest(
             "/a2a",
             a2a_server::jsonrpc::jsonrpc_router(handler)
                 .layer(middleware::from_fn(preserve_output_modes)),
         )
-        .merge(a2a_server::agent_card::agent_card_router(Arc::new(
-            StaticAgentCard::new(card(origin)),
-        )))
+        .route("/.well-known/agent-card.json", axum::routing::get(move || {
+            let supplier = card_supplier.clone();
+            let origin = card_origin.clone();
+            async move {
+                ([(axum::http::header::CACHE_CONTROL, "no-store")],
+                    Json(configured_card(&origin, supplier.structured.load(Ordering::Relaxed))))
+            }
+        }))
         .route(
             "/health",
-            axum::routing::get(move || async move {
+            axum::routing::get(move || {
+                let supplier = health_supplier.clone();
+                let metrics = metrics.clone();
+                async move {
                 Json(json!({
                     "status": "ok", "demoOnly": true,
                     "structuredRequests": metrics.structured_requests.load(Ordering::Relaxed),
                     "inferenceAttempts": metrics.inference_attempts.load(Ordering::Relaxed),
+                    "structuredDataParts": supplier.structured.load(Ordering::Relaxed),
                     "oid4vp": if verifier_configured { "presentation-verifier-configured" } else { "verifier-not-configured" },
                     "slim": "not-implemented"
                 }))
+                }
             }),
         )
         .layer(middleware::from_fn(reject_browser))
         .layer(middleware::from_fn(telemetry::http))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredChange {
+    enabled: bool,
 }

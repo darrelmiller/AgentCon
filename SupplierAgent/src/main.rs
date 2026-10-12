@@ -35,6 +35,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SUPPLIER_MODEL").unwrap_or_else(|_| "auto".into()),
     ));
     let mut supplier = Supplier::new(interpreter.clone());
+    if let Ok(value) = std::env::var("SUPPLIER_STRUCTURED_DATA") {
+        supplier = supplier.with_structured(value.parse::<bool>()?);
+    }
+    if let Ok(token) = std::env::var("SUPPLIER_DEMO_CONTROL_TOKEN") {
+        supplier = supplier.with_control_token(token)?;
+    }
     match (
         std::env::var("SUPPLIER_VERIFIER_URL"),
         std::env::var("SUPPLIER_VERIFIER_TOKEN"),

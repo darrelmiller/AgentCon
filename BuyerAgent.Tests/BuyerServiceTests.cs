@@ -209,7 +209,7 @@ public sealed class BuyerServiceTests
                 }
             });
             return Task.FromResult("Supplier response received.");
-        }), "--Buyer:CommunicationMode=Native");
+        }), "--Buyer:NativeStructuredSupport=true");
         using var http = app.GetTestClient();
         using var client = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
         var response = await client.SendMessageAsync(Request("Buy demo wine"));

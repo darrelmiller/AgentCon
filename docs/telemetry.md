@@ -230,6 +230,18 @@ completions, tool payloads or credentials appear in these trace attributes or
 events. Initial failed/superseded smoke traces may remain in the in-memory
 dashboard; use the successful IDs above.
 
+The newer native inbound path is different from that historical text-initiated
+trace: with the buyer's native checkbox enabled, a typed wine-v1 RFQ/PO goes
+directly through installed host codecs and supplier tools, never the buyer
+Copilot harness. The real local wallet integration checks buyer/supplier
+`agentcon.llmCalls == 0` across quote, purchase and same-task authorization
+resume. Native gateway outputs normalize protobuf whole-number doubles through
+the installed codecs before business checks. Text input still invokes Copilot;
+typed input translated for a text-only supplier invokes the supplier interpreter
+and must not be described as end-to-end zero inference. Supplier authorization
+metadata keeps its call count under `agentcon.supplierLlmCalls` on the buyer
+status so it cannot overwrite the buyer's own inference count.
+
 The automated cross-language test additionally exercises the SDK's
 return-immediately/background-executor path and checks exact trace and parent
 IDs from actual OTLP exports. A wrapper span or health counter is not proof of

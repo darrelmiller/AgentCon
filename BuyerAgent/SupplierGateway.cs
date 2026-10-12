@@ -11,6 +11,7 @@ public sealed record SupplierBinding(
     public IReadOnlyList<string> OutputModes { get; init; } = ["text/plain"];
     public IReadOnlyList<SupplierFormat> Formats { get; init; } = [];
     public SupplierCommunicationMode Mode { get; init; }
+    public bool Streaming { get; init; }
     public object Describe() => new
     {
         identifier = Identifier,
@@ -21,6 +22,7 @@ public sealed record SupplierBinding(
         catalog = Catalog,
         inputModes = InputModes,
         communicationMode = Mode.ToString(),
+        streaming = Streaming,
         understoodStructures = Formats.Select(format => new { format.MediaType, format.Direction, format.Schema })
     };
 }
@@ -48,9 +50,14 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             reason = allowed ? "Within demo price range and supplied budget." : "Outside demo price range or caller budget; stop and ask the caller." };
     }
     public SupplierGateway ForMode(SupplierCommunicationMode mode) => new(httpClient, options.WithMode(mode), catalog);
-    public async Task<SupplierBinding> RefreshModeAsync(SupplierBinding supplier, CancellationToken cancellationToken) =>
-        supplier.Mode == options.CommunicationMode ? supplier :
-            (await SelectAsync(supplier.Identifier, supplier.Version, cancellationToken)).Binding;
+    public SupplierGateway ForOptions(BuyerOptions snapshot) => new(httpClient, snapshot, catalog);
+    public async Task<SupplierBinding> RefreshModeAsync(SupplierBinding supplier, CancellationToken cancellationToken)
+    {
+        var refreshed = (await SelectAsync(supplier.Identifier, supplier.Version, cancellationToken)).Binding;
+        if (refreshed.Endpoint != supplier.Endpoint || refreshed.CardUrl != supplier.CardUrl)
+            throw new InvalidOperationException("Catalog supplier destination changed; existing ownership cannot be redirected.");
+        return refreshed;
+    }
     public Task<CatalogSearchResult> SearchAsync(string? query, CancellationToken cancellationToken) =>
         catalog.SearchAsync(query, cancellationToken);
 
@@ -59,22 +66,27 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         var entry = await catalog.FindAsync(identifier, version, cancellationToken);
         var card = await ResolveCardAsync(entry.CardUrl, cancellationToken);
         var endpoint = SelectEndpoint(card, entry.CardUrl);
-        var formats = options.CommunicationMode switch
+        var mode = options.CommunicationMode;
+        if (mode == SupplierCommunicationMode.Automatic)
+            mode = card.DefaultInputModes.Any(type => type != "application/json" && type.EndsWith("+json", StringComparison.Ordinal))
+                ? options.NativeStructuredSupport ? SupplierCommunicationMode.Native : SupplierCommunicationMode.LearnStructures
+                : SupplierCommunicationMode.NaturalLanguage;
+        var formats = mode switch
         {
             SupplierCommunicationMode.LearnStructures => await LearnAsync(card, entry.CardUrl, cancellationToken),
             SupplierCommunicationMode.Native => SupplierFormats.Native(card),
             _ => []
         };
-        if (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage &&
+        if (mode == SupplierCommunicationMode.NaturalLanguage &&
             !card.DefaultInputModes.Contains("text/plain"))
             throw new InvalidOperationException("NaturalLanguage mode requires a seller accepting text/plain.");
-        if (options.CommunicationMode != SupplierCommunicationMode.NaturalLanguage &&
+        if (mode != SupplierCommunicationMode.NaturalLanguage &&
             !formats.Any(format => format.Direction == "input"))
             throw new InvalidOperationException("Seller has no input structures understood in the configured communication mode.");
         return new SupplierSelection(
             new SupplierBinding(entry.Identifier, entry.Version, entry.DisplayName ?? card.Name, entry.CardUrl, endpoint, entry.Catalog)
             { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = formats,
-                Mode = options.CommunicationMode },
+                Mode = mode, Streaming = card.Capabilities.Streaming == true },
             card);
     }
 
@@ -128,7 +140,7 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
 
     public Part CreatePart(SupplierBinding supplier, string text, string? dataJson, string? mediaType)
     {
-        if (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage)
+        if (supplier.Mode == SupplierCommunicationMode.NaturalLanguage)
         {
             if (dataJson is not null || mediaType is not (null or "text/plain"))
                 throw new InvalidOperationException("NaturalLanguage mode permits only text/plain; do not send JSON data.");
@@ -144,10 +156,10 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             ?? throw new InvalidOperationException("No understood seller input schema/codec for this mediaType.");
         using var data = JsonDocument.Parse(dataJson);
         return new Part { Data = SupplierFormats.Validate(format, data.RootElement,
-            options.CommunicationMode == SupplierCommunicationMode.Native), MediaType = mediaType };
+            supplier.Mode == SupplierCommunicationMode.Native), MediaType = mediaType };
     }
 
-    private void ValidateOutputs(SupplierBinding supplier, IEnumerable<Part> parts)
+    internal void ValidateOutputs(SupplierBinding supplier, IEnumerable<Part> parts)
     {
         foreach (var part in parts)
         {
@@ -157,13 +169,13 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
                 continue;
             }
             if (part.Data is not { } data) throw new InvalidOperationException("Unsupported seller output part.");
-            if (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage)
+            if (supplier.Mode == SupplierCommunicationMode.NaturalLanguage)
             {
                 throw new InvalidOperationException("NaturalLanguage mode accepts only text/plain seller replies.");
             }
             var format = supplier.Formats.SingleOrDefault(item => item.Direction == "output" && item.MediaType == part.MediaType)
                 ?? throw new InvalidOperationException("Seller output has no understood schema/codec.");
-            SupplierFormats.Validate(format, data, options.CommunicationMode == SupplierCommunicationMode.Native);
+            part.Data = SupplierFormats.Validate(format, data, supplier.Mode == SupplierCommunicationMode.Native);
         }
     }
 
@@ -176,7 +188,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     }
 
     public async Task<SendMessageResponse> SendAsync(
-        SupplierBinding supplier, Message message, CancellationToken cancellationToken)
+        SupplierBinding supplier, Message message, CancellationToken cancellationToken, bool returnImmediately = true,
+        Action<SupplierStream>? retainStream = null)
     {
         using var activity = BuyerTelemetry.Source.StartActivity("invoke_agent SupplierAgent", System.Diagnostics.ActivityKind.Client,
             System.Diagnostics.Activity.Current?.Context ?? default,
@@ -188,7 +201,7 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         {
             message.Metadata ??= new();
             message.Metadata.TryAdd(MessageInferenceCounter.MetadataKey, JsonSerializer.SerializeToElement(0));
-            if (message.Parts.Count == 0 || options.CommunicationMode != SupplierCommunicationMode.NaturalLanguage && message.Parts.Count != 1)
+            if (message.Parts.Count == 0 || supplier.Mode != SupplierCommunicationMode.NaturalLanguage && message.Parts.Count != 1)
                 throw new InvalidOperationException("Send a nonempty natural-language message or exactly one understood typed data part.");
             foreach (var part in message.Parts)
             {
@@ -196,15 +209,37 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
                     throw new InvalidOperationException("Unsupported outbound part type.");
                 CreatePart(supplier, part.Text ?? "", part.Data?.GetRawText(), part.MediaType);
             }
-            var response = await client.SendMessageAsync(new SendMessageRequest
+            var request = new SendMessageRequest
             {
                 Message = message,
-                Configuration = new SendMessageConfiguration { ReturnImmediately = true,
-                    AcceptedOutputModes = (options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage
+                Configuration = new SendMessageConfiguration { ReturnImmediately = returnImmediately,
+                    AcceptedOutputModes = (supplier.Mode == SupplierCommunicationMode.NaturalLanguage
                         ? new[] { "text/plain" }
                         : supplier.Formats.Where(format => format.Direction == "output").Select(format => format.MediaType)
                             .Append("text/plain").Distinct()).ToList() }
-            }, cancellationToken);
+            };
+            SendMessageResponse response;
+            if (supplier.Streaming && retainStream is not null)
+            {
+                var stream = new SupplierStream(httpClient, this, supplier, message);
+                try
+                {
+                    response = await stream.StartAsync(request, cancellationToken);
+                    if (response.Task?.Status.State == TaskState.AuthRequired &&
+                        response.Task.Status.Message?.Metadata?.ContainsKey(BuyerCard.AuthorizationExtensionUri) == true)
+                        retainStream(stream);
+                    else await stream.DisposeAsync();
+                }
+                catch
+                {
+                    await stream.DisposeAsync();
+                    throw;
+                }
+            }
+            else response = await client.SendMessageAsync(request, cancellationToken);
+            if (message.TaskId is not null && response.Task?.Id != message.TaskId ||
+                message.ContextId is not null && (response.Task?.ContextId ?? response.Message?.ContextId) != message.ContextId)
+                throw new InvalidOperationException("Supplier response changed the bound task/context IDs; inspect the original task before retrying.");
             ValidateOutputs(supplier, (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
                 .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
             activity?.SetTag("agentcon.a2a.task.id", response.Task?.Id);
@@ -298,8 +333,17 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
 
     public Task<string> SendAsync(
         string text = "", string? dataJson = null, string? taskId = null, string? contextId = null, string? supplierIdentifier = null,
-        string? mediaType = null) => ExecuteAsync("send_supplier_message", async () =>
+        string? mediaType = null) => SendCoreAsync(text, dataJson, taskId, contextId, supplierIdentifier, mediaType, null);
+
+    public Task<string> SendNativeAsync(string text, string dataJson, string mediaType, string? taskId = null,
+        string? contextId = null, string? supplierIdentifier = null) =>
+        SendCoreAsync("", dataJson, taskId, contextId, supplierIdentifier, mediaType, text);
+
+    private Task<string> SendCoreAsync(string text, string? dataJson, string? taskId, string? contextId,
+        string? supplierIdentifier, string? mediaType, string? nativeText) => ExecuteAsync("send_supplier_message", async () =>
     {
+        if (turn.SupplierStream is not null)
+            throw new InvalidOperationException("Seller is waiting for input or wallet approval. Return the handoff; do not send another request in this turn.");
         if (turn.PriceApprovalRequired)
             throw new InvalidOperationException("Price assessment requires caller input. Do not send an order in this turn.");
         if (string.IsNullOrWhiteSpace(text) && dataJson is null)
@@ -307,6 +351,12 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
             throw new ArgumentException("Provide text or a structured JSON data part.");
         }
         var supplier = await gateway.RefreshModeAsync(ResolveDestination(taskId, contextId, supplierIdentifier), turnCancellation);
+        if (nativeText is not null && supplier.Mode == SupplierCommunicationMode.NaturalLanguage)
+        {
+            text = nativeText;
+            dataJson = null;
+            mediaType = null;
+        }
         var parts = new List<Part> { gateway.CreatePart(supplier, text, dataJson, mediaType) };
         var response = await gateway.SendAsync(supplier, new Message
         {
@@ -316,7 +366,8 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
             Metadata = new() { [MessageInferenceCounter.MetadataKey] = JsonSerializer.SerializeToElement(turn.Inference.SinceLastMessage()) },
             TaskId = taskId,
             ContextId = contextId
-        }, turnCancellation);
+        }, turnCancellation, returnImmediately: !turn.NativeExecution,
+            retainStream: stream => turn.SupplierStream = stream);
         Capture(supplier, response);
         return JsonSerializer.Serialize(new
         {
@@ -327,8 +378,7 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
 
     public Task<string> GetTaskAsync(string taskId, string? supplierIdentifier = null) => ExecuteAsync("get_supplier_task", async () =>
     {
-        var supplier = await gateway.RefreshModeAsync(
-            turn.Conversation.SupplierTasks.Resolve(taskId, supplierIdentifier, "task"), turnCancellation);
+        var supplier = turn.Conversation.SupplierTasks.Resolve(taskId, supplierIdentifier, "task");
         var task = await gateway.GetTaskAsync(supplier, taskId, turnCancellation);
         Capture(supplier, new SendMessageResponse { Task = task });
         return JsonSerializer.Serialize(new
@@ -444,6 +494,17 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
         if (response.Message?.ContextId is { Length: > 0 } messageContext)
         {
             turn.Conversation.SupplierContexts.Add(messageContext, supplier);
+        }
+        var quoteContext = response.Task?.ContextId ?? response.Message?.ContextId;
+        var quoteId = SupplierFormats.ObservedQuoteId(
+            (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
+                .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
+        if (quoteId is not null && !string.IsNullOrEmpty(quoteContext))
+        {
+            var key = (supplier.Identifier, quoteId);
+            if (turn.Conversation.NativeQuotes.Count >= 128 && !turn.Conversation.NativeQuotes.ContainsKey(key))
+                throw new InvalidOperationException("Observed quote capacity reached; inspect supplier tasks before retrying.");
+            turn.Conversation.NativeQuotes[key] = new(supplier, response, quoteContext);
         }
     }
 

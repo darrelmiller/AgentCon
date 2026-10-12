@@ -76,7 +76,7 @@ public sealed class CommunicationModeTests
         using var files = new TempCatalogs();
         using var network = Network();
         using var http = new HttpClient(network);
-        var options = new BuyerOptions { CatalogUrl = files.Write("catalog.json",
+        var options = new BuyerOptions { CommunicationMode = SupplierCommunicationMode.NaturalLanguage, CatalogUrl = files.Write("catalog.json",
             TempCatalogs.Agent(Identifier, "http://localhost:6000/.well-known/agent-card.json")) };
         var gateway = new SupplierGateway(http, options, new AiCatalogClient(http, options));
         var natural = gateway.ForMode(options.CommunicationMode);
@@ -265,13 +265,14 @@ public sealed class CommunicationModeTests
     [Fact]
     public void ModeConfigurationIsValidated()
     {
-        Assert.Equal(SupplierCommunicationMode.NaturalLanguage, new BuyerOptions().CommunicationMode);
+        Assert.Equal(SupplierCommunicationMode.Automatic, new BuyerOptions().CommunicationMode);
         Assert.Throws<InvalidOperationException>(() => new BuyerOptions { CommunicationMode = (SupplierCommunicationMode)99 }.Validate());
     }
 
     internal static AgentCard Card(string url = "http://localhost:6000/schemas/wine-v1.schema.json")
     {
         var card = BuyerCard.Create(new BuyerOptions { ListenUrl = "http://localhost:6000" });
+        card.Capabilities.Streaming = false;
         card.DefaultInputModes = ["text/plain", SupplierFormats.Rfq, SupplierFormats.Purchase];
         card.DefaultOutputModes = ["text/plain", SupplierFormats.Quote, SupplierFormats.Receipt];
         card.Capabilities.Extensions = [new AgentExtension { Uri = SupplierFormats.Extension, Params = JsonSerializer.SerializeToElement(new

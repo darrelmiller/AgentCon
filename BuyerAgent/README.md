@@ -38,17 +38,33 @@ Start-Process 'http://localhost:5100/demo'
 
 The buyer appears on the left, the catalog seller on the right, and one
 chronological conversation in the center. Entries are labelled **Buyer -> Seller**
-or **Seller -> Buyer** and ordered by request send / response arrival time, even
+or **Supplier -> Buyer** and ordered by request send / response arrival time, even
 when requests overlap. **Click a message** to inspect its
 text or JSON data in the bottom panel; artifact buttons select individual
-quote/order/receipt parts. **Raw wire body** shows the HTTP JSON-RPC body
+quote/order/receipt parts. **Wire** shows the HTTP JSON-RPC body
 (JSON pretty-printed) or SSE frames. Trace links open the matching Aspire
 trace in an external browser. Selecting a seller in this viewer only filters
 the view; it does not change any buyer conversation's supplier selection.
 Click either agent's icon/name to open its full current Agent Card JSON in a
 popup, including input/output modes, skills and extensions. The seller card is
 fetched through the buyer from the selected catalog entry, not directly from the
-browser. Close with **Close** or Escape; reopen to refresh after a mode change.
+browser. Close with **Close** or Escape; reopen to refresh after a capability change.
+The right-aligned header's **AI Catalog** button opens the current configured root catalog JSON
+in a popup, including the buyer entry. Close with **Close** or Escape; reopen to
+refresh. It uses the same bounded, validated
+catalog reader and local-only dashboard access policy; it never accepts a
+caller-supplied file path or destination URL.
+Catalog and Agent Card popups include their source link and a **Copy link**
+button. The catalog link is local to this buyer, not a publicly hosted catalog.
+
+The audience-facing view omits the capture banner and explanatory paragraphs.
+Hover or keyboard-focus the small **i** buttons for capture/privacy limits,
+native support, supplier advertisement and conversation/count semantics; Escape
+dismisses these tips. Status timestamps and wire details are available on hover.
+Task states and LLM counts remain visible; expand a task to read its full ID,
+context and observed time. Live errors, incomplete counts and truncation remain
+visible rather than being hidden in tips. Capture is still explicitly opt-in
+and remains enabled while the display is paused.
 
 Each conversation bubble shows **LLM calls** from the original A2A message's
 `metadata["agentcon.llmCalls"]`. The count comes from actual Copilot SDK
@@ -241,39 +257,72 @@ a2a send -a http://localhost:5100 --timeout 150s --context-id dinner-party 'Sele
 a2a send -a http://localhost:5100 --timeout 150s --stream --context-id dinner-party 'Summarize the quote. Do not purchase yet.'
 ```
 
-### Supplier communication modes
+### Seller streaming and wallet completion
 
-The buyer accepts only `text/plain` caller input in every communication mode,
-advertised globally and on its skill. JSON data parts and other declared input
-media types are rejected before inference. Communication modes govern the
-buyer's exchanges with sellers, not its caller input format.
+For a catalog-selected seller advertising `capabilities.streaming`, supplier
+tools use A2A 1.0 `SendStreamingMessage` (the SDK's
+`SendStreamingMessageAsync`, sometimes called SendMessageStream). Other sellers
+retain synchronous `SendMessage`. Task/status/artifact events are projected with
+the SDK, schema-validated and checked against the issuing task/context.
+An input-required question returns to the caller; the next answer continues
+that same owned task. Authorization hands the **existing connection** to a
+host-managed listener, releases the conversation gate, and returns wallet
+instructions immediately. No second dashboard/seller subscription is opened.
+The listener survives the foreground request's timeout and has a 15-minute
+maximum lifetime; service shutdown or buyer cancellation closes it.
 
-`Buyer:CommunicationMode` sets the initial mode (also `Buyer__CommunicationMode`
-in the environment). The Buyer Agent section of `/demo` switches modes without
-restarting. The change applies to new turns; active turns retain a snapshot of
-their mode and contracts. Dashboard changes are in memory, not saved to configuration.
-The live Agent Card updates immediately. The three values are:
+The demo seller checks the task-bound verifier once per second while a streaming
+purchase is waiting. Approval executes only its saved immutable PO, without
+Copilot, and emits receipt/artifact and completed-status events. The buyer
+persists and publishes these updates on its original task, without invoking
+Copilot or resending the purchase. Native completion rechecks original quote
+prices/budget and validates receipt identity, amount and verification marker.
+Text-only sellers retain factual text receipts and their own verifier gate;
+their initial text interpretation still invokes Copilot.
 
-| Mode | Supplier requests | Contract knowledge |
+The dashboard's existing polling observes incremental SSE frames while the
+connection is open. A caller can `SubscribeToTask` on the buyer to receive later
+completion. Disconnection/expiry is reported explicitly; there is **no automatic
+purchase retry or reconnection**. Inspect the original seller task after an
+uncertain transport failure. Synchronous direct seller clients still require
+an explicit same-task continuation after approval; `GetTask` never places orders.
+
+### Automatic supplier negotiation and native inbound execution
+
+The old communication-mode dropdown and `/demo/mode` endpoint are removed.
+Remove old `Buyer:CommunicationMode` overrides; service startup rejects them.
+There are two independent dashboard checkboxes, with in-memory changes:
+
+| Control | Default | Behavior |
 | --- | --- | --- |
-| `NaturalLanguage` (default) | Only `text/plain` | Seller must advertise text input; no schema fetch and JSON tool arguments are rejected |
-| `LearnStructures` | Typed JSON data parts only | Selection reads the seller's schema-discovery extension, fetches its JSON Schema, and validates requests and structured responses at runtime |
-| `Native` | Typed JSON data parts only | Installed wine-v1 RFQ/order/quote/receipt records, serialization/deserialization and validation; no schema fetch |
+| Supplier: **Advertise structured data parts** | On | Advertises and accepts wine-v1 RFQ/PO input and quote/receipt output. Off removes typed modes, schema extension and schema endpoint; new executions accept and return only text. |
+| Buyer: **Native structured support** | Off | Off learns advertised supplier schemas. On uses installed wine-v1 codecs and advertises RFQ/PO inbound types that the buyer executes without calling Copilot. |
 
 ```powershell
-dotnet run --project BuyerAgent\BuyerAgent.csproj -- --Buyer:CommunicationMode=LearnStructures --Buyer:ExchangeCaptureEnabled=true
-# Or --Buyer:CommunicationMode=NaturalLanguage / --Buyer:CommunicationMode=Native
+dotnet run --project BuyerAgent\BuyerAgent.csproj -- --Buyer:NativeStructuredSupport=true --Buyer:ExchangeCaptureEnabled=true
 ```
 
-The host enforces the mode at the gateway as well as in Copilot instructions.
-The send tool must provide an exact `mediaType` for structured data; it may only
-use advertised input types with a learned schema or installed codec. There is
-no generic `application/json` or text fallback in structured modes. The select
-tool returns understood schemas so the harness can construct a conforming
-request, rather than guessing a structure from a media-type name. Native code
-also checks business constraints and quote totals. Unknown native types fail
-explicitly. Native still uses Copilot to interpret the buyer's request and
-choose tools; it is not an end-to-end zero-inference buyer.
+Supplier controls require a matching process-scoped random 32-256 character
+base64url token in `Buyer__SupplierControlToken` and
+`SUPPLIER_DEMO_CONTROL_TOKEN`. The browser never receives the token. The buyer
+only proxies the control to a unique loopback entry from its configured catalog;
+no caller URL is accepted. Origin/Host checks protect buyer dashboard writes.
+The supplier rejects browser-origin writes and requires the token and its exact
+configured Host. No token means the supplier checkbox is disabled, not an
+unprotected configuration endpoint.
+
+Every turn snapshots the buyer checkbox. Supplier selection/refresh automatically
+uses **NaturalLanguage** when the live card only supports text, **LearnStructures**
+when it advertises structures and the buyer checkbox is off, or **Native** when
+the checkbox is on. These remain internal contract strategies, not user modes.
+Supplier executions snapshot its capability when execution begins, so a toggle
+does not change output halfway through an active execution. A changed card
+between discovery and send can explicitly reject a now-disabled input; retry
+only after inspecting the existing task. Existing task/context destinations
+cannot be redirected by changing catalog URLs.
+Historical task reads retain their issuing supplier's understood output contract
+so previously typed artifacts remain readable after its checkbox is disabled.
+New outbound messages rediscover the live input/output advertisement.
 
 LearnStructures uses the demo-only, unregistered Agent Card extension
 `urn:agentcon:extension:structured-schemas:v1`. Its `params.schemas` entries
@@ -284,11 +333,10 @@ redirect-disabled client. External schema references are rejected.
 Learned formats are bound to the selected supplier, including task continuations
 after changing suppliers. They are untrusted data, not new agent instructions.
 
-NaturalLanguage advertises only `text/plain` outputs globally and on its skill,
-requests only `text/plain` through A2A `configuration.acceptedOutputModes`, and
-rejects structured seller replies. It does not emit the raw JSON supplier-response
-artifact. The seller renders factual quote/order text instead of typed artifacts.
-Structured modes request text plus only the output formats they understand.
+Text-only supplier bindings request only `text/plain` through A2A
+`configuration.acceptedOutputModes` and reject structured seller replies.
+Structured bindings request text plus only understood output formats. No generic
+`application/json` input/output contract is advertised or accepted.
 The wine-v1 RFQ supports any city in the US or Canada through `deliveryCity`
 and optional `deliveryCountry` (`US`/`CA`, default `US`). Native codecs preserve
 the country in requests and quote artifacts; LearnStructures fetches the updated
@@ -297,7 +345,8 @@ LearnStructures and Native validate structured output on both sends and task
 reads before exposing it to the harness. An invalid order response does not
 imply rollback; inspect the seller task before retrying.
 
-In **LearnStructures or Native**, request a structured demo quote:
+Text caller input **always runs Copilot**, even with native support enabled.
+For example this is a text request, not a zero-inference demonstration:
 
 ```powershell
 a2a send -a http://localhost:5100 --timeout 150s --context-id dinner-party 'Select urn:agentcon:agent:demo-wine-supplier and use its understood input schema to quote 12 cases of 2019 Barolo delivered to San Jose. Do not purchase.'
@@ -305,8 +354,80 @@ a2a send -a http://localhost:5100 --timeout 150s --context-id dinner-party 'Sele
 
 These fields follow the local supplier's [agreed demo profile](../SupplierAgent/README.md#agreed-structured-profiles),
 not UBL. The Copilot harness interprets the caller's instruction and constructs
-the supplier tool call. The supplier handles this profile deterministically,
-but this buyer endpoint is not zero-inference or a measured performance comparison.
+the supplier tool call. If the supplier advertises structures it handles the
+typed request deterministically; the buyer still used inference.
+
+For a genuinely zero-buyer-inference request, enable the buyer checkbox and
+send **exactly one typed data part** to its JSON-RPC endpoint:
+
+```json
+{
+  "jsonrpc": "2.0", "id": 1, "method": "SendMessage",
+  "params": {
+    "message": {
+      "messageId": "rfq-demo-1", "role": "ROLE_USER", "contextId": "native-demo",
+      "metadata": {"agentcon.supplierIdentifier": "urn:agentcon:agent:demo-wine-supplier"},
+      "parts": [{
+        "mediaType": "application/vnd.agentcon.demo.wine-rfq.v1+json",
+        "data": {"kind":"rfq","schemaVersion":"1","demoOnly":true,"wine":"Barolo","vintage":2019,"cases":12,"deliveryCity":"San Jose","deliveryCountry":"US"}
+      }]
+    },
+    "configuration": {"returnImmediately": false, "acceptedOutputModes": ["text/plain", "application/vnd.agentcon.demo.wine-quote.v1+json"]}
+  }
+}
+```
+
+The buyer's live card advertises the installed schema discovery descriptors.
+RFQs route through `agentcon.supplierIdentifier` (optional
+`agentcon.supplierVersion`) in **message metadata**, never a caller URL.
+If omitted, the buyer uses the conversation's selected supplier or a single
+unambiguous catalog match; ambiguity explicitly fails without inference.
+No hardcoded supplier destination exists. Native inbound validation rejects
+unknown types, generic JSON, mixed/batched parts and invalid wine-v1 payloads
+before sending anything. With the checkbox off, typed inbound requests fail
+and the card advertises only text input.
+
+To purchase, send a separate typed PO in the same **buyer context**, with
+`kind:"purchase-order"`, `schemaVersion:"1"`, `demoOnly:true`, the observed
+`quoteId`, and an explicit `purchaseOrderId`. The buyer uses its stored observed
+quote and issuing supplier/context, even after another supplier is selected.
+Quotes observed through Copilot's supplier tools are also eligible after
+enabling native support; the native path revalidates known typed quote data
+through its installed codec before assessing it.
+Optional positive numeric `agentcon.maxTotalUsd` message metadata supplies a
+budget. The host reassesses actual quote prices before every purchase/resume;
+missing/ambiguous quotes or out-of-range prices/budgets cannot result in an order.
+The RFQ task may be terminal; a new supplier purchase task retains its quote context.
+Input-required RFQ/PO continuations retain their nonterminal supplier task.
+If the quote itself requests input for the order, the native PO continues that
+same supplier task rather than unnecessarily starting a separate sale.
+
+**Every purchase still pauses for external OID4VP verification.** Repeat the
+same typed PO on the same buyer task/context after wallet approval. The buyer
+retains its immutable PO, original budget and supplier task; changed PO data or
+destination fails without sending. The supplier independently executes only
+its immutable task-bound purchase after checking the verifier. User assertions
+do not grant authorization. Initial text requests and explicit text continuations
+still use Copilot; receiving streamed completion does not.
+
+Rejected replacement PO data keeps the original buyer task paused and relays
+its authorization metadata; it does not terminate the valid pending purchase.
+Streaming purchases complete automatically after wallet approval. For a
+nonstreaming seller, send the original PO to resume that same task. Malformed or unsupported inbound
+parts explicitly fail validation and must not be used as authorization resumes.
+
+Typed RFQ to a structured supplier and typed purchase/resume incur **zero
+buyer and supplier inference**, verified by the real cross-language wallet test
+and A2A counters. A typed inbound RFQ routed to a **text-only supplier** is
+rendered by the buyer's codec into plain text, without buyer inference, but the
+supplier then invokes its Copilot interpreter. That is **not** end-to-end zero
+inference. Text-only quote pricing is checked against the existing strict demo
+quote-text format; unparseable prices require caller input.
+
+Output negotiation preserves typed artifacts only when accepted, or renders
+the supplier's factual status as text for text-only callers. Typed-only quote
+outputs are supported; purchase requests require accepted `text/plain` for the
+authorization handoff. Raw supplier envelopes are not extra artifacts.
 
 Reuse `--context-id` across completed buyer tasks to retain recent conversation
 history. Use `--task-id` to continue a buyer task paused for input or authorization:
@@ -326,7 +447,9 @@ ignored by Git.
 | --- | --- | --- |
 | `Buyer:ListenUrl` | `http://localhost:5100` | HTTP loopback origin only |
 | `Buyer:Model` | `auto` | Copilot model selection; subject to account policy |
-| `Buyer:CommunicationMode` | `NaturalLanguage` | Initial mode: `NaturalLanguage`, `LearnStructures`, or `Native`; change live in `/demo` |
+| `Buyer:NativeStructuredSupport` | `false` | Installed outbound codecs and deterministic typed inbound execution; live checkbox in `/demo` |
+| `Buyer:SupplierControlToken` | unset | Process-scoped token matching the local supplier; never put secrets in tracked configuration |
+| `Buyer:AllowLoopbackPresentationHttp` | `false` | Test-only opt-in for HTTP presentation links on loopback; non-loopback HTTP remains rejected |
 | `Buyer:ExchangeCaptureEnabled` | `false` | Enable local in-memory exchange capture and `/demo` dashboard |
 | `Buyer:CatalogUrl` | repository `catalog.json` | AI Catalog to search: local path (absolute, or relative to the content root), `file:` URI, or HTTPS / loopback HTTP URL. An origin-only URL means `/.well-known/ai-catalog.json` |
 | `Buyer:AllowInsecureSupplierHttp` | `false` | Explicitly permits plaintext HTTP to a trusted LAN catalog, Agent Card or supplier |
@@ -383,8 +506,9 @@ never put a token in appsettings or a command-line argument.
 - Supplier `auth-required` messages relay experimental OID4VP metadata and
   deterministic Sphereon instructions to the caller. The issuer-hosted presentation
   page renders the QR; the phone posts credentials directly to that verifier, never
-  to buyer chat or telemetry. After wallet approval, explicitly ask the buyer to continue
-  the supplier task. Supplier completion does not automatically resume the buyer.
+  to buyer chat or telemetry. Streaming supplier completion updates the original
+  buyer task automatically after wallet approval; nonstreaming sellers still
+  require explicit same-task continuation.
 - Cancellation stops buyer execution, not orders already accepted at the
   supplier. After cancellation, timeout or an uncertain transport failure,
   inspect supplier state before retrying an order.
@@ -428,6 +552,28 @@ available for terminal tasks; task ownership survives mode and supplier changes.
 dotnet restore BuyerAgent.Tests\BuyerAgent.Tests.csproj --locked-mode
 dotnet test BuyerAgent.Tests\BuyerAgent.Tests.csproj
 ```
+
+For the full cross-language suite with isolated outputs on this Windows ARM64
+machine, first build the Rust binaries and examples using the documented x64
+`vcvarsall.bat` invocation and `--target-dir artifacts\automatic-negotiation-rust`.
+Then run these **sequentially**, not while rebuilding/running those executables:
+
+```powershell
+$env:AGENTCON_TRACE_FIXTURE = Join-Path (Get-Location) 'artifacts\automatic-negotiation-rust\debug\examples\trace_fixture.exe'
+dotnet test BuyerAgent.Tests\BuyerAgent.Tests.csproj --artifacts-path artifacts\automatic-negotiation
+$env:AGENTCON_SUPPLIER_EXE = Join-Path (Get-Location) 'artifacts\automatic-negotiation-rust\debug\agentcon-supplier.exe'
+$env:AGENTCON_BUYER_EXE = Join-Path (Get-Location) 'artifacts\automatic-negotiation\bin\BuyerAgent\debug\BuyerAgent.exe'
+npm --prefix IssuerAgent test
+npm --prefix IssuerAgent audit --omit=dev
+node --test BuyerAgent.Tests\ExchangeDashboard.test.cjs
+```
+
+The wallet integration starts ephemeral local issuer/supplier/buyer services,
+issues a software-holder credential, verifies signed did:jwk OID4VP requests,
+and checks zero-inference quote/purchase/auth-resume plus live controls. It never
+deploys or changes the live issuer. Real-binary Node tests skip unless the
+executable variables are set. Unit tests also verify text-only fallback invokes
+the supplier interpreter and text caller input invokes the buyer harness.
 
 Tests exercise the real A2A SDK's JSON-RPC and SSE endpoints with a deterministic
 harness, plus outbound SDK requests, structured data, artifact preservation,

@@ -222,7 +222,17 @@ tests do not assert successful live deployment or mobile issuance.
 Manual verification on October 10, 2026: the deployed HTTPS issuer served a
 QR offer, and Darrel confirmed accepting the credential into Sphereon Wallet
 0.8.0 on his phone. This confirms the issuance path, not OID4VP presentation
-or supplier task resumption, which remain untested.
+or supplier task resumption. On October 11, Darrel additionally confirmed
+selecting/sharing the phone credential, verified status `true`, and completion
+of the original pending supplier purchase with the signed did:jwk request.
+That phone check used the merged baseline, not an automated software-holder test.
+
+The experimental native buyer path is separately covered by the local
+cross-language wallet integration in `test/presentation.test.mjs`. Set
+`AGENTCON_SUPPLIER_EXE` and `AGENTCON_BUYER_EXE` to isolated built executables
+to run both supplier and buyer quote/purchase/resume paths without inference.
+Tests start their own ephemeral ports/verifier and never deploy this application
+or alter the live issuer's key/settings. See the buyer README for build commands.
 
 Deploy **only this directory's application files**, with `package.json` at the
 ZIP root, to a Linux Node 22/24 App Service. The parent workflow handles Azure

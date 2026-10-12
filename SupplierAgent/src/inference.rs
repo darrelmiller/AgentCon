@@ -189,6 +189,9 @@ impl Interpreter for CopilotInterpreter {
             options
                 .env
                 .push(("SUPPLIER_VERIFIER_TOKEN".into(), "".into()));
+            options
+                .env
+                .push(("SUPPLIER_DEMO_CONTROL_TOKEN".into(), "".into()));
             let client = Client::start(options)
                 .instrument(crate::telemetry::runtime_start())
                 .await

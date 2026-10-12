@@ -2,7 +2,7 @@ using System.Reflection;
 
 namespace BuyerAgent;
 
-public enum SupplierCommunicationMode { NaturalLanguage, LearnStructures, Native }
+public enum SupplierCommunicationMode { NaturalLanguage, LearnStructures, Native, Automatic }
 
 public sealed class BuyerOptions
 {
@@ -14,7 +14,15 @@ public sealed class BuyerOptions
     public string? CatalogUrl { get; set; }
     public bool AllowInsecureSupplierHttp { get; set; }
     public bool ExchangeCaptureEnabled { get; set; }
-    private int _communicationMode;
+    private int _communicationMode = (int)SupplierCommunicationMode.Automatic;
+    private int _nativeStructuredSupport;
+    public bool NativeStructuredSupport
+    {
+        get => Volatile.Read(ref _nativeStructuredSupport) != 0;
+        set => Volatile.Write(ref _nativeStructuredSupport, value ? 1 : 0);
+    }
+    public string? SupplierControlToken { get; set; }
+    public bool AllowLoopbackPresentationHttp { get; set; }
     public SupplierCommunicationMode CommunicationMode
     {
         get => (SupplierCommunicationMode)Volatile.Read(ref _communicationMode);
@@ -39,8 +47,11 @@ public sealed class BuyerOptions
 
     public void Validate()
     {
+        if (SupplierControlToken is { } token && (token.Length is < 32 or > 256 ||
+            token.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('-' or '_'))))
+            throw new InvalidOperationException("Supplier control token must contain 32-256 base64url characters.");
         if (!Enum.IsDefined(CommunicationMode))
-            throw new InvalidOperationException("Buyer:CommunicationMode must be NaturalLanguage, LearnStructures, or Native.");
+            throw new InvalidOperationException("Buyer:CommunicationMode is invalid.");
         if (DemoMinBottlePriceUsd <= 0 || DemoMaxBottlePriceUsd < DemoMinBottlePriceUsd ||
             DemoMaxBottlePriceUsd > 10000)
             throw new InvalidOperationException("Configure a positive, ordered demo bottle-price range of at most USD 10000.");
