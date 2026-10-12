@@ -18,6 +18,11 @@ A buyer agent (GitHub Copilot driving the official `a2a` CLI) buys wine from Luc
 - `docs/outline.md`: talk outline and timings.
 - `docs/proposal-for-luca.md`: the plan as shared with Luca.
 - `catalog.json`: local AI Catalog pointing to live buyer and supplier Agent Cards; the buyer discovers suppliers from this catalog.
+
+The buyer uses seller streaming when advertised. Wallet approval completes the
+seller's immutable pending purchase and updates the original buyer task without
+another message or LLM call. The dashboard observes the existing stream through
+its local capture/polling view, not a second seller subscription.
 - `stage-map/index.html`: offline HTML slide deck, starting with the session title slide. Open in a browser; arrow keys navigate, and `F` toggles fullscreen.
 - `tools/credentials/`: local demo age-credential signing; phone-wallet issuance is a separate step.
 - `BuyerAgent/`: C# A2A v1 buyer service with a GitHub Copilot SDK harness.
@@ -29,8 +34,8 @@ A buyer agent (GitHub Copilot driving the official `a2a` CLI) buys wine from Luc
 ## Buyer implementation
 
 GitHub Copilot CLI drives the official `a2a` CLI to call the local `BuyerAgent`
-service. The service uses the Copilot SDK for its agent loop and GitHub-authenticated
-inference, and the official .NET A2A SDK for inbound requests and outbound supplier
+service. Text input uses the Copilot SDK for its agent loop and GitHub-authenticated
+inference; optional native wine-v1 typed input executes without an LLM. The official .NET A2A SDK handles inbound requests and outbound supplier
 messages. Suppliers are found by searching an AI Catalog (default `catalog.json`)
 and selected by catalog identifier, not configured as a fixed URL. Microsoft Agent Framework is not needed for this
 initial implementation.
@@ -38,5 +43,7 @@ initial implementation.
 See [BuyerAgent setup and usage](BuyerAgent/README.md).
 
 See [SupplierAgent setup, agreed schemas and limits](SupplierAgent/README.md).
-The local supplier does not implement wallet verification, real purchases or
-SLIMRPC; those talk-demo integrations remain future work.
+The local supplier gates all purchases on task-bound OID4VP wallet verification
+through the demo issuer. Real purchasing/payment/fulfillment and SLIMRPC remain
+unimplemented. Buyer and supplier dashboard checkboxes control native input
+support and structured advertisement; outbound format negotiation is automatic.

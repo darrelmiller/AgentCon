@@ -43,6 +43,13 @@ public sealed class AiCatalogClient(HttpClient httpClient, BuyerOptions options)
     public const int MaxDocumentBytes = 1024 * 1024;
     public const int MaxResults = 25;
 
+    public async Task<JsonElement> ReadRootAsync(CancellationToken cancellationToken)
+    {
+        using var document = await ReadCatalogAsync(options.GetCatalogUri(), true, [], cancellationToken)
+            ?? throw new InvalidOperationException("Root AI Catalog is missing.");
+        return document.RootElement.Clone();
+    }
+
     public async Task<CatalogSnapshot> LoadAsync(CancellationToken cancellationToken)
     {
         var root = options.GetCatalogUri();

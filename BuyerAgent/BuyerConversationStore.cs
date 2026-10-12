@@ -40,6 +40,9 @@ public sealed class BuyerConversation
     /// <summary>Supplier context IDs returned in this conversation, bound to the supplier that issued them.</summary>
     public SupplierOwnership SupplierContexts { get; } = new();
     public Dictionary<(string Supplier, string TaskId), A2A.TaskState> SupplierTaskStates { get; } = [];
+    public Dictionary<(string Supplier, string QuoteId), NativeQuote> NativeQuotes { get; } = [];
+    public Dictionary<string, NativePurchase> NativePurchases { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, NativeRfqTask> NativeRfqTasks { get; } = new(StringComparer.Ordinal);
 
     public void Remember(BuyerHistoryTurn turn)
     {
@@ -103,3 +106,6 @@ public sealed class SupplierOwnership
 }
 
 public sealed record BuyerHistoryTurn(string Request, string Response, IReadOnlyList<string> SupplierResponses);
+public sealed record NativeQuote(SupplierBinding Supplier, A2A.SendMessageResponse Response, string ContextId);
+public sealed record NativePurchase(string Payload, NativeQuote Quote, string SupplierTaskId, decimal? MaxTotalUsd, A2A.SendMessageResponse Response);
+public sealed record NativeRfqTask(SupplierBinding Supplier, string SupplierTaskId, string SupplierContextId);

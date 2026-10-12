@@ -68,6 +68,35 @@ public static class SupplierFormats
         return formats;
     }
 
+    public static IReadOnlyList<SupplierFormat> Installed() => Native(new AgentCard
+    {
+        DefaultInputModes = [Rfq, Purchase],
+        DefaultOutputModes = [Quote, Receipt]
+    });
+
+    public static string? ObservedQuoteId(IEnumerable<Part> parts)
+    {
+        var identifiers = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var part in parts)
+        {
+            if (part.MediaType == Quote && part.Data is { } data &&
+                data.TryGetProperty("quoteId", out var id) && id.ValueKind == JsonValueKind.String)
+                identifiers.Add(id.GetString()!);
+            else if (part.Text is { } text)
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(text, @"^Quote ([^:]+):",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+                if (match.Success) identifiers.Add(match.Groups[1].Value);
+            }
+        }
+        return identifiers.Count switch
+        {
+            0 => null,
+            1 => identifiers.Single(),
+            _ => throw new InvalidOperationException("Supplier response contains ambiguous quote identifiers.")
+        };
+    }
+
     public static JsonElement Validate(SupplierFormat format, JsonElement data, bool native)
     {
         if (!format.Validator.Evaluate(JsonNode.Parse(data.GetRawText()), new EvaluationOptions

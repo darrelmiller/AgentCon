@@ -24,7 +24,8 @@ public sealed class OtlpIntegrationTests
     public async Task RealBuyerSdkHttpAndRustSdkExportTheSameTraceAndParentIds()
     {
         var root = Path.GetDirectoryName(new BuyerOptions().GetCatalogUri().LocalPath)!;
-        var fixture = Path.Combine(root, "SupplierAgent", "target", "debug", "examples", "trace_fixture.exe");
+        var fixture = Environment.GetEnvironmentVariable("AGENTCON_TRACE_FIXTURE") ??
+            Path.Combine(root, "SupplierAgent", "target", "debug", "examples", "trace_fixture.exe");
         Assert.True(File.Exists(fixture), "Build cargo example trace_fixture before running CrossLanguage tests.");
         var captured = new ConcurrentBag<WireSpan>();
         var builder = WebApplication.CreateBuilder();
@@ -83,7 +84,8 @@ public sealed class OtlpIntegrationTests
             var card = await gateway.ResolveCardAsync(new Uri(origin + "/.well-known/agent-card.json"), CancellationToken.None);
             var binding = new SupplierBinding("urn:test:supplier", null, "SupplierAgent",
                 new Uri(origin + "/.well-known/agent-card.json"), new Uri(origin + "/a2a"), "test")
-            { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = SupplierFormats.Native(card) };
+            { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = SupplierFormats.Native(card),
+                Mode = SupplierCommunicationMode.Native };
             ActivityTraceId traceId;
             using (var agent = BuyerTelemetry.Agent("integration", "integration"))
             {

@@ -23,6 +23,8 @@ public static class BuyerApplication
             options.CatalogUrl = options.ParseCatalogLocation(options.CatalogUrl, builder.Environment.ContentRootPath).AbsoluteUri;
         }
         options.Validate();
+        if (options.CommunicationMode != SupplierCommunicationMode.Automatic)
+            throw new InvalidOperationException("Buyer communication is now automatic. Remove Buyer:CommunicationMode overrides; use Buyer:NativeStructuredSupport.");
         builder.WebHost.UseUrls(options.ListenUrl);
         builder.WebHost.ConfigureKestrel(server => server.Limits.MaxRequestBodySize = 128 * 1024);
         builder.Services.AddSingleton(options);
@@ -52,6 +54,8 @@ public static class BuyerApplication
         builder.Services.AddSingleton<IBuyerHarness, CopilotBuyerHarness>();
         var card = BuyerCard.Create(options);
         builder.Services.AddA2AAgent<BuyerHandler>(card);
+        builder.Services.AddSingleton<SupplierStreamMonitor>();
+        builder.Services.AddHostedService(provider => provider.GetRequiredService<SupplierStreamMonitor>());
         configureHost?.Invoke(builder);
 
         var app = builder.Build();
@@ -83,6 +87,12 @@ public static class BuyerApplication
         });
         app.MapGet("/health", () => Results.Ok(new { status = "ok", agent = card.Name }));
         app.MapA2A("/a2a");
+        app.MapGet("/schemas/wine-v1.schema.json", () =>
+        {
+            if (!options.NativeStructuredSupport) return Results.NotFound();
+            using var stream = typeof(SupplierFormats).Assembly.GetManifestResourceStream("BuyerAgent.WineSchema.json")!;
+            return Results.Text(new StreamReader(stream).ReadToEnd(), "application/schema+json");
+        });
         app.MapGet("/.well-known/agent-card.json", (HttpContext context) =>
         {
             context.Response.Headers.CacheControl = "no-store";

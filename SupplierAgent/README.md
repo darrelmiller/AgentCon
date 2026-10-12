@@ -54,6 +54,26 @@ Environment options (scope them to the service process):
 `SUPPLIER_COPILOT_STATE` (absolute directory outside the repository; default
 `%LOCALAPPDATA%\AgentConDemo\supplier-copilot`).
 
+`SUPPLIER_STRUCTURED_DATA` is `true` by default (strict `true`/`false`).
+The buyer dashboard's supplier checkbox can change it live. Configure matching
+process-scoped `SUPPLIER_DEMO_CONTROL_TOKEN` and `Buyer__SupplierControlToken`
+random base64url tokens (32-256 characters). Without a token the configuration
+endpoint is disabled. The browser never gets the secret; the buyer selects the
+control destination from a unique loopback catalog entry. `/demo/structures`
+requires `Authorization: Bearer <token>` and the supplier's configured Host,
+and rejects browser Origin/fetch headers. Do not reuse the issuer admin token
+for this control in the demo.
+
+When disabled, the live card and skill advertise only `text/plain`, the schema
+extension is removed, `/schemas/wine-v1.schema.json` returns 404, typed requests
+fail without inference, and outputs are text only. Generic `application/json`
+and mixed text/data are never accepted, even on authorization continuations.
+Each execution snapshots the setting when it begins; active text executions keep
+their output contract. Pending authorized purchases remain immutable and still
+require verifier approval; a text continuation can resume them when typed input
+has been disabled. See the buyer README for automatic negotiation and the
+separate installed, zero-inference **typed inbound buyer** path.
+
 The Copilot SDK bundles its matching runtime and uses existing GitHub/Copilot
 login, not issuer keys or an unrelated inference API. It lazily starts only on
 the first natural-language request. Empty mode, no available tools, deny-all
@@ -100,7 +120,17 @@ holder key signature, nonce, audience, state, and presentation expiry. It accept
 only the issuer's demo credential type and `demo_only:true`. This proves possession
 of a signed demo assertion, **not independently verified age**.
 
-After wallet approval, send a continuation on the **same supplier task and context**
+With `SendStreamingMessage`, the seller keeps the execution alive after
+`auth_required` and checks authenticated task-bound verifier status once per
+second until approval, expiry or cancellation. Approval executes the immutable
+saved PO without inference, then emits `TaskArtifactUpdateEvent` and
+`TaskStatusUpdateEvent` (`completed`). The buyer consumes these on the existing
+connection and updates its task/dashboard automatically; no extra message is
+needed. Capabilities/output formats stay snapshotted for this execution. A
+disconnected streaming client does not revoke wallet consent or cancel the
+supplier task; inspect its state before retrying.
+
+For synchronous `SendMessage`, after wallet approval send a continuation on the **same supplier task and context**
 (or ask the buyer to continue its auth-required task). The supplier checks verifier
 status and executes the immutable purchase saved before the pause; replacement
 purchase data and a caller's assertion of approval cannot authorize it. It does not

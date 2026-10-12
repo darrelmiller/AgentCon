@@ -31,6 +31,7 @@ internal sealed class FakeNetwork : HttpMessageHandler
     public FakeNetwork Supplier(int port, string name)
     {
         var card = BuyerCard.Create(new BuyerOptions { ListenUrl = $"http://localhost:{port}" });
+        card.Capabilities.Streaming = false;
         card.Name = name;
         card.DefaultInputModes = ["text/plain", SupplierFormats.Rfq, SupplierFormats.Purchase];
         card.DefaultOutputModes = ["text/plain", SupplierFormats.Quote, SupplierFormats.Receipt];

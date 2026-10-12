@@ -39,6 +39,16 @@ public sealed class SupplierAuthorizationTests
     public void RejectsUnsafeRequestLinks(string uri) =>
         Assert.Throws<InvalidOperationException>(() => SupplierAuthorization.Instructions(TaskWithRequest(uri)));
 
+    [Fact]
+    public void LocalVerifierHttpRequiresExplicitOptInAndNeverAllowsRemoteHttp()
+    {
+        var local = TaskWithRequest("http://127.0.0.1:7777/request");
+        Assert.Throws<InvalidOperationException>(() => SupplierAuthorization.Instructions(local));
+        Assert.Contains("openid4vp://", SupplierAuthorization.Instructions(local, allowLoopbackHttp: true));
+        Assert.Throws<InvalidOperationException>(() => SupplierAuthorization.Instructions(
+            TaskWithRequest("http://verifier.example/request"), allowLoopbackHttp: true));
+    }
+
     private static AgentTask TaskWithRequest(string uri) => new()
     {
         Id = "supplier-task", ContextId = "supplier-context",

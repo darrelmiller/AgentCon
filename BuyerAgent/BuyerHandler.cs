@@ -5,7 +5,8 @@ namespace BuyerAgent;
 
 public sealed class BuyerHandler(
     IBuyerHarness harness, BuyerConversationStore conversations, BuyerOptions options, ILogger<BuyerHandler> logger,
-    ExchangeStore exchanges, ITaskStore taskStore, ChannelEventNotifier notifier) : IAgentHandler
+    ExchangeStore exchanges, ITaskStore taskStore, ChannelEventNotifier notifier, SupplierGateway gateway,
+    SupplierStreamMonitor streams) : IAgentHandler
 {
     private readonly Dictionary<string, ActiveExecution> _activeTasks = new(StringComparer.Ordinal);
     private readonly object _activeLock = new();
@@ -14,6 +15,7 @@ public sealed class BuyerHandler(
     {
         using var activity = BuyerTelemetry.Agent(context.TaskId, context.ContextId);
         var mode = options.CommunicationMode;
+        var snapshot = options.WithMode(mode);
         void Observe(string state) => exchanges.BuyerTask(context.TaskId, context.ContextId, state);
         Observe("TASK_STATE_SUBMITTED");
         var updater = new TaskUpdater(eventQueue, context.TaskId, context.ContextId);
@@ -25,6 +27,50 @@ public sealed class BuyerHandler(
         {
             // preview2 materializes synchronous replies only after an initial Task event.
             await eventQueue.EnqueueTaskAsync(context.Task!, cancellationToken);
+            if (streams.IsWatching(context.TaskId))
+            {
+                var existing = conversations.Get(context.ContextId);
+                await existing.Gate.WaitAsync(cancellationToken);
+                try
+                {
+                    if (existing.NativePurchases.TryGetValue(context.TaskId, out var pending) &&
+                        context.Message.Parts.Any(part => part.ContentCase == PartContentCase.Data))
+                    {
+                        var valid = snapshot.NativeStructuredSupport && context.Message.Parts.Count == 1 &&
+                            context.Message.Parts[0].MediaType == SupplierFormats.Purchase;
+                        if (valid)
+                        {
+                            var format = SupplierFormats.Installed().Single(item => item.MediaType == SupplierFormats.Purchase);
+                            try
+                            {
+                                valid = SupplierFormats.Validate(format, context.Message.Parts[0].Data!.Value, true).GetRawText() == pending.Payload;
+                            }
+                            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or JsonException)
+                            {
+                                logger.LogWarning("Invalid continuation for monitored native purchase {TaskId}", context.TaskId);
+                                valid = false;
+                            }
+                            foreach (var key in new[] { "agentcon.supplierIdentifier", "agentcon.supplierVersion" })
+                                if (context.Message.Metadata?.TryGetValue(key, out var value) == true &&
+                                    (value.ValueKind != JsonValueKind.String || value.GetString() !=
+                                        (key.EndsWith("Identifier", StringComparison.Ordinal) ? pending.Quote.Supplier.Identifier : pending.Quote.Supplier.Version)))
+                                    valid = false;
+                            if (context.Message.Metadata?.TryGetValue("agentcon.maxTotalUsd", out var budget) == true &&
+                                (budget.ValueKind != JsonValueKind.Number || !budget.TryGetDecimal(out var amount) ||
+                                    pending.MaxTotalUsd != amount))
+                                valid = false;
+                        }
+                        if (!valid)
+                        {
+                            var rejected = CreateReply("Continuation rejected: the original immutable purchase is still waiting for wallet approval. No new order was sent.", context);
+                            rejected.Metadata = context.Task!.Status.Message?.Metadata;
+                            await updater.RequireAuthAsync(rejected, cancellationToken: cancellationToken);
+                        }
+                    }
+                }
+                finally { existing.Gate.Release(); }
+                return;
+            }
         }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.RequestTimeoutSeconds));
@@ -39,20 +85,30 @@ public sealed class BuyerHandler(
         var reply = "Buyer did not complete this request.";
         try
         {
-            if (context.Message.Parts.Count == 0 ||
+            var typed = context.Message.Parts.Count == 1 &&
+                context.Message.Parts[0].ContentCase == PartContentCase.Data && snapshot.NativeStructuredSupport;
+            if (!typed && (context.Message.Parts.Count == 0 ||
                 context.Message.Parts.Any(part => part.ContentCase != PartContentCase.Text ||
-                    part.MediaType is not (null or "text/plain")))
+                    part.MediaType is not (null or "text/plain"))))
             {
                 throw new ArgumentException("The buyer accepts text/plain input only.");
             }
+            var accepted = context.Configuration?.AcceptedOutputModes;
+            var textAccepted = accepted is null || accepted.Contains("text/plain");
+            if (!textAccepted && (!typed || context.Message.Parts[0].MediaType != SupplierFormats.Rfq ||
+                !accepted!.Contains(SupplierFormats.Quote)))
+                throw new ArgumentException("No compatible output modes. Text/plain status is required for text requests and purchase authorization.");
             conversation = conversations.Get(context.ContextId);
             await conversation.Gate.WaitAsync(deadline.Token);
             entered = true;
-            turn = new BuyerTurn(context.Message, conversation) { CommunicationMode = mode };
+            turn = new BuyerTurn(context.Message, conversation) { CommunicationMode = mode, OptionsSnapshot = snapshot };
+            turn.Message.TaskId = context.TaskId;
             await updater.StartWorkAsync(cancellationToken: deadline.Token);
             Observe("TASK_STATE_WORKING");
-            reply = await harness.RunAsync(turn, deadline.Token);
-            var forwardedArtifacts = await ForwardSupplierArtifactsAsync(turn, updater, eventQueue, deadline.Token);
+            reply = typed
+                ? await new NativeBuyer(gateway.ForOptions(snapshot)).RunAsync(turn, deadline.Token)
+                : await harness.RunAsync(turn, deadline.Token);
+            var forwardedArtifacts = await ForwardSupplierArtifactsAsync(turn, updater, eventQueue, accepted, reply, deadline.Token);
             if (turn.ToolFailure is { } toolFailure)
             {
                 throw new InvalidOperationException($"Supplier tool failed: {toolFailure.Message}", toolFailure);
@@ -60,14 +116,23 @@ public sealed class BuyerHandler(
 
             var supplierTask = turn.SupplierResponses.LastOrDefault()?.Task;
             var message = CreateReply(reply, context);
+            message.Metadata = new()
+            {
+                [MessageInferenceCounter.MetadataKey] = JsonSerializer.SerializeToElement(turn.Inference.Total),
+                ["agentcon.nativeExecution"] = JsonSerializer.SerializeToElement(typed)
+            };
             if (turn.QuoteAssessments.Count > 0)
-                message.Metadata = new() { ["agentcon.quoteAssessments"] = JsonSerializer.SerializeToElement(turn.QuoteAssessments) };
+                message.Metadata["agentcon.quoteAssessments"] = JsonSerializer.SerializeToElement(turn.QuoteAssessments);
             if (supplierTask?.Status.State == TaskState.AuthRequired)
             {
                 message.Metadata ??= new();
                 foreach (var item in supplierTask.Status.Message?.Metadata ?? [])
-                    message.Metadata[item.Key] = item.Value;
-                var instructions = SupplierAuthorization.Instructions(supplierTask);
+                    if (item.Key == MessageInferenceCounter.MetadataKey)
+                        message.Metadata["agentcon.supplierLlmCalls"] = item.Value;
+                    else message.Metadata[item.Key] = item.Value;
+                var instructions = SupplierAuthorization.Instructions(supplierTask, snapshot.AllowLoopbackPresentationHttp,
+                    turn.SupplierStream is not null);
+                if (turn.NativeContinuationError is { } error) instructions = error + "\n" + instructions;
                 message.Parts = [Part.FromText(instructions)];
                 reply = instructions;
                 await updater.RequireAuthAsync(message, cancellationToken: deadline.Token);
@@ -89,7 +154,7 @@ public sealed class BuyerHandler(
             {
                 if (!forwardedArtifacts)
                     await updater.AddArtifactAsync([Part.FromText(reply)], name: "buyer-response", cancellationToken: deadline.Token);
-                await updater.CompleteAsync(message, cancellationToken: deadline.Token);
+                await updater.CompleteAsync(textAccepted ? message : null, cancellationToken: deadline.Token);
                 Observe("TASK_STATE_COMPLETED");
             }
         }
@@ -150,6 +215,12 @@ public sealed class BuyerHandler(
                     turn.SupplierResponses.Select(response =>
                         JsonSerializer.Serialize(response, A2AJsonUtilities.DefaultOptions)).ToArray()));
                 conversation.Gate.Release();
+                if (turn.SupplierStream is { } stream)
+                {
+                    if (turn.ToolFailure is null && !turn.PriceApprovalRequired)
+                        streams.Watch(context.TaskId, context.ContextId, turn, context.Configuration?.AcceptedOutputModes);
+                    else await stream.DisposeAsync();
+                }
             }
         }
     }
@@ -157,6 +228,7 @@ public sealed class BuyerHandler(
     public async Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
         using var activity = BuyerTelemetry.Source.StartActivity("buyer.cancel");
+        streams.Cancel(context.TaskId);
         activity?.SetTag("agentcon.a2a.task.id", context.TaskId);
         lock (_activeLock)
         {
@@ -188,7 +260,8 @@ public sealed class BuyerHandler(
     };
 
     private static async Task<bool> ForwardSupplierArtifactsAsync(
-        BuyerTurn turn, TaskUpdater updater, AgentEventQueue eventQueue, CancellationToken cancellationToken)
+        BuyerTurn turn, TaskUpdater updater, AgentEventQueue eventQueue, IReadOnlyList<string>? accepted,
+        string reply, CancellationToken cancellationToken)
     {
         var artifacts = turn.SupplierResponses
             .Where(response => response.Task is not null)
@@ -201,6 +274,13 @@ public sealed class BuyerHandler(
             if (turn.CommunicationMode == SupplierCommunicationMode.NaturalLanguage &&
                 artifact.Parts.Any(part => part.ContentCase != PartContentCase.Text))
                 continue;
+            var parts = artifact.Parts;
+            if (accepted is not null && parts.Any(part => !accepted.Contains(part.MediaType ??
+                (part.ContentCase == PartContentCase.Text ? "text/plain" : ""))))
+            {
+                if (!accepted.Contains("text/plain")) continue;
+                parts = [Part.FromText(reply)];
+            }
             forwarded = true;
             await eventQueue.EnqueueArtifactUpdateAsync(new TaskArtifactUpdateEvent
             {
@@ -211,7 +291,7 @@ public sealed class BuyerHandler(
                     ArtifactId = Guid.NewGuid().ToString("N"),
                     Name = artifact.Name,
                     Description = artifact.Description,
-                    Parts = artifact.Parts,
+                    Parts = parts,
                     Metadata = artifact.Metadata
                 },
                 LastChunk = true

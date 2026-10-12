@@ -1,6 +1,8 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 
 namespace BuyerAgent;
 
@@ -44,6 +46,12 @@ public sealed class ExchangeDashboard(
             context.Response.Headers.CacheControl = "no-store";
             return Results.Ok(await dashboard.StateAsync(context.RequestAborted));
         });
+        app.MapGet("/demo/catalog", async (HttpContext context, ExchangeDashboard dashboard) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+            return await dashboard.CatalogAsync(context.RequestAborted);
+        });
         app.MapGet("/demo/agent-card", async (HttpContext context, string? identifier, ExchangeDashboard dashboard) =>
         {
             context.Response.Headers.CacheControl = "no-store";
@@ -55,20 +63,69 @@ public sealed class ExchangeDashboard(
             exchanges.Clear();
             return Results.NoContent();
         });
-        app.MapPost("/demo/mode", (HttpContext context, ModeChange change, BuyerOptions options,
+        app.MapPost("/demo/native", (HttpContext context, NativeChange change, BuyerOptions options,
             ILogger<ExchangeDashboard> logger) =>
         {
             context.Response.Headers.CacheControl = "no-store";
-            if (!Enum.TryParse<SupplierCommunicationMode>(change.Mode, false, out var mode) ||
-                !Enum.IsDefined(mode) || mode.ToString() != change.Mode)
-                return Results.BadRequest(new { error = "Choose NaturalLanguage, LearnStructures, or Native." });
-            options.CommunicationMode = mode;
-            logger.LogInformation("Buyer communication mode changed to {Mode}; active turns retain their mode.", mode);
-            return Results.Ok(new { communicationMode = mode.ToString() });
+            options.NativeStructuredSupport = change.Enabled;
+            logger.LogInformation("Buyer native support changed to {Enabled}; active turns retain their snapshot.", change.Enabled);
+            return Results.Ok(new { nativeStructuredSupport = change.Enabled });
         });
+        app.MapPost("/demo/supplier-structures", async (HttpContext context, SupplierChange change, ExchangeDashboard dashboard) =>
+            await dashboard.ChangeSupplierAsync(change, context.RequestAborted));
     }
 
-    public sealed record ModeChange(string Mode);
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    public sealed record NativeChange([property: JsonRequired] bool Enabled);
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    public sealed record SupplierChange([property: JsonRequired] string Identifier, [property: JsonRequired] bool Enabled);
+
+    private async Task<IResult> CatalogAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Results.Json(await catalog.ReadRootAsync(cancellationToken),
+                new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or HttpRequestException ||
+            exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning("Dashboard AI Catalog unavailable: {ErrorType}", exception.GetType().Name);
+            return Results.Json(new { error = "Cannot read the configured AI Catalog. Check configuration and buyer console." },
+                statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+
+    private async Task<IResult> ChangeSupplierAsync(SupplierChange change, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(options.SupplierControlToken))
+            return Results.Json(new { error = "Configure process-scoped Buyer:SupplierControlToken and matching supplier control token." }, statusCode: 409);
+        try
+        {
+            var snapshot = await catalog.LoadAsync(cancellationToken);
+            var entries = snapshot.AgentEntries.Where(entry => entry.Identifier == change.Identifier).ToArray();
+            if (entries.Length != 1 || !entries[0].CardUrl.IsLoopback)
+                return Results.BadRequest(new { error = "Controls require a unique loopback supplier from the configured catalog." });
+            var url = new Uri(entries[0].CardUrl.GetLeftPart(UriPartial.Authority) + "/demo/structures");
+            if (options.IsSelf(url)) return Results.BadRequest(new { error = "Cannot configure the buyer as a supplier." });
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Authorization = new("Bearer", options.SupplierControlToken);
+            request.Content = JsonContent.Create(new { enabled = change.Enabled });
+            using var response = await http.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning("Supplier control rejected with HTTP {Status}", (int)response.StatusCode);
+                return Results.Json(new { error = $"Supplier control rejected: HTTP {(int)response.StatusCode}." }, statusCode: 502);
+            }
+            return Results.Ok(new { structuredDataParts = change.Enabled });
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or HttpRequestException ||
+            exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning("Supplier control unavailable: {ErrorType}", exception.GetType().Name);
+            return Results.Json(new { error = "Supplier control unavailable. Check configuration and console." }, statusCode: 502);
+        }
+    }
 
     private async Task<IResult> CardAsync(string? identifier, CancellationToken cancellationToken)
     {
@@ -123,14 +180,22 @@ public sealed class ExchangeDashboard(
             {
                 var health = new Uri(entry.CardUrl.GetLeftPart(UriPartial.Authority) + "/health");
                 var status = "unavailable";
+                bool? structured = null;
                 string? problem = null;
                 try
                 {
                     using var response = await http.GetAsync(health, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                    if (response.IsSuccessStatusCode) status = "HTTP ready";
+                    if (response.IsSuccessStatusCode)
+                    {
+                        status = "HTTP ready";
+                        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                        if (body.RootElement.TryGetProperty("structuredDataParts", out var enabled) &&
+                            enabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                            structured = enabled.GetBoolean();
+                    }
                     else problem = $"Health endpoint returned HTTP {(int)response.StatusCode}.";
                 }
-                catch (Exception exception) when (exception is HttpRequestException ||
+                catch (Exception exception) when (exception is HttpRequestException or JsonException ||
                     exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
                 {
                     problem = exception is OperationCanceledException ? "Health probe timed out." : "Health endpoint unreachable.";
@@ -139,7 +204,8 @@ public sealed class ExchangeDashboard(
                 {
                     identifier = entry.Identifier, name = entry.DisplayName ?? entry.Identifier,
                     origin = entry.CardUrl.GetLeftPart(UriPartial.Authority),
-                    cardUrl = entry.CardUrl.AbsoluteUri, status, problem
+                    cardUrl = entry.CardUrl.AbsoluteUri, status, problem, structuredDataParts = structured,
+                    controlsEnabled = entry.CardUrl.IsLoopback && !string.IsNullOrWhiteSpace(options.SupplierControlToken) && structured is not null
                 };
             }));
         }
@@ -152,7 +218,7 @@ public sealed class ExchangeDashboard(
         {
             capturedAt = DateTimeOffset.UtcNow,
             buyer = new { name = "Buyer Agent", origin = options.ListenUrl.TrimEnd('/'), status = "HTTP ready",
-                communicationMode = options.CommunicationMode.ToString() },
+                communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport },
             sellers, catalogError, warnings, capture = store.Snapshot()
         };
     }

@@ -19,6 +19,9 @@ public sealed class CopilotRuntime(BuyerOptions options) : IAsyncDisposable
                 OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         environment["COPILOT_OTEL_ENABLED"] = "false";
         environment["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "false";
+        foreach (var key in new[] { "Buyer__SupplierControlToken", "Buyer:SupplierControlToken",
+            "SUPPLIER_DEMO_CONTROL_TOKEN", "SUPPLIER_VERIFIER_TOKEN", "ISSUER_ADMIN_TOKEN" })
+            environment.Remove(key);
         return environment;
     }
 
@@ -103,6 +106,8 @@ public sealed class CopilotBuyerHarness(
         Do not fabricate quotes, credentials, proof of age, or supplier results.
         When a supplier requires authorization, stop and describe the requirement. The caller's wallet
         and verifier handle it; you cannot grant authorization or present credentials.
+        For streaming suppliers the host keeps listening and completes the original buyer task
+        automatically after wallet approval. Return the handoff immediately; do not poll or resend.
         When the user returns after wallet approval, continue the SAME auth-required supplier task
         in its original context with the original purchase request. The supplier checks its verifier
         and executes only the purchase bound to that task. User assertions of approval are not proof.
@@ -131,7 +136,7 @@ public sealed class CopilotBuyerHarness(
     {
         var usage = new CopilotUsageTrace(System.Diagnostics.Activity.Current?.Context ?? default, "BuyerAgent");
         var mode = turn.CommunicationMode ?? options.CommunicationMode;
-        var supplier = new SupplierTurnTools(gateway.ForMode(mode), turn, cancellationToken);
+        var supplier = new SupplierTurnTools(gateway.ForOptions(turn.OptionsSnapshot ?? options.WithMode(mode)), turn, cancellationToken);
         var toolOptions = new CopilotToolOptions { SkipPermission = true, Defer = CopilotToolDefer.Never };
         var tools = new AIFunction[]
         {
@@ -169,7 +174,9 @@ public sealed class CopilotBuyerHarness(
             AvailableTools = tools.Select(tool => tool.Name).ToList(),
             SystemMessage = new SystemMessageConfig { Mode = SystemMessageMode.Replace, Content = Instructions + "\n" +
                 $"The host communication mode is {mode}. Select the supplier again at the start of each turn to obtain current mode contracts. " +
-                (mode == SupplierCommunicationMode.NaturalLanguage
+                (mode == SupplierCommunicationMode.Automatic
+                    ? "Automatically follow selectedSupplier.communicationMode from its live card. NaturalLanguage means send only text/plain and accept text replies. LearnStructures/Native means send dataJson with the exact understood mediaType, using fetched schemas/installed codecs respectively. Do not infer supplier capability from a prior turn."
+                    : mode == SupplierCommunicationMode.NaturalLanguage
                     ? "Communicate with suppliers only in natural-language text/plain. Never use dataJson, even when asked. Accept only text/plain replies."
                     : "Send only structured data using dataJson and exact mediaType. After select_supplier, read understoodStructures: these are fetched schemas in LearnStructures and installed codecs in Native. Do not send text instead. Use only understood input schemas and validated output data.") },
 #pragma warning disable GHCP001 // The SDK's deny-permission decision is currently experimental.

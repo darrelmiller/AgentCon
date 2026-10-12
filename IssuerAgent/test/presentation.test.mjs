@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createServer as createTcpServer } from 'node:net';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, decodeJwt, decodeProtectedHeader } from 'jose';
 import { presentationService } from '../presentation.mjs';
 import { signingService, digest, random } from '../crypto.mjs';
@@ -164,8 +167,8 @@ test('HTTP handoff exposes QR and request but status and session creation requir
   assert.equal((await status.json()).verified, true);
 });
 
-test('real Rust supplier requires issuer verifier approval and resumes the original purchase', {
-  skip: !process.env.AGENTCON_SUPPLIER_EXE,
+for (const route of ['supplier', 'buyer']) test(`real ${route} requires issuer verifier approval and resumes the original purchase without inference`, {
+  skip: !process.env.AGENTCON_SUPPLIER_EXE || route === 'buyer' && !process.env.AGENTCON_BUYER_EXE,
 }, async t => {
   const f = await fixture(t);
   f.config.origin = f.local;
@@ -176,11 +179,13 @@ test('real Rust supplier requires issuer verifier approval and resumes the origi
   await new Promise(resolve => reservation.close(resolve));
   const child = spawn(process.env.AGENTCON_SUPPLIER_EXE, [], {
     env: { ...process.env, SUPPLIER_PORT: String(port), SUPPLIER_VERIFIER_URL: f.local,
-      SUPPLIER_VERIFIER_TOKEN: f.config.adminToken, OTEL_EXPORTER_OTLP_ENDPOINT: '' },
+      SUPPLIER_VERIFIER_TOKEN: f.config.adminToken, SUPPLIER_STRUCTURED_DATA: 'true',
+      SUPPLIER_DEMO_CONTROL_TOKEN: f.config.adminToken, OTEL_EXPORTER_OTLP_ENDPOINT: '' },
     stdio: 'ignore',
   });
   t.after(() => child.kill());
-  const origin = `http://127.0.0.1:${port}`;
+  const supplierOrigin = `http://127.0.0.1:${port}`;
+  let origin = supplierOrigin;
   let ready = false;
   for (let i = 0; i < 100 && child.exitCode === null; i++) {
     try { ready = (await fetch(origin + '/health')).ok; } catch { /* Startup is not yet listening. */ }
@@ -188,13 +193,43 @@ test('real Rust supplier requires issuer verifier approval and resumes the origi
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.equal(ready, true, 'Rust supplier did not start');
+  if (route === 'buyer') {
+    const directory = await mkdtemp(join(tmpdir(), 'agentcon-native-wallet-'));
+    const catalog = join(directory, 'catalog.json');
+    await writeFile(catalog, JSON.stringify({
+      specVersion: '1.0', host: { displayName: 'Native wallet test', identifier: 'urn:test:wallet-catalog' },
+      entries: [{ identifier: 'urn:test:wallet-supplier', type: 'application/a2a-agent-card+json',
+        url: `http://localhost:${port}/.well-known/agent-card.json` }],
+    }));
+    reservation.listen(0, '127.0.0.1');
+    await once(reservation, 'listening');
+    const buyerPort = reservation.address().port;
+    await new Promise(resolve => reservation.close(resolve));
+    origin = `http://127.0.0.1:${buyerPort}`;
+    const buyer = spawn(process.env.AGENTCON_BUYER_EXE, [
+      `--Buyer:ListenUrl=${origin}`, `--Buyer:CatalogUrl=${catalog}`,
+      '--Buyer:NativeStructuredSupport=true', '--Buyer:ExchangeCaptureEnabled=true',
+      '--Buyer:AllowLoopbackPresentationHttp=true',
+    ], { env: { ...process.env, Buyer__SupplierControlToken: f.config.adminToken,
+      Buyer__CopilotStateDirectory: join(directory, 'buyer-state'), OTEL_EXPORTER_OTLP_ENDPOINT: '' }, stdio: 'ignore' });
+    t.after(() => { buyer.kill(); });
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    ready = false;
+    for (let i = 0; i < 100 && buyer.exitCode === null; i++) {
+      try { ready = (await fetch(origin + '/health')).ok; } catch { /* Startup is not yet listening. */ }
+      if (ready) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(ready, true, 'Buyer did not start');
+  }
   const context = 'wallet-http-context';
-  async function send(data, taskId) {
+  async function send(data, taskId, metadata = {}) {
     const response = await fetch(origin + '/a2a', {
       method: 'POST', headers: { 'content-type': 'application/json', 'A2A-Version': '1.0',
         'A2A-Extensions': 'https://github.com/a2aproject/experimental-ext-oid4vp-auth/tree/main/v1' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: {
         message: { messageId: random(), role: 'ROLE_USER', contextId: context, ...(taskId && { taskId }),
+          metadata,
           parts: [{ data, mediaType: `application/vnd.agentcon.demo.wine-${data.kind === 'rfq' ? 'rfq' : 'purchase-order'}.v1+json` }] },
         configuration: { returnImmediately: false, acceptedOutputModes: ['text/plain',
           'application/vnd.agentcon.demo.wine-quote.v1+json', 'application/vnd.agentcon.demo.wine-order-receipt.v1+json'] },
@@ -206,14 +241,35 @@ test('real Rust supplier requires issuer verifier approval and resumes the origi
   }
   const quoteTask = await send({ kind: 'rfq', schemaVersion: '1', demoOnly: true,
     wine: 'Barolo', vintage: 2019, cases: 1, deliveryCity: 'Toronto', deliveryCountry: 'CA' });
-  assert.equal(quoteTask.status.state, 'TASK_STATE_COMPLETED');
+  assert.equal(quoteTask.status.state, 'TASK_STATE_COMPLETED', JSON.stringify(quoteTask));
+  assert.equal(quoteTask.artifacts[0].metadata['agentcon.llmCalls'], 0);
+  if (route === 'buyer') assert.equal(quoteTask.status.message.metadata['agentcon.llmCalls'], 0);
   const quote = quoteTask.artifacts[0].parts[0].data;
   const order = { kind: 'purchase-order', schemaVersion: '1', demoOnly: true, quoteId: quote.quoteId, purchaseOrderId: 'wallet-po' };
+  if (route === 'buyer') {
+    const before = await (await fetch(supplierOrigin + '/health')).json();
+    const tooExpensive = await send(order, undefined, { 'agentcon.maxTotalUsd': 1 });
+    assert.equal(tooExpensive.status.state, 'TASK_STATE_INPUT_REQUIRED');
+    assert.equal((await (await fetch(supplierOrigin + '/health')).json()).structuredRequests, before.structuredRequests);
+    const changedTask = await send({ ...order, purchaseOrderId: 'tamper-check' });
+    assert.equal(changedTask.status.state, 'TASK_STATE_AUTH_REQUIRED', JSON.stringify(changedTask));
+    const changed = await send({ ...order, purchaseOrderId: 'tampered' }, changedTask.id);
+    assert.equal(changed.status.state, 'TASK_STATE_AUTH_REQUIRED');
+    assert.match(changed.status.message.parts[0].text, /Continuation rejected/);
+  }
   const pending = await send(order);
   assert.equal(pending.status.state, 'TASK_STATE_AUTH_REQUIRED');
   assert.ok(!pending.artifacts?.length);
   const waiting = await send(order, pending.id);
   assert.equal(waiting.status.state, 'TASK_STATE_AUTH_REQUIRED');
+  const requestsBeforeApproval = (await (await fetch(supplierOrigin + '/health')).json()).structuredRequests;
+  if (route === 'buyer') {
+    const dashboard = await (await fetch(origin + '/demo/state')).json();
+    assert.ok(dashboard.capture.exchanges.some(exchange =>
+      exchange.request.includes('SendStreamingMessage') && exchange.status === 'receiving' &&
+      exchange.response.includes('TASK_STATE_AUTH_REQUIRED')),
+    'Dashboard must show authorization while the seller stream is still open');
+  }
   const metadata = pending.status.message.metadata;
   const requestUri = metadata['https://github.com/a2aproject/experimental-ext-oid4vp-auth/tree/main/v1'].authorizationRequest.request_uri;
   const request = decodeJwt(await (await fetch(requestUri)).text());
@@ -225,12 +281,54 @@ test('real Rust supplier requires issuer verifier approval and resumes the origi
     body: new URLSearchParams({ state: request.state, vp_token: JSON.stringify({ age: [credential + kb] }) }),
   });
   assert.equal(verified.status, 200);
-  const complete = await send({ ...order, quoteId: 'tampered', purchaseOrderId: 'tampered' }, pending.id);
+  let complete;
+  if (route === 'buyer') {
+    for (let i = 0; i < 100; i++) {
+      const response = await fetch(origin + '/a2a', { method: 'POST',
+        headers: { 'content-type': 'application/json', 'A2A-Version': '1.0' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'GetTask', params: { id: pending.id } }) });
+      const value = await response.json();
+      assert.equal(value.error, undefined);
+      complete = value.result;
+      if (complete.status.state !== 'TASK_STATE_AUTH_REQUIRED') break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal((await (await fetch(supplierOrigin + '/health')).json()).structuredRequests, requestsBeforeApproval,
+      'Wallet completion must not send another purchase message');
+    const dashboard = await (await fetch(origin + '/demo/state')).json();
+    assert.ok(dashboard.capture.tasks.some(task => task.agent === 'buyer' && task.id === pending.id &&
+      task.state === 'TASK_STATE_COMPLETED'));
+    assert.ok(dashboard.capture.exchanges.some(exchange => exchange.response.includes('statusUpdate') &&
+      exchange.response.includes('TASK_STATE_COMPLETED')));
+  } else {
+    complete = await send({ ...order, quoteId: 'tampered', purchaseOrderId: 'tampered' }, pending.id);
+  }
   assert.equal(complete.id, pending.id);
-  assert.equal(complete.status.state, 'TASK_STATE_COMPLETED');
+  assert.equal(complete.status.state, 'TASK_STATE_COMPLETED', JSON.stringify(complete));
   const receipt = complete.artifacts[0].parts[0].data;
   assert.equal(receipt.purchaseOrderId, 'wallet-po');
   assert.equal(receipt.quoteId, quote.quoteId);
   assert.equal(receipt.ageVerification, 'verified-demo-over-21');
-  assert.equal((await (await fetch(origin + '/health')).json()).inferenceAttempts, 0);
+  assert.equal(complete.artifacts.at(-1).metadata['agentcon.llmCalls'], 0);
+  if (route === 'buyer') {
+    assert.equal(complete.status.message.metadata['agentcon.llmCalls'], 0);
+    const card = await (await fetch(origin + '/.well-known/agent-card.json')).json();
+    assert.ok(card.defaultInputModes.includes('application/vnd.agentcon.demo.wine-rfq.v1+json'));
+    const disabled = await fetch(origin + '/demo/native', { method: 'POST',
+      headers: { 'content-type': 'application/json', origin }, body: JSON.stringify({ enabled: false }) });
+    assert.equal(disabled.status, 200);
+    const textCard = await (await fetch(origin + '/.well-known/agent-card.json')).json();
+    assert.deepEqual(textCard.defaultInputModes, ['text/plain']);
+    assert.equal((await send({ kind: 'rfq', schemaVersion: '1', demoOnly: true,
+      wine: 'Barolo', vintage: 2019, cases: 1, deliveryCity: 'Toronto' })).status.state, 'TASK_STATE_FAILED');
+    const supplierDisabled = await fetch(origin + '/demo/supplier-structures', { method: 'POST',
+      headers: { 'content-type': 'application/json', origin },
+      body: JSON.stringify({ identifier: 'urn:test:wallet-supplier', enabled: false }) });
+    assert.equal(supplierDisabled.status, 200);
+    const supplierCard = await (await fetch(supplierOrigin + '/.well-known/agent-card.json')).json();
+    assert.deepEqual(supplierCard.defaultInputModes, ['text/plain']);
+    assert.deepEqual(supplierCard.defaultOutputModes, ['text/plain']);
+    assert.equal((await fetch(supplierOrigin + '/schemas/wine-v1.schema.json')).status, 404);
+  }
+  assert.equal((await (await fetch(supplierOrigin + '/health')).json()).inferenceAttempts, 0);
 });
