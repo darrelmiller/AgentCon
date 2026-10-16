@@ -17,6 +17,7 @@ A buyer agent (GitHub Copilot driving the official `a2a` CLI) buys wine from Luc
 
 - `docs/outline.md`: talk outline and timings.
 - `docs/proposal-for-luca.md`: the plan as shared with Luca.
+- `docs/windows-setup.md`: installing the A2A CLI, its SLIMRPC transport plugin and `slimctl` on Windows, and sending requests to the demo over SLIM.
 - `catalog.json`: local AI Catalog pointing to live buyer and supplier Agent Cards; the buyer discovers suppliers from this catalog.
 
 The buyer uses seller streaming when advertised. Wallet approval completes the
