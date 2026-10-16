@@ -1,0 +1,18 @@
+{
+  "supplierName": "AgentCon French Wine Supplier",
+  "deliveryMinor": 15000,
+  "wines": [
+    {
+      "name": "Château Margaux",
+      "aliases": ["margaux"],
+      "vintage": 2015,
+      "casePriceMinor": 1080000
+    },
+    {
+      "name": "Dom Ruinart Blanc de Blancs Champagne",
+      "aliases": ["ruinart"],
+      "vintage": 2013,
+      "casePriceMinor": 300000
+    }
+  ]
+}

@@ -175,6 +175,25 @@ public sealed class ExchangeTests
     }
 
     [Fact]
+    public void AuthRequiredSellerTaskExposesOnlyHttpsPresentationPageUntilAuthorized()
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        var endpoint = new Uri("http://localhost:6000/a2a");
+        string Pending(string url) => """{"result":{"task":{"id":"po","contextId":"c","status":{"state":"TASK_STATE_AUTH_REQUIRED","message":{"metadata":{"agentcon.presentation":{"presentationUrl":"URL"}}}}}}}""".Replace("URL", url);
+        JsonElement Task() => Assert.Single(Snapshot(store).GetProperty("tasks").EnumerateArray());
+
+        store.Body(store.Begin(endpoint), true, Pending("https://issuer.example/presentations/abc"), false, false);
+        Assert.Equal("https://issuer.example/presentations/abc", Task().GetProperty("presentationUrl").GetString());
+
+        store.Body(store.Begin(endpoint), true, """{"result":{"task":{"id":"po","contextId":"c","status":{"state":"TASK_STATE_COMPLETED"}}}}""", false, false);
+        Assert.Equal(JsonValueKind.Null, Task().GetProperty("presentationUrl").ValueKind);
+
+        store.Clear();
+        store.Body(store.Begin(endpoint), true, Pending("http://issuer.example/presentations/abc"), false, false);
+        Assert.Equal(JsonValueKind.Null, Task().GetProperty("presentationUrl").ValueKind);
+    }
+
+    [Fact]
     public void EvictionAndClearPreventLateExchangesFromRepopulatingContent()
     {
         var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });

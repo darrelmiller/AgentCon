@@ -4,7 +4,7 @@ use a2a::{Message, Part, Role};
 use agentcon_supplier::authorization::{Challenge, EXTENSION, Verifier};
 use agentcon_supplier::{
     Supplier, app,
-    domain::{PURCHASE, QUOTE, RECEIPT, RFQ, Request, WineStore},
+    domain::{BAROLO, Inventory, PURCHASE, QUOTE, RECEIPT, RFQ, Request, WineStore},
     inference::{Intent, Interpreter},
 };
 use async_trait::async_trait;
@@ -301,6 +301,87 @@ fn prices_bounds_isolation_and_idempotency() {
     let mut assertion = rfq(1);
     assertion["over21"] = json!(true);
     assert!(serde_json::from_value::<Request>(assertion).is_err());
+}
+
+#[test]
+fn sardinian_inventory_quotes_each_stocked_wine_and_declines_others() {
+    let inventory = Inventory::from_json(include_str!("../inventories/sardinia.json")).unwrap();
+    let mut store = WineStore::new(Box::leak(Box::new(inventory)));
+    for (index, (wine, vintage, total, name)) in [
+        ("Vermentino", 2020, 54_000 + 4_000, "Vermentino di Gallura Capichera"),
+        ("Capichera Vermentino di Gallura", 2020, 54_000 + 4_000, "Vermentino di Gallura Capichera"),
+        ("cannonau", 2019, 21_600 + 4_000, "Cannonau di Sardegna"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut request = rfq(1);
+        request["wine"] = json!(wine);
+        request["vintage"] = json!(vintage);
+        let (media_type, quote, text) = store
+            .apply(serde_json::from_value(request).unwrap(), &format!("sardinia-{index}"))
+            .unwrap();
+        assert_eq!(media_type, QUOTE);
+        assert_eq!(quote["wine"], name);
+        assert_eq!(quote["totalMinor"], total);
+        assert!(text.contains(&format!("1 cases of {vintage} {name} (12 bottles/case)")));
+    }
+    for (wine, vintage) in [("Barolo", 2019), ("Vermentino", 2021), ("Cannonau", 2020)] {
+        let mut request = rfq(1);
+        request["wine"] = json!(wine);
+        request["vintage"] = json!(vintage);
+        let error = store
+            .apply(serde_json::from_value(request).unwrap(), "sardinia-declined")
+            .unwrap_err();
+        assert!(error.contains("2020 Vermentino di Gallura Capichera and 2019 Cannonau di Sardegna"));
+    }
+}
+
+#[test]
+fn barolo_inventory_file_matches_built_in_stock() {
+    let file = Inventory::from_json(include_str!("../inventories/barolo.json")).unwrap();
+    assert_eq!(file.supplier_name, BAROLO.supplier_name);
+    assert_eq!(file.delivery_minor, BAROLO.delivery_minor);
+    assert_eq!(file.price_list(), BAROLO.price_list());
+}
+
+#[test]
+fn shipped_inventory_files_are_valid() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("inventories");
+    let mut count = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            Inventory::from_json(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            count += 1;
+        }
+    }
+    assert!(count >= 3);
+    let france = Inventory::from_json(include_str!("../inventories/france.json")).unwrap();
+    assert!(france.find("Chateau Margaux", 2015).is_some());
+    assert!(france.find("Château Margaux", 2016).is_none());
+    assert!(france.find("Ruinart Champagne", 2013).is_some());
+}
+
+#[test]
+fn rejects_invalid_inventory_json() {
+    for json in [
+        r#"{"supplierName":"S","deliveryMinor":0,"wines":[]}"#,
+        r#"{"supplierName":"","deliveryMinor":0,"wines":[{"name":"A","vintage":2020,"casePriceMinor":1}]}"#,
+        r#"{"supplierName":"S","deliveryMinor":0,"wines":[{"name":"A (B)","vintage":2020,"casePriceMinor":1}]}"#,
+        r#"{"supplierName":"S","deliveryMinor":0,"wines":[{"name":"A","vintage":1800,"casePriceMinor":1}]}"#,
+        r#"{"supplierName":"S","deliveryMinor":0,"wines":[{"name":"A","vintage":2020,"casePriceMinor":0}]}"#,
+        r#"{"supplierName":"S","deliveryMinor":0,"wines":[{"name":"A","vintage":2020,"casePriceMinor":1,"stock":5}]}"#,
+        r#"not json"#,
+    ] {
+        assert!(Inventory::from_json(json).is_err(), "{json}");
+    }
+    let minimal = Inventory::from_json(
+        r#"{"supplierName":"S","deliveryMinor":0,"wines":[{"name":"Nebbiolo","vintage":2021,"casePriceMinor":9000}]}"#,
+    )
+    .unwrap();
+    assert!(minimal.find("Langhe Nebbiolo", 2021).is_some());
 }
 
 #[test]

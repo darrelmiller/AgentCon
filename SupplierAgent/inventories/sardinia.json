@@ -1,0 +1,18 @@
+{
+  "supplierName": "AgentCon Sardinian Wine Supplier",
+  "deliveryMinor": 4000,
+  "wines": [
+    {
+      "name": "Vermentino di Gallura Capichera",
+      "aliases": ["vermentino", "capichera"],
+      "vintage": 2020,
+      "casePriceMinor": 54000
+    },
+    {
+      "name": "Cannonau di Sardegna",
+      "aliases": ["cannonau"],
+      "vintage": 2019,
+      "casePriceMinor": 21600
+    }
+  ]
+}

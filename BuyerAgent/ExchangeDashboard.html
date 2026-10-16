@@ -114,9 +114,16 @@ dialog pre { max-height: 60vh; }
 .message.incoming { width: 92%; margin-left: auto; border-right: 4px solid var(--cp-border-strong); }
 .message .preview { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message small { display: block; }
+/* Which wire carried the message: SLIM (slim:// name) or HTTP (JSON-RPC over http://). */
+.transport { display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px; white-space: nowrap; }
+.transport.slim { color: var(--cp-link); border-color: var(--cp-link); }
+.transport.http { color: var(--cp-text-muted); border-color: var(--cp-border-strong); }
+.lane-heading .transport { margin-left: 4px; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: .625rem; background: var(--cp-surface-soft); border: 1px solid var(--cp-border); }
 .task { padding: 8px 0; border-top: 1px solid var(--cp-border); overflow-wrap: anywhere; } .task code { display: block; font-size: 12px; }
 .task summary { cursor: pointer; }
+.group-banner { margin: 10px 0 4px; padding: 4px 8px; border-left: 3px solid var(--cp-accent); color: var(--cp-accent); font-weight: 600; font-size: 12px; }
+.qr-link { display: inline-block; margin: 4px 0; padding: 2px 8px; border: 1px solid var(--cp-accent); border-radius: 4px; color: var(--cp-accent); font-weight: 600; text-decoration: none; }
 .task summary code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cp-text-muted); }
 .task small { display: block; }
 .task-list { max-height: 340px; overflow-y: auto; }
@@ -153,7 +160,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     </section>
     <div class="lanes">
       <section class="card" aria-labelledby="conversation-title">
-        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts. LLM counts are actual per-message SDK calls, not estimated tokens or whole-transaction totals. Missing counts are not assumed to be zero.</span></span></div>
+        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span><span class="transport slim" title="Sent over SLIMRPC to a slim:// name">SLIM</span><span class="transport http" title="Sent as A2A JSON-RPC over HTTP">HTTP</span></span><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts. LLM counts are actual per-message SDK calls, not estimated tokens or whole-transaction totals. Missing counts are not assumed to be zero.</span></span></div>
         <div id="conversation" class="messages"></div>
       </section>
     </div>
@@ -243,8 +250,16 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     });
     return parts;
   }
+  // The capture records the endpoint actually used: a slim:// name for SLIMRPC, an http(s):// URL for JSON-RPC.
+  const transportOf = entry => entry.endpoint?.startsWith("slim://") ? "SLIM" : "HTTP";
+  // A seller's exchanges arrive at its HTTP origin or, over SLIMRPC, at its slim:// name.
+  function sellerOwns(endpoint, origin) {
+    if (!origin) return true;
+    const slimUrl = (state?.sellers || []).find(seller => seller.origin === origin)?.slimUrl;
+    return endpoint.startsWith(`${origin}/`) || !!slimUrl && endpoint === slimUrl;
+  }
   function updateTasks(agent, origin) {
-    const tasks = (state?.capture.tasks || []).filter(task => task.agent === agent && (!origin || task.endpoint.startsWith(`${origin}/`)));
+    const tasks = (state?.capture.tasks || []).filter(task => task.agent === agent && sellerOwns(task.endpoint, origin));
     const signature = JSON.stringify([tasks, origin, state?.capture.generation]);
     if (taskSignatures.get(agent) === signature) return;
     taskSignatures.set(agent, signature);
@@ -258,6 +273,13 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
       const item = node("details", undefined, "task");
       const summary = node("summary");
       summary.append(node("span", label(task.state), active(task.state) ? "busy" : ""), node("code", task.id));
+      if (task.presentationUrl) {
+        const qr = node("a", "Show QR", "qr-link");
+        qr.href = task.presentationUrl; qr.target = "_blank"; qr.rel = "noopener noreferrer";
+        qr.title = "Open the supplier's wallet presentation page (QR code) for this purchase";
+        qr.addEventListener("click", event => event.stopPropagation());
+        summary.append(qr);
+      }
       summary.title = `Task: ${task.id}\nContext: ${task.contextId || "not reported"}\nObserved: ${new Date(task.updatedAt).toLocaleTimeString()}`;
       item.open = openTasks.has(`${agent}:${task.id}`);
       item.addEventListener("toggle", () => {
@@ -271,7 +293,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     });
   }
   function renderMessages() {
-    const exchanges = (state?.capture.exchanges || []).filter(entry => !sellerOrigin || entry.endpoint.startsWith(`${sellerOrigin}/`));
+    const exchanges = (state?.capture.exchanges || []).filter(entry => sellerOwns(entry.endpoint, sellerOrigin));
     const signature = JSON.stringify([exchanges, selected, sellerOrigin]);
     if (signature === messageSignature) return;
     messageSignature = signature;
@@ -283,16 +305,40 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         { entry, direction: "outgoing", time: entry.startedAt },
         ...(entry.responseStartedAt || entry.errorType ? [{ entry, direction: "incoming", time: entry.responseStartedAt ?? entry.startedAt }] : [])
       ]).sort((a, b) => a.time.localeCompare(b.time) || a.entry.id - b.entry.id || (a.direction === "outgoing" ? -1 : 1));
+      const bannered = new Set();
+      // A SLIM multicast is ONE request recorded once per member: show the request once, with its member count.
+      const groupSizes = (state?.capture.exchanges || []).reduce((sizes, entry) => entry.group ? sizes.set(entry.group, (sizes.get(entry.group) || 0) + 1) : sizes, new Map());
+      const shownMulticast = new Set();
       events.forEach(({ entry, direction, time }) => {
         const response = direction === "incoming", body = response ? entry.response : entry.request;
         if (!body && !response) return;
+        const slimMulticast = entry.groupLabel?.startsWith("SLIM multicast");
+        if (slimMulticast && !response) {
+          if (shownMulticast.has(entry.group)) return;
+          shownMulticast.add(entry.group);
+        }
+        // One banner per "send to all suppliers" multicast, above its first message.
+        if (entry.group && !bannered.has(entry.group)) {
+          bannered.add(entry.group);
+          area.append(node("div", `Buyer → all suppliers · ${entry.groupLabel}`, "group-banner"));
+        }
         const button = node("button", undefined, `message ${direction}`);
         button.dataset.exchange = entry.id;
         button.dataset.direction = direction;
         const chosen = selected?.id === entry.id && selected.direction === direction;
         button.setAttribute("aria-pressed", String(chosen));
         const root = roots(entry.request)[0];
-        button.append(node("strong", `${response ? "Supplier → Buyer" : "Buyer → Supplier"} · #${entry.id}`));
+        // Only the SLIM multicast request goes to the group; every reply (and every HTTP call) is unicast.
+        const method = roots(entry.request)[0]?.method;
+        const viaSlim = transportOf(entry) === "SLIM";
+        const delivery = response ? (entry.group ? "unicast reply" : "unicast")
+          : slimMulticast ? "multicast" : method === "GetTask" ? "poll" : entry.group ? "fan-out" : "unicast";
+        const from = response ? "Supplier → Buyer" : slimMulticast ? `Buyer → ${groupSizes.get(entry.group)} suppliers` : "Buyer → Supplier";
+        const heading = node("strong", `${from} · #${entry.id}`);
+        const chip = node("span", `${viaSlim ? "SLIM" : "HTTP"} · ${delivery}`, `transport ${viaSlim ? "slim" : "http"}`);
+        chip.title = viaSlim ? `SLIMRPC via ${entry.endpoint}` : `A2A JSON-RPC over HTTP to ${entry.endpoint}`;
+        heading.append(chip);
+        button.append(heading);
         button.title = `${root?.method || "A2A request"} · ${new Date(time).toLocaleTimeString()} · ${entry.status}${entry.httpStatus ? ` · HTTP ${entry.httpStatus}` : ""}. Click to inspect all parts and artifacts.`;
         const allParts = contents(body);
         const messages = roots(body).map(root => response
@@ -329,7 +375,11 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("copy").disabled = false;
     const response = selected.direction === "incoming", body = response ? entry.response : entry.request;
     const truncated = response ? entry.responseTruncated : entry.requestTruncated;
-    $("inspector-hint").textContent = `Exchange #${entry.id} - ${response ? "Seller to buyer" : "Buyer to seller"} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
+    const members = (state?.capture.exchanges || []).filter(other => entry.group && other.group === entry.group);
+    const wire = !response && entry.groupLabel?.startsWith("SLIM multicast")
+      ? `SLIMRPC multicast to ${members.length} suppliers (${members.map(other => other.endpoint).join(", ")})`
+      : `${transportOf(entry) === "SLIM" ? "SLIMRPC" : "HTTP JSON-RPC"} via ${entry.endpoint}`;
+    $("inspector-hint").textContent = `Exchange #${entry.id} - ${response ? "Seller to buyer" : "Buyer to seller"} - ${wire} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
     $("metadata").append(node("code", entry.endpoint), node("span", `HTTP ${entry.httpStatus ?? "pending"}`));
     if (entry.durationMs !== null) $("metadata").append(node("span", `${entry.durationMs.toFixed(1)} ms`));
     if (entry.errorType) $("metadata").append(node("span", entry.errorType, "error"));
@@ -358,11 +408,14 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
   function render() {
     if (generation !== undefined && generation !== state.capture.generation) { selected = null; partKey = ""; openTasks.clear(); }
     generation = state.capture.generation;
-    $("buyer-endpoint").textContent = `${state.buyer.origin}/a2a`;
+    // Every A2A interface the buyer serves: HTTP JSON-RPC, and SLIMRPC once registered on the node.
+    $("buyer-endpoint").replaceChildren(node("div", `${state.buyer.origin}/a2a`),
+      ...(state.buyer.slimUrl ? [node("div", state.buyer.slimUrl)] : []));
     const buyerActive = state.capture.tasks.filter(task => task.agent === "buyer" && active(task.state)).length;
-    $("buyer-status").textContent = state.buyer.status;
-    $("buyer-status").title = `HTTP availability, not proof of Copilot authentication. Automatic negotiation; ${buyerActive} active tasks.`;
-    $("buyer-status").className = buyerActive ? "busy" : "ready";
+    const buyerSlim = state.buyer.slimUrl ? " · SLIM ready" : state.buyer.slimConfigured ? " · SLIM unavailable" : "";
+    $("buyer-status").textContent = `${state.buyer.status}${buyerSlim}`;
+    $("buyer-status").title = `HTTP and SLIM availability, not proof of Copilot authentication. Supplier calls use SLIMRPC when both sides are on SLIM. Automatic negotiation; ${buyerActive} active tasks.`;
+    $("buyer-status").className = state.buyer.slimConfigured && !state.buyer.slimUrl ? "error" : buyerActive ? "busy" : "ready";
     if (!$("buyer-native").disabled) $("buyer-native").checked = state.buyer.nativeStructuredSupport;
     $("limits").textContent = `Last ${state.capture.maxExchanges} exchanges; ${state.capture.maxBodyBytes / 1024} KiB per body. ${state.capture.droppedExchanges} older exchanges evicted.`;
     $("problem").textContent = [state.catalogError, ...state.warnings, controlError].filter(Boolean).join(" ");
@@ -383,10 +436,10 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     const seller = sellers.find(item => item.origin === sellerOrigin);
     $("seller-card").disabled = !seller;
     $("seller-card").title = seller ? `${seller.name} (${seller.identifier}) — view live Agent Card` : "Choose a catalog supplier to view its Agent Card.";
-    $("seller-endpoint").textContent = seller?.origin || "";
-    const inflight = state.capture.exchanges.filter(entry => (!sellerOrigin || entry.endpoint.startsWith(`${sellerOrigin}/`)) &&
+    $("seller-endpoint").replaceChildren(...(seller ? [node("div", seller.origin), ...(seller.slimUrl ? [node("div", seller.slimUrl)] : [])] : []));
+    const inflight = state.capture.exchanges.filter(entry => sellerOwns(entry.endpoint, sellerOrigin) &&
       (entry.status === "sending" || entry.status === "receiving")).length;
-    $("seller-status").textContent = seller ? `${seller.status}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
+    $("seller-status").textContent = seller ? `${seller.status}${seller.slimUrl ? " · SLIM ready" : ""}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
     $("seller-status").title = "HTTP availability, not proof of Copilot authentication. Task states are the latest observed responses, not automatic polling.";
     $("seller-status").className = seller?.status === "HTTP ready" ? (inflight ? "busy" : "ready") : "error";
     if (!$("seller-structures").dataset.busy) {

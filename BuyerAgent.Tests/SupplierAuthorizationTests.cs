@@ -18,7 +18,7 @@ public sealed class SupplierAuthorizationTests
         var instructions = SupplierAuthorization.Instructions(task);
         Assert.Contains("openid4vp://?", instructions);
         Assert.Contains("https://verifier.example/presentations/id", instructions);
-        Assert.Contains("Sphereon", instructions);
+        Assert.Contains("your OID4VP wallet", instructions);
         Assert.Contains("Do not paste", instructions);
         Assert.Contains("supplier-task", instructions);
         Assert.Contains("no order has been confirmed", instructions);

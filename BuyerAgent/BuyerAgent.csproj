@@ -7,9 +7,13 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="A2A" Version="1.0.0-preview2" />
+    <PackageReference Include="A2A" Version="1.0.0-preview3" />
     <PackageReference Include="JsonSchema.Net" Version="7.4.0" />
-    <PackageReference Include="A2A.AspNetCore" Version="1.0.0-preview2" />
+    <PackageReference Include="A2A.AspNetCore" Version="1.0.0-preview3" />
+    <!-- A2A over SLIMRPC. SlimA2A 0.3.0 still declares SLIM 2.2; pin the SLIM 3.3 bindings the node and Rust peers use
+         (verified against SlimA2A's own test suite in agntcy/slim-a2a-dotnet#12). -->
+    <PackageReference Include="Agntcy.SlimA2A" Version="0.6.0" />
+    <PackageReference Include="Agntcy.Slim.SlimRpc" Version="3.3.3" />
     <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.19" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />

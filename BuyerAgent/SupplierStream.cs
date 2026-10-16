@@ -4,10 +4,10 @@ using System.Text.Json;
 namespace BuyerAgent;
 
 /// <summary>Owns one seller connection across the foreground turn and authorization wait.</summary>
-public sealed class SupplierStream(HttpClient http, SupplierGateway gateway, SupplierBinding supplier, Message sent) : IAsyncDisposable
+public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supplier, Message sent) : IAsyncDisposable
 {
     private readonly CancellationTokenSource _lifetime = new(TimeSpan.FromMinutes(15));
-    private A2AClient? _client;
+    private IDisposable? _ownedClient;
     private IAsyncEnumerator<StreamResponse>? _reader;
     private AgentTask? _task;
     public SupplierBinding Supplier => supplier;
@@ -16,8 +16,9 @@ public sealed class SupplierStream(HttpClient http, SupplierGateway gateway, Sup
     public async Task<SendMessageResponse> StartAsync(SendMessageRequest request, CancellationToken cancellationToken)
     {
         using var registration = cancellationToken.Register(() => _lifetime.Cancel());
-        _client = new A2AClient(supplier.Endpoint, http);
-        _reader = _client.SendStreamingMessageAsync(request, _lifetime.Token).GetAsyncEnumerator(_lifetime.Token);
+        var (client, owned) = gateway.OpenClient(supplier);
+        _ownedClient = owned;
+        _reader = client.SendStreamingMessageAsync(request, _lifetime.Token).GetAsyncEnumerator(_lifetime.Token);
         while (await _reader.MoveNextAsync())
         {
             var response = Apply(_reader.Current);
@@ -69,7 +70,7 @@ public sealed class SupplierStream(HttpClient http, SupplierGateway gateway, Sup
     {
         _lifetime.Cancel();
         if (_reader is not null) await _reader.DisposeAsync();
-        _client?.Dispose();
+        _ownedClient?.Dispose();
         _lifetime.Dispose();
     }
 }

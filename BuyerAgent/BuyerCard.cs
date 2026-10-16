@@ -8,7 +8,8 @@ public static class BuyerCard
     public const string AuthorizationExtensionUri =
         "https://github.com/a2aproject/experimental-ext-oid4vp-auth/tree/main/v1";
 
-    public static AgentCard Create(BuyerOptions options) => new()
+    /// <param name="slimUrl">slim://&lt;name&gt; when the buyer also serves A2A over SLIMRPC.</param>
+    public static AgentCard Create(BuyerOptions options, string? slimUrl = null) => new()
     {
         Name = "AgentCon Wine Buyer",
         Description = "A demo wine buyer that discovers suppliers through an AI Catalog and negotiates A2A parts automatically. Text requests use Copilot; enabled wine-v1 typed inbound requests execute through installed codecs without buyer inference.",
@@ -20,7 +21,8 @@ public static class BuyerCard
                 Url = new Uri(new Uri(options.ListenUrl), "/a2a").AbsoluteUri,
                 ProtocolBinding = "JSONRPC",
                 ProtocolVersion = "1.0"
-            }
+            },
+            .. (slimUrl is null ? [] : new[] { new AgentInterface { Url = slimUrl, ProtocolBinding = "SLIMRPC", ProtocolVersion = "1.0" } })
         ],
         DefaultInputModes = options.NativeStructuredSupport ? ["text/plain", SupplierFormats.Rfq, SupplierFormats.Purchase] : ["text/plain"],
         DefaultOutputModes = options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage

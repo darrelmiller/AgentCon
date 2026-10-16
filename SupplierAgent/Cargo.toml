@@ -6,8 +6,16 @@ rust-version = "1.94"
 publish = false
 
 [dependencies]
-a2a = { package = "a2a-lf", version = "=0.4.1" }
-a2a-server = { package = "a2a-server-lf", version = "=0.5.1", default-features = false }
+a2a = { package = "a2a-lf", version = "=0.4.2" }
+a2a-server = { package = "a2a-server-lf", version = "=0.5.3", default-features = false }
+# SLIMRPC binding (SLIM 3.4 line); slim_* versions match what a2a-slimrpc 0.3.4 builds on.
+a2a-slimrpc = "=0.3.4"
+slim_auth = { package = "agntcy-slim-auth", version = "0.17.7" }
+slim_config = { package = "agntcy-slim-config", version = "0.17.7" }
+slim_datapath = { package = "agntcy-slim-datapath", version = "0.19.12" }
+slim_rpc = { package = "agntcy-slim-rpc", version = "3.4.3" }
+slim_service = { package = "agntcy-slim-service", version = "0.13.12", features = ["session"] }
+serde_yaml = "0.9"
 github-copilot-sdk = "=1.0.20-preview.2"
 async-trait = "0.1"
 axum = "0.8"
@@ -20,7 +28,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = "0.31"
 opentelemetry_sdk = "0.31"
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client", "tls-roots"] }
+# No "tls-roots": it turns on tonic's own TLS, which rejects the https:// SLIM gateway endpoint
+# (SLIM applies TLS itself). OTLP goes to a local, plaintext collector.
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
 tracing-opentelemetry = "0.32"
 uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

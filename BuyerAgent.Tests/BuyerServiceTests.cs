@@ -122,7 +122,14 @@ public sealed class BuyerServiceTests
         using var http = app.GetTestClient();
         using var client = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
         var request = Request("Quote wine", data: """{"cases":12}""");
-        if (jsonText) request.Message.Parts = [new Part { Text = """{"cases":12}""", MediaType = "application/json" }];
+        if (jsonText)
+        {
+            // The A2A SDK enforces the card's text/plain input mode before the buyer runs.
+            request.Message.Parts = [new Part { Text = """{"cases":12}""", MediaType = "application/json" }];
+            var error = await Assert.ThrowsAsync<A2AException>(() => client.SendMessageAsync(request));
+            Assert.Equal(A2AErrorCode.ContentTypeNotSupported, error.ErrorCode);
+            return;
+        }
         var response = await client.SendMessageAsync(request);
         Assert.Equal(TaskState.Failed, response.Task!.Status.State);
         Assert.Contains("text/plain input only", response.Task.Status.Message!.Parts[0].Text);
@@ -317,10 +324,15 @@ public sealed class BuyerServiceTests
         Assert.IsType<CopilotBuyerHarness>(app.Services.GetRequiredService<IBuyerHarness>());
         var gateway = app.Services.GetRequiredService<SupplierGateway>();
         var result = await gateway.SearchAsync("wine supplier", CancellationToken.None);
-        var supplier = Assert.Single(result.Matches);
-        Assert.Equal("urn:agentcon:agent:demo-wine-supplier", supplier.Identifier);
-        Assert.Equal(new Uri("http://localhost:6000/.well-known/agent-card.json"), supplier.CardUrl);
-        Assert.Equal(1, result.AgentEntriesScanned);
+        // Search ranks by relevance, so compare the set of suppliers rather than their order.
+        Assert.Equal(
+            [
+                ("urn:agentcon:agent:demo-wine-supplier", new Uri("http://localhost:6000/.well-known/agent-card.json")),
+                ("urn:agentcon:agent:french-wine-supplier", new Uri("http://localhost:6200/.well-known/agent-card.json")),
+                ("urn:agentcon:agent:sardinian-wine-supplier", new Uri("http://localhost:6100/.well-known/agent-card.json")),
+            ],
+            result.Matches.Select(match => (match.Identifier, match.CardUrl)).OrderBy(match => match.Identifier, StringComparer.Ordinal));
+        Assert.Equal(3, result.AgentEntriesScanned);
         Assert.Equal(1, result.ExcludedSelfEntries);
         Assert.Empty(result.Warnings);
     }

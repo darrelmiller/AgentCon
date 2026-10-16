@@ -17,6 +17,8 @@ public sealed class BuyerTurn(Message message, BuyerConversation conversation)
     public Message Message { get; } = message;
     public BuyerConversation Conversation { get; } = conversation;
     public List<SendMessageResponse> SupplierResponses { get; } = [];
+    /// <summary>Replies to the latest send_to_all_suppliers call; one supplier declining does not fail the turn.</summary>
+    public IReadOnlyList<SendMessageResponse>? LastBroadcast { get; set; }
     public Exception? ToolFailure { get; set; }
     public List<object> QuoteAssessments { get; } = [];
     public bool PriceApprovalRequired { get; set; }

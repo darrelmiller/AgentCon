@@ -22,6 +22,15 @@ public sealed class BuyerOptions
         set => Volatile.Write(ref _nativeStructuredSupport, value ? 1 : 0);
     }
     public string? SupplierControlToken { get; set; }
+    /// <summary>
+    /// SLIM node connection file (JSON or YAML-as-JSON) whose <c>client</c> section is a SLIM client config: endpoint,
+    /// TLS and node authentication. The same file the a2a CLI SLIMRPC plugin and the suppliers read. Unset disables SLIMRPC.
+    /// </summary>
+    public string? SlimConfigPath { get; set; }
+    /// <summary>The buyer's SLIM app name (org/namespace/app); callers reach the buyer at slim://&lt;SlimName&gt;.</summary>
+    public string SlimName { get; set; } = "agntcy/agentcon/buyer";
+    /// <summary>Shared secret all demo SLIM apps use for their identity; process-scoped, never in tracked configuration.</summary>
+    public string? SlimSharedSecret { get; set; }
     public bool AllowLoopbackPresentationHttp { get; set; }
     public SupplierCommunicationMode CommunicationMode
     {
@@ -65,6 +74,15 @@ public sealed class BuyerOptions
             MaxConversations is < 1 or > 128 || !Path.IsPathFullyQualified(CopilotStateDirectory))
         {
             throw new InvalidOperationException("Configure a model, a 1-600 second timeout, 1-128 conversations, and an absolute Copilot state directory.");
+        }
+        if (SlimConfigPath is not null)
+        {
+            if (!File.Exists(SlimConfigPath))
+                throw new InvalidOperationException($"Buyer:SlimConfigPath '{SlimConfigPath}' does not exist.");
+            // The config file's app identity (e.g. did:key) wins; otherwise a shared secret is required.
+            if (BuyerSlim.ReadIdentity(SlimConfigPath) is null && SlimSharedSecret is not { Length: >= 32 })
+                throw new InvalidOperationException("Set a process-scoped Buyer:SlimSharedSecret (at least 32 characters), or an app identity in Buyer:SlimConfigPath.");
+            BuyerSlim.ValidateName(SlimName, "Buyer:SlimName");
         }
         GetCatalogUri();
     }
