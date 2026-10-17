@@ -5,5 +5,5 @@ description: >-
   identifies itself to peers with a did:web, and answers natural-language requests through an
   OpenAI-compatible model endpoint.
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
