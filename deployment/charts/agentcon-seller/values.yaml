@@ -49,7 +49,8 @@ modelCreds:
   vaultPath: dev/azure-ai
   apiKeyProperty: azure-openai-token
   baseUrlProperty: azure-openai-url
-  model: gpt-6-luna-2026-09-22
+  # A deployment name on the Azure OpenAI resource (gpt-5 and gpt-4o are deployed there).
+  model: gpt-5
   refreshInterval: 1h
   # Use an existing Secret (keys "api-key" and "base-url") instead of the ExternalSecret.
   existingSecret: ""
