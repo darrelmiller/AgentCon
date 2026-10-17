@@ -1,0 +1,57 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "displayName": "AgentCon cloud sellers",
+    "identifier": "urn:agentcon:demo:cloud"
+  },
+  "entries": [
+    {
+      "identifier": "urn:agentcon:agent:demo-wine-supplier",
+      "displayName": "AgentCon Demo Wine Supplier",
+      "type": "application/a2a-agent-card+json",
+      "description": "Rust wine supplier: Natural-language quotes and orders, deterministic v1 wine RFQ/order data parts. Delivery throughout the US and Canada. Runs in the SLIM cluster; reachable over SLIMRPC only.",
+      "tags": [
+        "wine",
+        "supplier",
+        "demo",
+        "a2a",
+        "Barolo"
+      ],
+      "url": "https://agents.slim.outshift.io/agentcon/barolo-supplier/agent-card.json"
+    },
+    {
+      "identifier": "urn:agentcon:agent:sardinian-wine-supplier",
+      "displayName": "AgentCon Sardinian Wine Supplier",
+      "type": "application/a2a-agent-card+json",
+      "description": "Rust wine supplier: 2020 Vermentino di Gallura (Capichera, Arzachena) and 2019 Cannonau di Sardegna. Natural-language quotes and orders, deterministic v1 wine RFQ/order data parts. Delivery throughout the US and Canada. Runs in the SLIM cluster; reachable over SLIMRPC only.",
+      "tags": [
+        "wine",
+        "supplier",
+        "demo",
+        "a2a",
+        "Sardinia",
+        "Vermentino",
+        "Cannonau"
+      ],
+      "url": "https://agents.slim.outshift.io/agentcon/sardinian-supplier/agent-card.json"
+    },
+    {
+      "identifier": "urn:agentcon:agent:french-wine-supplier",
+      "displayName": "AgentCon French Wine Supplier",
+      "type": "application/a2a-agent-card+json",
+      "description": "Rust wine supplier: 2015 Château Margaux (Bordeaux) and 2013 Dom Ruinart Blanc de Blancs Champagne. Natural-language quotes and orders, deterministic v1 wine RFQ/order data parts. Delivery throughout the US and Canada. Runs in the SLIM cluster; reachable over SLIMRPC only.",
+      "tags": [
+        "wine",
+        "supplier",
+        "demo",
+        "a2a",
+        "France",
+        "Bordeaux",
+        "Margaux",
+        "Champagne",
+        "Ruinart"
+      ],
+      "url": "https://agents.slim.outshift.io/agentcon/french-supplier/agent-card.json"
+    }
+  ]
+}

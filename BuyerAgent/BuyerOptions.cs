@@ -23,6 +23,13 @@ public sealed class BuyerOptions
     }
     public string? SupplierControlToken { get; set; }
     /// <summary>
+    /// File holding an OIDC access token (for example ~/.slimctl/token) sent as a bearer token to suppliers behind an
+    /// OIDC gateway. Read on every request, so a refreshed login is picked up. Sent only to <see cref="SupplierBearerTokenOrigins"/>.
+    /// </summary>
+    public string? SupplierBearerTokenFile { get; set; }
+    /// <summary>HTTPS origins (scheme://host[:port]) that receive the bearer token; any other supplier never sees it.</summary>
+    public string[] SupplierBearerTokenOrigins { get; set; } = [];
+    /// <summary>
     /// SLIM node connection file (JSON or YAML-as-JSON) whose <c>client</c> section is a SLIM client config: endpoint,
     /// TLS and node authentication. The same file the a2a CLI SLIMRPC plugin and the suppliers read. Unset disables SLIMRPC.
     /// </summary>
@@ -83,6 +90,17 @@ public sealed class BuyerOptions
             if (BuyerSlim.ReadIdentity(SlimConfigPath) is null && SlimSharedSecret is not { Length: >= 32 })
                 throw new InvalidOperationException("Set a process-scoped Buyer:SlimSharedSecret (at least 32 characters), or an app identity in Buyer:SlimConfigPath.");
             BuyerSlim.ValidateName(SlimName, "Buyer:SlimName");
+        }
+        if (SupplierBearerTokenFile is not null)
+        {
+            if (!Path.IsPathFullyQualified(SupplierBearerTokenFile))
+                throw new InvalidOperationException("Buyer:SupplierBearerTokenFile must be an absolute path.");
+            if (SupplierBearerTokenOrigins.Length == 0)
+                throw new InvalidOperationException("Set Buyer:SupplierBearerTokenOrigins to the HTTPS origins that may receive the supplier bearer token.");
+            foreach (var origin in SupplierBearerTokenOrigins)
+                if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
+                    uri.UserInfo.Length > 0 || uri.AbsolutePath != "/" || uri.Query.Length > 0 || uri.Fragment.Length > 0)
+                    throw new InvalidOperationException($"Buyer:SupplierBearerTokenOrigins entry '{origin}' must be an HTTPS origin such as https://agents.example.com.");
         }
         GetCatalogUri();
     }

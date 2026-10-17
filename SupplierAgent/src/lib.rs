@@ -668,6 +668,25 @@ pub fn card(origin: &str, inventory: &Inventory, slim_url: Option<&str>) -> Agen
     }
 }
 
+/// The card to publish for a seller in the cluster. `origin` is where the card and the schema are published and,
+/// with `http`, where its JSON-RPC interface is reachable (`{origin}/a2a`); without `http` the SLIMRPC interface is the
+/// only one. With `oidc`, the card requires an OpenID Connect bearer token (issuer discovery URL) for its interfaces.
+pub fn published_card(origin: &str, structured: bool, inventory: &Inventory, slim_url: &str, http: bool,
+    oidc: Option<&str>) -> AgentCard {
+    let mut card = configured_card(origin.trim_end_matches('/'), structured, inventory, Some(slim_url));
+    if !http {
+        card.supported_interfaces.retain(|interface| interface.protocol_binding == a2a::TRANSPORT_PROTOCOL_SLIMRPC);
+    }
+    if let Some(discovery) = oidc {
+        card.security_schemes = Some([("oidc".to_owned(), SecurityScheme::OpenIdConnect(OpenIdConnectSecurityScheme {
+            open_id_connect_url: discovery.to_owned(),
+            description: Some("Bearer token from the AgentCon identity provider, checked by the gateway in front of the JSON-RPC interface.".into()),
+        }))].into());
+        card.security_requirements = Some(vec![[("oidc".to_owned(), Vec::new())].into()]);
+    }
+    card
+}
+
 pub fn configured_card(origin: &str, structured: bool, inventory: &Inventory, slim_url: Option<&str>) -> AgentCard {
     let mut value = card(origin, inventory, slim_url);
     if !structured {
