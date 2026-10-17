@@ -261,7 +261,7 @@ test('proof validation rejects signature, audience, typ, stale/future timestamps
     { header: { x5c: [] } },
     { header: { jwk: undefined, kid: 'did:web:attacker.invalid#key' } },
     { header: { jwk: undefined, kid: 'https://attacker.invalid/key' } },
-    { header: { kid: 'did:key:zInvalid#zInvalid' } },
+    { header: { jwk: undefined, kid: 'did:key:zInvalid#zInvalid' } },
     { header: { jwk: f.holder.privateJwk } },
     { header: { jwk: { ...f.holder.publicJwk, crv: 'P-384' } } },
     { header: { jwk: { ...f.holder.publicJwk, x: 'A'.repeat(43), y: 'A'.repeat(43) } } },
@@ -328,7 +328,7 @@ test('proof diagnostics distinguish unsupported algorithms and anonymous iss wit
 test('key-reference diagnostics distinguish wallet header failures without echoing public keys', async t => {
   const f = await fixture(t);
   const cases = [
-    [{ kid: 'did:key:redacted-identity' }, /base58btc fingerprint/],
+    [{ jwk: undefined, kid: 'did:key:redacted-identity' }, /base58btc fingerprint/],
     [{ jwk: undefined }, /no jwk or kid/],
     [{ jwk: undefined, kid: 'did:key:zRedacted' }, /matching #fingerprint/],
     [{ jwk: undefined, kid: 'did:jwk:redacted#wrong' }, /must end with #0/],
@@ -350,25 +350,26 @@ test('key-reference diagnostics distinguish wallet header failures without echoi
   }
 });
 
-test('accepts a wallet JWK plus matching did:key and rejects a conflicting DID key', async t => {
+test('uses the signed public JWK when wallets also supply arbitrary key identifiers', async t => {
   const f = await fixture(t);
-  const pair = await EcdsaMultikey.fromJwk({ jwk: f.holder.publicJwk });
-  const exported = await pair.export({ publicKey: true });
-  const kid = `did:key:${exported.publicKeyMultibase}#${exported.publicKeyMultibase}`;
+  for (const kid of [
+    'did:key:z6MkWalletIdentifier',
+    'did:key:z6MkWalletIdentifier#signing-key',
+    'wallet-key-1',
+    'urn:wallet:key:signing-key',
+  ]) {
+    const session = await f.session();
+    const proof = await f.proof(session.c_nonce, { header: { kid } });
+    assert.equal((await f.issue(session, proof, true)).status, 200, kid);
+  }
   const session = await f.session();
-  const matching = await f.proof(session.c_nonce, { header: { kid } });
-  assert.equal((await f.issue(session, matching, true)).status, 200);
-
   const other = await generateKeyPair('ES256', { extractable: true });
-  const otherPair = await EcdsaMultikey.fromJwk({ jwk: await exportJWK(other.publicKey) });
-  const otherKey = await otherPair.export({ publicKey: true });
-  const conflictingSession = await f.session();
-  const conflicting = await f.proof(conflictingSession.c_nonce, {
-    header: { kid: `did:key:${otherKey.publicKeyMultibase}#${otherKey.publicKeyMultibase}` },
+  const mismatch = await f.proof(session.c_nonce, {
+    header: { jwk: await exportJWK(other.publicKey), kid: 'unresolved-wallet-key' },
   });
-  const rejected = await f.issue(conflictingSession, conflicting, true);
+  const rejected = await f.issue(session, mismatch, true);
   assert.equal(rejected.status, 400);
-  assert.match(rejected.body.error_description, /jwk does not match/);
+  assert.match(rejected.body.error_description, /signature or JWT time validation failed/);
 });
 
 test('private offer page reports issuer progress after redemption without retaining proof or credential data', async t => {
@@ -383,7 +384,9 @@ test('private offer page reports issuer progress after redemption without retain
   assert.match(redeemed.body, /Token redeemed/);
   assert.doesNotMatch(redeemed.body, /data:image\/png|openid-credential-offer:/);
   assert.equal((await f.request(new URL(offer.credential_offer_uri).pathname)).status, 404);
-  const proof = await f.proof(session.c_nonce, { header: { kid: 'did:key:private-test-identity' } });
+  const proof = await f.proof(session.c_nonce, {
+    header: { jwk: undefined, kid: 'did:key:private-test-identity' },
+  });
   const failed = await f.issue(session, proof);
   const rejected = await page();
   assert.match(rejected.body, /Credential request rejected/);

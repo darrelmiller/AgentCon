@@ -87,13 +87,16 @@ async function holderKey(header) {
   }
   if (header.x5c !== undefined) throw new ProofValidationError('Certificate-based proof keys are not supported; use a public P-256 jwk or self-contained DID key');
   if (header.jwk === undefined && header.kid === undefined) throw new ProofValidationError('Proof header has no jwk or kid key reference');
-  const jwk = header.jwk === undefined ? undefined : publicProofKey(header.jwk);
-  if (header.kid === undefined) return jwk;
-  const didKey = await didProofKey(header.kid);
-  if (jwk && (jwk.x !== didKey.x || jwk.y !== didKey.y)) {
-    throw new ProofValidationError('Proof jwk does not match the public key identified by kid');
+  if (header.jwk !== undefined) {
+    if (header.kid !== undefined &&
+        (typeof header.kid !== 'string' || header.kid.length === 0 || header.kid.length > 2048)) {
+      throw new ProofValidationError('Proof kid must be a non-empty identifier of at most 2048 characters');
+    }
+    // OID4VCI prohibits combining jwk and kid, but some wallets do. When both
+    // appear, the signed public JWK is authoritative; kid is never resolved.
+    return publicProofKey(header.jwk);
   }
-  return jwk ?? didKey;
+  return didProofKey(header.kid);
 }
 
 export async function validateProof(jwt, origin, now, clientId) {
