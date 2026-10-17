@@ -168,13 +168,19 @@ You can also call a supplier directly, for example
 
 ## Running the whole demo on Windows
 
-`start-demo.sh` is a bash script. On Windows, run it inside WSL 2 (Ubuntu) and
-follow the Linux steps there. In WSL, install:
+For the initial HTTP JSON-RPC demo, use the native PowerShell launcher from the
+repository root:
 
-- the Linux builds of the plugin and `slimctl`;
-- the .NET 10 SDK and Rust (rustup);
-- the GitHub CLI, logged in to an account with GitHub Copilot;
-- Docker Desktop with WSL integration, for the Aspire dashboard (`TRACES=0`
-  skips it).
+```powershell
+.\start-demo.ps1
+```
 
-This path has not been tested yet.
+Install .NET 10, Rust with the Visual Studio C++ build tools, GitHub CLI
+authenticated to an account with GitHub Copilot, and Podman with a Podman
+machine. The launcher builds and runs the buyer and suppliers and starts the
+Aspire dashboard with Podman. Use `.\start-demo.ps1 -NoTraces` to skip Podman
+and Aspire.
+
+To run `start-demo.sh` itself, use WSL 2 and follow the Linux setup steps,
+including Docker. The optional Windows SLIMRPC setup above is separate from the
+default HTTP demo.
