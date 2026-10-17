@@ -2,8 +2,10 @@
 
 # SLIM name agntcy/agentcon/<agentName>, and the last segment of the seller's did:web.
 agentName: barolo-supplier
-# One of the inventories built into the image: barolo, sardinia, france.
-inventory: barolo
+
+# Required: the seller's inventory as JSON (supplierName, deliveryMinor, wines[]), mounted as
+# /etc/agentcon/inventory.json. From a file: --set-file inventory=SupplierAgent/inventories/barolo.json
+inventory: ""
 
 image:
   repository: ghcr.io/darrelmiller/agentcon-supplier

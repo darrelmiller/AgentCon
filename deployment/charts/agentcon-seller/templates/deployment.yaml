@@ -17,7 +17,7 @@ spec:
       labels:
         {{- include "seller.labels" . | nindent 8 }}
       annotations:
-        checksum/config: {{ include "seller.slimConfig" . | sha256sum }}
+        checksum/config: {{ print (include "seller.slimConfig" .) (include "seller.inventory" .) | sha256sum }}
     spec:
       serviceAccountName: {{ include "seller.fullname" . }}
       automountServiceAccountToken: false
@@ -47,7 +47,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: SUPPLIER_INVENTORY
-              value: {{ printf "/opt/agentcon/inventories/%s.json" .Values.inventory | quote }}
+              value: /etc/agentcon/inventory.json
             - name: SUPPLIER_SLIM_CONFIG
               value: /etc/agentcon/slim.json
             - name: SUPPLIER_SLIM_NAME

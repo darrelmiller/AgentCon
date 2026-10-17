@@ -7,3 +7,5 @@ metadata:
 data:
   slim.json: |
     {{- include "seller.slimConfig" . | nindent 4 }}
+  inventory.json: |
+    {{- include "seller.inventory" . | nindent 4 }}

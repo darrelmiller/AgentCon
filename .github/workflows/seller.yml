@@ -66,10 +66,10 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Lint and render
         run: |
-          helm lint deployment/charts/agentcon-seller
+          helm lint deployment/charts/agentcon-seller --set-file inventory=SupplierAgent/inventories/barolo.json
           for seller in barolo-supplier:barolo sardinian-supplier:sardinia french-supplier:france; do
             helm template "${seller%%:*}" deployment/charts/agentcon-seller --namespace slim-dev \
-              --set agentName="${seller%%:*}" --set inventory="${seller##*:}" \
+              --set agentName="${seller%%:*}" --set-file inventory="SupplierAgent/inventories/${seller##*:}.json" \
               --set identity.keyProperty="${seller%%:*}-key" > /dev/null
           done
       - name: Package and push

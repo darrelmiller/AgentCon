@@ -50,3 +50,13 @@ app.kubernetes.io/instance: {{ include "seller.fullname" . }}
       "subject_binding" "enforce")) -}}
 {{- toPrettyJson $config -}}
 {{- end -}}
+
+{{/* The inventory JSON from values, validated and normalised. */}}
+{{- define "seller.inventory" -}}
+{{- $text := required "inventory is required: the seller's inventory JSON (e.g. --set-file inventory=SupplierAgent/inventories/barolo.json)" .Values.inventory -}}
+{{- $inventory := fromJson $text -}}
+{{- if or (hasKey $inventory "Error") (not (hasKey $inventory "supplierName")) (not (hasKey $inventory "wines")) -}}
+{{- fail "inventory must be a JSON object with supplierName and wines" -}}
+{{- end -}}
+{{- toPrettyJson $inventory -}}
+{{- end -}}
