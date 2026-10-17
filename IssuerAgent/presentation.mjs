@@ -106,9 +106,30 @@ export async function presentationService(config, issuerJwk) {
       if (input.state !== session.state) throw new PresentationError('Invalid state');
       let tokens;
       try { tokens = JSON.parse(input.vp_token); } catch { throw new PresentationError('Expected DCQL vp_token object'); }
-      if (!tokens || Object.keys(tokens).length !== 1 || !Array.isArray(tokens.age) ||
-          tokens.age.length !== 1 || typeof tokens.age[0] !== 'string' || tokens.age[0].length > 12000) {
-        throw new PresentationError('Expected one age presentation in DCQL vp_token');
+      if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) {
+        throw new PresentationError('DCQL vp_token must be an object keyed by query ID, not a scalar or array');
+      }
+      if (!Object.hasOwn(tokens, 'age')) {
+        throw new PresentationError('DCQL vp_token is missing the requested age query ID');
+      }
+      if (Object.keys(tokens).length !== 1) {
+        throw new PresentationError('DCQL vp_token contains additional query IDs');
+      }
+      if (!Array.isArray(tokens.age)) {
+        throw new PresentationError(typeof tokens.age === 'string'
+          ? 'DCQL age value is a string; an array of presentation strings is required'
+          : 'DCQL age value must be an array of presentation strings');
+      }
+      if (tokens.age.length !== 1) {
+        throw new PresentationError(tokens.age.length === 0
+          ? 'DCQL age array is empty; one presentation is required'
+          : 'DCQL age array contains multiple presentations; exactly one is required');
+      }
+      if (typeof tokens.age[0] !== 'string') {
+        throw new PresentationError('DCQL age presentation must be a string, not an object or other value');
+      }
+      if (!tokens.age[0] || tokens.age[0].length > 12000) {
+        throw new PresentationError('DCQL age presentation is empty or exceeds the size limit');
       }
       session.busy = true;
       let stage = 'Invalid issuer JWT header or untrusted issuer key';

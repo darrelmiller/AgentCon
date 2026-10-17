@@ -215,6 +215,9 @@ these request profiles remains unconfirmed.
 Rejected presentation POSTs return fixed validation-stage diagnostics (for example,
 DCQL response shape, issuer signature, disclosure or holder-binding failure).
 They never echo credential contents, wallet keys, token values or library errors.
+DCQL shape diagnostics distinguish a missing `age` query ID, a scalar instead of
+an array, empty/multiple presentations, non-string entries and size limits without
+returning supplied query IDs or values. The expected shape is `{"age":["<SD-JWT presentation>"]}`.
 `GET /presentations/<id>/request` returns the DID JWK ES256-signed JWT request object
 (`application/oauth-authz-req+jwt`, `oauth-authz-req+jwt` protected-header type,
 `decentralized_identifier:did:jwk:...` client identifier, DID key ID and
