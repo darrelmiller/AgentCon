@@ -117,11 +117,9 @@ export async function presentationService(config, issuerJwk) {
         throw new PresentationError('DCQL vp_token contains additional query IDs');
       }
       // There is only one requested query; validate its proof even if a wallet renames its ID.
-      const age = entries[0];
+      const age = typeof entries[0] === 'string' ? [entries[0]] : entries[0];
       if (!Array.isArray(age)) {
-        throw new PresentationError(typeof age === 'string'
-          ? 'DCQL age value is a string; an array of presentation strings is required'
-          : 'DCQL age value must be an array of presentation strings');
+        throw new PresentationError('DCQL age value must be a presentation string or an array of presentation strings');
       }
       if (age.length !== 1) {
         throw new PresentationError(age.length === 0

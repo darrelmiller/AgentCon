@@ -121,7 +121,7 @@ test('Light SSI DID key and Sphereon DID JWK request profiles verify their bound
   assert.equal(f.verifier.status(challenge.id).verified, true);
 });
 
-test('single-query response aliases retain issuer and holder validation and reject ambiguous responses', async t => {
+for (const scalar of [false, true]) test(`single-query ${scalar ? 'string' : 'array'} response aliases retain proof validation and reject ambiguous responses`, async t => {
   const f = await fixture(t);
   const wrongKey = await generateKeyPair('ES256');
   for (const options of [
@@ -133,7 +133,7 @@ test('single-query response aliases retain issuer and holder validation and reje
     const request = decodeJwt(f.verifier.lightSsiRequest(challenge.id));
     const response = await f.presentation(challenge, { ...options, request });
     const { age } = JSON.parse(response.vp_token);
-    const alias = { ...response, vp_token: JSON.stringify({ wallet_query: age }) };
+    const alias = { ...response, vp_token: JSON.stringify({ wallet_query: scalar ? age[0] : age }) };
     await assert.rejects(f.verifier.verify(challenge.id, {
       ...alias, vp_token: JSON.stringify({ first: age, second: age }),
     }), /additional query IDs/);
@@ -286,15 +286,17 @@ test('HTTP handoff exposes QR and request but status and session creation requir
   for (const [input, reason] of [
     [{ state: 'sensitive-wallet-state', vp_token: 'sensitive-wallet-token' }, 'Invalid state'],
     [{ state: object.state, vp_token: 'sensitive-wallet-token' }, 'Expected DCQL vp_token object'],
-    [{ state: object.state, vp_token: JSON.stringify({ age: credential + kb }) },
-      'DCQL age value is a string; an array of presentation strings is required'],
+    [{ state: object.state, vp_token: JSON.stringify({ age: 'sensitive-wallet-token' }) },
+      'Invalid issuer JWT header or untrusted issuer key'],
     ...[
       [null, 'DCQL vp_token must be an object keyed by query ID, not a scalar or array'],
       [['sensitive-wallet-token'], 'DCQL vp_token must be an object keyed by query ID, not a scalar or array'],
       [{}, 'DCQL vp_token contains no presentations'],
       [{ privateQueryId: ['sensitive-wallet-token'] }, 'Invalid issuer JWT header or untrusted issuer key'],
       [{ age: [], privateQueryId: [] }, 'DCQL vp_token contains additional query IDs'],
-      [{ age: {} }, 'DCQL age value must be an array of presentation strings'],
+      [{ age: {} }, 'DCQL age value must be a presentation string or an array of presentation strings'],
+      [{ age: '' }, 'DCQL age presentation is empty or exceeds the size limit'],
+      [{ age: 'x'.repeat(12001) }, 'DCQL age presentation is empty or exceeds the size limit'],
       [{ age: [] }, 'DCQL age array is empty; one presentation is required'],
       [{ age: ['first', 'second'] }, 'DCQL age array contains multiple presentations; exactly one is required'],
       [{ age: [{ privateClaim: 'sensitive-wallet-value' }] },
@@ -316,7 +318,7 @@ test('HTTP handoff exposes QR and request but status and session creation requir
   }
   const result = await fetch(f.local + path + '/response', {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ state: object.state, vp_token: JSON.stringify({ age: [credential + kb] }) }),
+    body: new URLSearchParams({ state: object.state, vp_token: JSON.stringify({ age: credential + kb }) }),
   });
   assert.equal(result.status, 200, await result.text());
   assert.equal(result.headers.get('access-control-allow-origin'), '*');
