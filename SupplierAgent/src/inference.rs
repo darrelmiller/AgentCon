@@ -35,6 +35,11 @@ pub trait Interpreter: Send + Sync {
         latest_quote: Option<&str>,
         context: &str,
     ) -> Result<Intent, String>;
+
+    /// The model provider, for the `gen_ai.provider.name` trace attribute.
+    fn provider(&self) -> &'static str {
+        "github.copilot"
+    }
 }
 
 const INSTRUCTIONS: &str = r#"

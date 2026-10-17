@@ -49,7 +49,8 @@ modelCreds:
   vaultPath: dev/azure-ai
   apiKeyProperty: azure-openai-token
   baseUrlProperty: azure-openai-url
-  model: gpt-6-luna-2026-09-22
+  # A deployment name on the Azure OpenAI resource (gpt-5 and gpt-4o are deployed there).
+  model: gpt-5
   refreshInterval: 1h
   # Use an existing Secret (keys "api-key" and "base-url") instead of the ExternalSecret.
   existingSecret: ""
@@ -59,6 +60,19 @@ externalSecrets:
 
 jwksFetcher:
   image: curlimages/curl:8.11.1
+
+# HTTPS interface: the seller's JSON-RPC endpoint, published as https://<publicBaseUrl>/<agentName>/a2a by the
+# OIDC gateway, which checks the caller's bearer token. Only the gateway's pods can reach the Service.
+http:
+  enabled: true
+  port: 6000
+  publicBaseUrl: https://agents.slim.outshift.io/agentcon
+  # Pods allowed to call the seller, in the release namespace: the slim-agents-web router behind the OIDC gateway,
+  # which forwards only /agentcon/<seller>/a2a.
+  allowFrom:
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: slim-agents-web
 
 # Optional OTLP endpoint for traces; empty disables export.
 otlpEndpoint: ""

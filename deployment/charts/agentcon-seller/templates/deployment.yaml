@@ -62,11 +62,24 @@ spec:
             - name: MODEL_NAME
               value: {{ .Values.modelCreds.model | quote }}
             {{- end }}
+            {{- if .Values.http.enabled }}
+            - name: SUPPLIER_PORT
+              value: {{ .Values.http.port | quote }}
+            - name: SUPPLIER_BIND
+              value: "0.0.0.0"
+            - name: SUPPLIER_PUBLIC_URL
+              value: {{ printf "%s/%s" (.Values.http.publicBaseUrl | trimSuffix "/") .Values.agentName | quote }}
+            {{- end }}
             {{- with .Values.otlpEndpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ . | quote }}
             {{- end }}
-          # The HTTP interface listens on loopback only; the binary probes itself.
+          {{- if .Values.http.enabled }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.http.port }}
+          {{- end }}
+          # The binary probes its own /ready (SLIM connected), so the probes work with or without the Service.
           readinessProbe:
             exec:
               command: ["agentcon-supplier", "ready-probe"]

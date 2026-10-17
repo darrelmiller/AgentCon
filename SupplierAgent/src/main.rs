@@ -16,6 +16,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let status = reqwest::get(format!("http://127.0.0.1:{port}/ready")).await.map(|response| response.status());
         std::process::exit(if matches!(status, Ok(status) if status.is_success()) { 0 } else { 1 });
     }
+    // `agentcon-supplier publish-card <base-url> <slim-url>`: print the Agent Card to publish for a seller reachable
+    // only over SLIM, with its schema links under <base-url>. Uses SUPPLIER_INVENTORY and SUPPLIER_STRUCTURED_DATA.
+    if std::env::args().nth(1).as_deref() == Some("publish-card") {
+        const USAGE: &str = "Usage: agentcon-supplier publish-card <https-origin> <slim-url> [--http] [--oidc <discovery-url>]";
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let (Some(origin), Some(slim_url)) = (args.first(), args.get(1)) else { return Err(USAGE.into()) };
+        if !origin.starts_with("https://") || !slim_url.starts_with("slim://") {
+            return Err("publish-card needs an https:// origin and a slim:// URL.".into());
+        }
+        let (mut http, mut oidc) = (false, None);
+        let mut rest = args[2..].iter();
+        while let Some(flag) = rest.next() {
+            match flag.as_str() {
+                "--http" => http = true,
+                "--oidc" => oidc = Some(rest.next().filter(|url| url.starts_with("https://")).ok_or(USAGE)?.clone()),
+                _ => return Err(USAGE.into()),
+            }
+        }
+        let structured = std::env::var("SUPPLIER_STRUCTURED_DATA").map_or(Ok(true), |value| value.parse::<bool>())?;
+        let card = agentcon_supplier::published_card(origin, structured, load_inventory()?, slim_url, http, oidc.as_deref());
+        println!("{}", serde_json::to_string_pretty(&card)?);
+        return Ok(());
+    }
     let telemetry = agentcon_supplier::telemetry::init()?;
     #[cfg(feature = "copilot")]
     let state_dir = {
@@ -46,14 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_dir
     };
     // SUPPLIER_INVENTORY: path to an inventory JSON file; unset uses the built-in 2019 Barolo stock.
-    let inventory: &'static agentcon_supplier::domain::Inventory = match std::env::var_os("SUPPLIER_INVENTORY") {
-        Some(path) => {
-            let json = std::fs::read_to_string(&path)
-                .map_err(|e| format!("Cannot read SUPPLIER_INVENTORY {}: {e}", PathBuf::from(&path).display()))?;
-            Box::leak(Box::new(agentcon_supplier::domain::Inventory::from_json(&json)?))
-        }
-        None => &agentcon_supplier::domain::BAROLO,
-    };
+    let inventory = load_inventory()?;
     // An OpenAI-compatible endpoint (MODEL_*), as in containers; otherwise the developer's GitHub Copilot.
     #[cfg(feature = "copilot")]
     let mut copilot: Option<Arc<CopilotInterpreter>> = None;
@@ -111,8 +127,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    let origin = format!("http://localhost:{port}");
+    // Loopback only by default. In a cluster, SUPPLIER_BIND=0.0.0.0 lets the gateway in front of the seller reach it
+    // (a NetworkPolicy keeps everything else out), and SUPPLIER_PUBLIC_URL is the origin its card advertises.
+    let bind: std::net::IpAddr = std::env::var("SUPPLIER_BIND").as_deref().unwrap_or("127.0.0.1").parse()?;
+    let listener = tokio::net::TcpListener::bind((bind, port)).await?;
+    let origin = std::env::var("SUPPLIER_PUBLIC_URL")
+        .map(|url| url.trim_end_matches('/').to_owned())
+        .unwrap_or_else(|_| format!("http://localhost:{port}"));
     tracing::info!(%origin, supplier = %inventory.supplier_name, wines = inventory.wines.len(), pid = std::process::id(), "Wine supplier ready");
     let served = axum::serve(listener, app_with_handler(supplier, &origin, handler))
         .with_graceful_shutdown(async {
@@ -130,4 +151,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cleanup?;
     served?;
     Ok(())
+}
+
+/// The seller's stock: SUPPLIER_INVENTORY (a JSON file), or the built-in Barolo inventory.
+fn load_inventory() -> Result<&'static agentcon_supplier::domain::Inventory, Box<dyn std::error::Error>> {
+    Ok(match std::env::var_os("SUPPLIER_INVENTORY") {
+        Some(path) => {
+            let json = std::fs::read_to_string(&path)
+                .map_err(|e| format!("Cannot read SUPPLIER_INVENTORY {}: {e}", PathBuf::from(&path).display()))?;
+            Box::leak(Box::new(agentcon_supplier::domain::Inventory::from_json(&json)?))
+        }
+        None => &agentcon_supplier::domain::BAROLO,
+    })
 }

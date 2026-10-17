@@ -86,6 +86,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     internal (IA2AClient Client, IDisposable? Owned) OpenClient(SupplierBinding supplier)
     {
         if (supplier.SlimTarget is { } target && slim?.ClientFor(target) is { } slimClient) return (slimClient, null);
+        if (supplier.Endpoint.Scheme == "slim")
+            throw new InvalidOperationException("This seller is reachable only over SLIM, and the buyer's SLIM connection is not ready.");
         var http = new A2AClient(supplier.Endpoint, httpClient);
         return (http, http);
     }
@@ -103,7 +105,15 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     {
         var entry = await catalog.FindAsync(identifier, version, cancellationToken);
         var card = await ResolveCardAsync(entry.CardUrl, cancellationToken);
-        var endpoint = SelectEndpoint(card, entry.CardUrl);
+        // Prefer the card's SLIMRPC interface when the buyer is configured for SLIM; JSON-RPC stays the fallback.
+        var slimTarget = slim?.Configured == true
+            ? card.SupportedInterfaces.FirstOrDefault(candidate => candidate.ProtocolBinding == "SLIMRPC" &&
+                candidate.ProtocolVersion == "1.0" && BuyerSlim.TargetName(candidate.Url) is not null)?.Url
+            : null;
+        // A seller reachable only over SLIM (e.g. in a cluster) publishes a card without a JSON-RPC interface.
+        var endpoint = slimTarget is not null && !card.SupportedInterfaces.Any(candidate => candidate.ProtocolBinding == "JSONRPC")
+            ? new Uri(slimTarget)
+            : SelectEndpoint(card, entry.CardUrl);
         var mode = options.CommunicationMode;
         if (mode == SupplierCommunicationMode.Automatic)
             mode = card.DefaultInputModes.Any(type => type != "application/json" && type.EndsWith("+json", StringComparison.Ordinal))
@@ -121,11 +131,6 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         if (mode != SupplierCommunicationMode.NaturalLanguage &&
             !formats.Any(format => format.Direction == "input"))
             throw new InvalidOperationException("Seller has no input structures understood in the configured communication mode.");
-        // Prefer the card's SLIMRPC interface when the buyer is configured for SLIM; JSON-RPC stays the fallback.
-        var slimTarget = slim?.Configured == true
-            ? card.SupportedInterfaces.FirstOrDefault(candidate => candidate.ProtocolBinding == "SLIMRPC" &&
-                candidate.ProtocolVersion == "1.0" && BuyerSlim.TargetName(candidate.Url) is not null)?.Url
-            : null;
         return new SupplierSelection(
             new SupplierBinding(entry.Identifier, entry.Version, entry.DisplayName ?? card.Name, entry.CardUrl, endpoint, entry.Catalog)
             { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = formats,
