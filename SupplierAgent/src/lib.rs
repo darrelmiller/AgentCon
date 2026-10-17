@@ -78,15 +78,15 @@ impl Supplier {
         self
     }
 
-    /// The SLIMRPC interface (see `slim::serve`) to advertise once `mark_slim_ready` is called.
+    /// The SLIMRPC interface (see `slim::serve`) to advertise while `set_slim_ready(true)` holds.
     pub fn with_slim_url(mut self, url: String) -> Self {
         self.slim_url = Some(url);
         self
     }
 
-    /// Called after registration on the SLIM node: the Agent Card and /health now advertise SLIMRPC.
-    pub fn mark_slim_ready(&self) {
-        self.slim_ready.store(true, Ordering::Relaxed);
+    /// Tracks the SLIM node connection: while true, the Agent Card and /health advertise SLIMRPC and /ready is 200.
+    pub fn set_slim_ready(&self, ready: bool) {
+        self.slim_ready.store(ready, Ordering::Relaxed);
     }
 
     fn advertised_slim_url(&self) -> Option<&str> {
@@ -797,6 +797,7 @@ pub fn app_with_handler(
     let card_supplier = supplier.clone();
     let control_supplier = supplier.clone();
     let health_supplier = supplier.clone();
+    let ready_supplier = supplier.clone();
     let card_origin = origin.to_owned();
     let control_host = origin.strip_prefix("http://").unwrap_or("").to_owned();
     Router::new()
@@ -861,6 +862,20 @@ pub fn app_with_handler(
                     "oid4vp": if verifier_configured { "presentation-verifier-configured" } else { "verifier-not-configured" },
                     "slim": supplier.advertised_slim_url().unwrap_or(if supplier.slim_url.is_some() { "unavailable" } else { "disabled" })
                 }))
+                }
+            }),
+        )
+        // Readiness for orchestrators: 503 while SLIM is configured but not connected to the node.
+        .route(
+            "/ready",
+            axum::routing::get(move || {
+                let supplier = ready_supplier.clone();
+                async move {
+                    if supplier.slim_url.is_none() || supplier.advertised_slim_url().is_some() {
+                        (axum::http::StatusCode::OK, "ready")
+                    } else {
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "SLIM node not connected")
+                    }
                 }
             }),
         )

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::{FutureExt, StreamExt};
 use github_copilot_sdk::{
     Client, ClientMode, ClientOptions, MemoryConfiguration, MessageOptions, SessionConfig,
-    SystemMessageConfig, handler::DenyAllHandler,
+    SystemMessageConfig, handler::DenyAllHandler, types::ProviderConfig,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -94,6 +94,73 @@ pub struct CopilotInterpreter {
     state_dir: PathBuf,
     model: String,
     instructions: String,
+    provider: Option<ModelProvider>,
+}
+
+/// An OpenAI-compatible model endpoint used instead of GitHub Copilot's hosted models (bring your own key).
+///
+/// Configured from files so the key never sits in the environment: `MODEL_API_KEY_FILE`,
+/// `MODEL_BASE_URL_FILE` and `MODEL_NAME`, all or none. An Azure OpenAI resource URL
+/// (`https://<resource>.openai.azure.com/`) gets its OpenAI-compatible `openai/v1` route appended.
+pub struct ModelProvider {
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+impl std::fmt::Debug for ModelProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .finish()
+    }
+}
+
+impl ModelProvider {
+    /// `Ok(None)` when no provider is configured, so the supplier keeps using GitHub Copilot.
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let key_file = std::env::var_os("MODEL_API_KEY_FILE");
+        let url_file = std::env::var_os("MODEL_BASE_URL_FILE");
+        let model = std::env::var("MODEL_NAME").ok().filter(|model| !model.trim().is_empty());
+        let (key_file, url_file, model) = match (key_file, url_file, model) {
+            (None, None, None) => return Ok(None),
+            (Some(key), Some(url), Some(model)) => (key, url, model),
+            _ => return Err("Set all of MODEL_API_KEY_FILE, MODEL_BASE_URL_FILE and MODEL_NAME, or none.".into()),
+        };
+        let read = |path: &std::ffi::OsStr, what: &str| {
+            std::fs::read_to_string(path)
+                .map(|text| text.trim().to_owned())
+                .map_err(|e| format!("Cannot read {what} file {}: {e}", std::path::Path::new(path).display()))
+        };
+        let api_key = read(&key_file, "MODEL_API_KEY")?;
+        let base = read(&url_file, "MODEL_BASE_URL")?;
+        if api_key.is_empty() {
+            return Err("MODEL_API_KEY_FILE is empty.".into());
+        }
+        // https only, except a local endpoint (tests, a model server on the same host).
+        let loopback = ["http://localhost:", "http://127.0.0.1:", "http://[::1]:"].iter().any(|prefix| base.starts_with(prefix));
+        if !base.starts_with("https://") && !loopback {
+            return Err("MODEL_BASE_URL must be an https:// URL (http only on localhost).".into());
+        }
+        let base = base.trim_end_matches('/');
+        let base_url = if base.ends_with("/v1") { base.to_owned() } else { format!("{base}/openai/v1") };
+        Ok(Some(Self { base_url, api_key, model: model.trim().to_owned() }))
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn config(&self) -> ProviderConfig {
+        // OpenAI clients send the key as a bearer token; Azure OpenAI also reads it from `api-key`.
+        ProviderConfig::new(&self.base_url)
+            .with_provider_type("openai")
+            .with_api_key(&self.api_key)
+            .with_headers([("api-key".to_owned(), self.api_key.clone())].into())
+            .with_wire_model(&self.model)
+    }
 }
 
 struct SessionCleanup {
@@ -129,7 +196,15 @@ impl CopilotInterpreter {
             state_dir,
             model,
             instructions: instructions(inventory),
+            provider: None,
         }
+    }
+
+    /// Route inference to `provider` instead of GitHub Copilot; its model replaces `model`.
+    pub fn with_provider(mut self, provider: ModelProvider) -> Self {
+        self.model = provider.model.clone();
+        self.provider = Some(provider);
+        self
     }
 
     pub async fn stop(&self) -> Result<(), String> {
@@ -190,7 +265,8 @@ impl Interpreter for CopilotInterpreter {
             let mut options = ClientOptions::new()
                 .with_mode(ClientMode::Empty)
                 .with_base_directory(&self.state_dir)
-                .with_use_logged_in_user(true);
+                // With an own model provider there is no GitHub login to use (e.g. in a cluster).
+                .with_use_logged_in_user(self.provider.is_none());
             options.working_directory = self.state_dir.clone();
             options
                 .env
@@ -214,7 +290,11 @@ impl Interpreter for CopilotInterpreter {
         let client = guard
             .as_ref()
             .ok_or("Copilot client missing after startup")?;
-        let config = SessionConfig::default()
+        let mut config = SessionConfig::default();
+        if let Some(provider) = &self.provider {
+            config = config.with_provider(provider.config());
+        }
+        let config = config
             .with_model(&self.model)
             .with_permission_handler(Arc::new(DenyAllHandler))
             .with_available_tools(Vec::<String>::new())

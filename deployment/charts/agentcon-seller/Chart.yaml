@@ -1,0 +1,9 @@
+apiVersion: v2
+name: agentcon-seller
+description: >-
+  One AgentCon wine seller (A2A over SLIMRPC). The pod connects to the SLIM node with its SPIFFE X.509-SVID,
+  identifies itself to peers with a did:web, and answers natural-language requests through an
+  OpenAI-compatible model endpoint.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

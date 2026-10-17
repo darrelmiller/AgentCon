@@ -1,0 +1,71 @@
+# One release per seller. Set agentName and inventory; the rest is shared.
+
+# SLIM name agntcy/agentcon/<agentName>, and the last segment of the seller's did:web.
+agentName: barolo-supplier
+# One of the inventories built into the image: barolo, sardinia, france.
+inventory: barolo
+
+image:
+  repository: ghcr.io/darrelmiller/agentcon-supplier
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+slim:
+  organization: agntcy/agentcon
+  # slim-dp's SPIRE-mTLS listener. It authenticates the pod's X.509-SVID and is pinned to TLS 1.2.
+  endpoint: https://slim-dp-slim-dev-argoapp.slim-dev.svc.cluster.local:46368
+  tlsVersion: tls1.2
+  spireSocket: unix:///spiffe-workload-api/spire-agent.sock
+
+spiffe:
+  # dir's SPIRE issues SVIDs only for this ClusterSPIFFEID class.
+  className: dir-spire
+  trustDomain: dev.ads.outshift.io
+
+# Application identity: a did:web published on agents.slim.outshift.io (public keys only).
+identity:
+  didWebBase: did:web:agents.slim.outshift.io:agentcon
+  issuer: https://agents.slim.outshift.io
+  audience: agntcy/agentcon
+  # Fetched at startup: every agent's public key, kid = the agent's did:web.
+  jwksUrl: https://agents.slim.outshift.io/.well-known/jwks.json
+  # The seller's Ed25519 private key (PKCS#8 PEM).
+  secretStore: vault-eticloud-apps-phoenix
+  vaultPath: agntcy/slim/agentcon-sellers
+  keyProperty: barolo-supplier-key
+  refreshInterval: 1h
+  # Use an existing Secret (key "key.pem") instead of the ExternalSecret.
+  existingSecret: ""
+
+# OpenAI-compatible model endpoint (an Azure OpenAI resource; the supplier appends openai/v1).
+modelCreds:
+  enabled: true
+  secretStore: vault-eticloud-apps-phoenix
+  vaultPath: azure-ai
+  apiKeyProperty: azure-openai-token
+  baseUrlProperty: azure-openai-url
+  model: gpt-6-luna-2026-09-22
+  refreshInterval: 1h
+  # Use an existing Secret (keys "api-key" and "base-url") instead of the ExternalSecret.
+  existingSecret: ""
+
+externalSecrets:
+  apiVersion: external-secrets.io/v1beta1
+
+jwksFetcher:
+  image: curlimages/curl:8.11.1
+
+# Optional OTLP endpoint for traces; empty disables export.
+otlpEndpoint: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

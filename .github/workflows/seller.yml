@@ -1,0 +1,83 @@
+name: Seller image and chart
+
+# Builds the supplier image and the agentcon-seller chart on every change; publishes both to GHCR from main
+# and from seller-v* tags. Pull requests build and lint only.
+on:
+  push:
+    branches: [main]
+    tags: ["seller-v*"]
+    paths: ["SupplierAgent/**", "deployment/charts/agentcon-seller/**", ".github/workflows/seller.yml"]
+  pull_request:
+    paths: ["SupplierAgent/**", "deployment/charts/agentcon-seller/**", ".github/workflows/seller.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/agentcon-supplier
+  CHART_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
+  PUBLISH: ${{ github.event_name != 'pull_request' }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=match,pattern=seller-v(.*),group=1
+      - uses: docker/build-push-action@v6
+        with:
+          context: SupplierAgent
+          platforms: linux/amd64
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@v4
+      - name: Lint and render
+        run: |
+          helm lint deployment/charts/agentcon-seller
+          for seller in barolo-supplier:barolo sardinian-supplier:sardinia french-supplier:france; do
+            helm template "${seller%%:*}" deployment/charts/agentcon-seller --namespace slim-dev \
+              --set agentName="${seller%%:*}" --set inventory="${seller##*:}" \
+              --set identity.keyProperty="${seller%%:*}-key" > /dev/null
+          done
+      - name: Package and push
+        if: env.PUBLISH == 'true'
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GH_ACTOR" --password-stdin
+          helm package deployment/charts/agentcon-seller --destination dist
+          helm push dist/agentcon-seller-*.tgz "$CHART_REPO"

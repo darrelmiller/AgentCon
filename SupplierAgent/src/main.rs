@@ -1,13 +1,19 @@
 use std::{path::PathBuf, sync::Arc};
 
-use agentcon_supplier::{Supplier, app_with_handler, inference::CopilotInterpreter, request_handler, slim};
+use agentcon_supplier::{Supplier, app_with_handler, inference::{CopilotInterpreter, ModelProvider}, request_handler, slim};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let telemetry = agentcon_supplier::telemetry::init()?;
     let port: u16 = std::env::var("SUPPLIER_PORT")
         .unwrap_or_else(|_| "6000".into())
         .parse()?;
+    // `agentcon-supplier ready-probe`: exit 0 when the running supplier on SUPPLIER_PORT is ready. The HTTP
+    // interface listens on loopback only, so orchestrators probe it from inside the container this way.
+    if std::env::args().nth(1).as_deref() == Some("ready-probe") {
+        let status = reqwest::get(format!("http://127.0.0.1:{port}/ready")).await.map(|response| response.status());
+        std::process::exit(if matches!(status, Ok(status) if status.is_success()) { 0 } else { 1 });
+    }
+    let telemetry = agentcon_supplier::telemetry::init()?;
     let state_dir = match std::env::var_os("SUPPLIER_COPILOT_STATE") {
         Some(path) => PathBuf::from(path),
         None => PathBuf::from(
@@ -19,12 +25,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !state_dir.is_absolute() {
         return Err("SUPPLIER_COPILOT_STATE must be absolute and outside the repository.".into());
     }
+    // The checkout this binary was built from; absent in a container image, where there is nothing to protect.
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("Supplier project must have a repository parent")?
-        .canonicalize()?;
+        .canonicalize()
+        .ok();
     let resolved_state = std::path::absolute(&state_dir)?;
-    if resolved_state.starts_with(&repository) {
+    if repository.is_some_and(|repository| resolved_state.starts_with(repository)) {
         return Err(
             "Copilot state must be outside the repository, not a tracked credential directory."
                 .into(),
@@ -39,11 +47,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => &agentcon_supplier::domain::BAROLO,
     };
-    let interpreter = Arc::new(CopilotInterpreter::new(
+    let mut interpreter = CopilotInterpreter::new(
         state_dir,
         std::env::var("SUPPLIER_MODEL").unwrap_or_else(|_| "auto".into()),
         inventory,
-    ));
+    );
+    // An own OpenAI-compatible endpoint (MODEL_*) replaces GitHub Copilot's hosted models.
+    if let Some(provider) = ModelProvider::from_env()? {
+        tracing::info!(model = provider.model(), "Supplier inference uses its own model provider");
+        interpreter = interpreter.with_provider(provider);
+    }
+    let interpreter = Arc::new(interpreter);
     let mut supplier = Supplier::new(interpreter.clone()).with_inventory(inventory);
     if let Ok(value) = std::env::var("SUPPLIER_STRUCTURED_DATA") {
         supplier = supplier.with_structured(value.parse::<bool>()?);
@@ -78,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let slim_handler = handler.clone();
         let ready_supplier = supplier.clone();
         tokio::spawn(async move {
-            if let Err(error) = slim::serve(slim_handler, settings, move || ready_supplier.mark_slim_ready()).await {
+            if let Err(error) = slim::serve(slim_handler, settings, move |ready| ready_supplier.set_slim_ready(ready)).await {
                 tracing::error!(%error, "SLIMRPC binding unavailable; HTTP JSON-RPC continues");
             }
         });

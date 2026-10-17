@@ -109,11 +109,16 @@ impl SlimSettings {
     }
 }
 
-/// Connects to the SLIM node, registers the app name, calls `on_ready`, and serves `handler` until the process exits.
+/// How often the node connection is checked for `on_status`.
+const CONNECTION_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Connects to the SLIM node, registers the app name, and serves `handler` until the process exits.
+/// `on_status(true)` is called once registered; afterwards `on_status` follows the node connection, which
+/// drops out of the service once its client stops reconnecting.
 pub async fn serve<H: RequestHandler + 'static>(
     handler: Arc<H>,
     settings: SlimSettings,
-    on_ready: impl FnOnce(),
+    on_status: impl Fn(bool) + Send + Sync + 'static,
 ) -> Result<(), String> {
     let name = settings.proto_name()?;
     let (provider, verifier) = match &settings.identity {
@@ -130,7 +135,7 @@ pub async fn serve<H: RequestHandler + 'static>(
     let component = settings.name.replace(['/', '_'], "-");
     let id = slim_config::component::id::ID::new_with_name(ServiceBuilder::kind(), &component)
         .map_err(|e| format!("Invalid SLIM service id: {e}"))?;
-    let service = Service::new(id);
+    let service = Arc::new(Service::new(id));
     let endpoint = settings.client.endpoint.clone();
     let connection = service
         .connect(&settings.client)
@@ -148,6 +153,22 @@ pub async fn serve<H: RequestHandler + 'static>(
     SlimRpcHandler::new(handler).register(&server);
     let identity = match &settings.identity { Identity::SharedSecret(_) => "shared-secret", Identity::Configured { .. } => "configured" };
     tracing::info!(name = %settings.name, %endpoint, identity, "SLIMRPC server registered");
-    on_ready();
-    server.serve().await.map_err(|e| format!("SLIMRPC server stopped: {e}"))
+    on_status(true);
+    let monitor = service.clone();
+    let watch = tokio::spawn(async move {
+        let mut connected = true;
+        let mut tick = tokio::time::interval(CONNECTION_CHECK);
+        loop {
+            tick.tick().await;
+            let now = monitor.get_all_connections().iter().any(|info| info.id == connection);
+            if now != connected {
+                if now { tracing::info!(%endpoint, "SLIM node connection restored") } else { tracing::warn!(%endpoint, "SLIM node connection lost") }
+                connected = now;
+                on_status(now);
+            }
+        }
+    });
+    let result = server.serve().await.map_err(|e| format!("SLIMRPC server stopped: {e}"));
+    watch.abort();
+    result
 }
