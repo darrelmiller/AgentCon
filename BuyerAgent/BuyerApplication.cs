@@ -32,7 +32,7 @@ public static class BuyerApplication
         builder.Services.AddTransient<ExchangeCaptureHandler>();
         builder.Services.AddTransient<SupplierBearerTokenHandler>();
         builder.Services.AddHttpClient<ExchangeDashboard>(client => client.Timeout = TimeSpan.FromSeconds(2))
-            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
+            .AddHttpMessageHandler<SupplierBearerTokenHandler>().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
         BuyerTelemetry.Configure(builder);
         builder.Services.AddSingleton<BuyerConversationStore>();
         builder.Services.AddSingleton<CopilotRuntime>();

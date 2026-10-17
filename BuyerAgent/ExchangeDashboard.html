@@ -439,9 +439,9 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("seller-endpoint").replaceChildren(...(seller ? [node("div", seller.origin), ...(seller.slimUrl ? [node("div", seller.slimUrl)] : [])] : []));
     const inflight = state.capture.exchanges.filter(entry => sellerOwns(entry.endpoint, sellerOrigin) &&
       (entry.status === "sending" || entry.status === "receiving")).length;
-    $("seller-status").textContent = seller ? `${seller.status}${seller.slimUrl ? " · SLIM ready" : ""}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
-    $("seller-status").title = "HTTP availability, not proof of Copilot authentication. Task states are the latest observed responses, not automatic polling.";
-    $("seller-status").className = seller?.status === "HTTP ready" ? (inflight ? "busy" : "ready") : "error";
+    $("seller-status").textContent = seller ? `${seller.status}${seller.slimUrl ? (seller.slimVerified === false ? " · SLIM listed" : " · SLIM ready") : ""}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
+    $("seller-status").title = "HTTP(S) availability: a local seller's /health, or a published card plus a GetTask probe with the buyer's token. Not proof of Copilot authentication. SLIM listed = advertised on the card, not probed. Task states are the latest observed responses, not automatic polling.";
+    $("seller-status").className = ["HTTP ready", "HTTPS ready", "SLIM only"].includes(seller?.status) ? (inflight ? "busy" : "ready") : "error";
     if (!$("seller-structures").dataset.busy) {
       $("seller-structures").checked = seller?.structuredDataParts === true;
       $("seller-structures").disabled = !seller?.controlsEnabled;
