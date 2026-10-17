@@ -197,6 +197,50 @@ try {
     Assert-Command 'gh' 'Install GitHub CLI and run gh auth login.'
     Assert-Command 'dotnet' 'Install the .NET 10 SDK.'
     Assert-Command 'cargo' 'Install Rust and the required Windows MSVC build tools.'
+    $libclangCandidates = @(
+        if ($env:LIBCLANG_PATH) {
+            $env:LIBCLANG_PATH
+        } else {
+            Get-Command clang.exe -CommandType Application -All -ErrorAction SilentlyContinue |
+                ForEach-Object { Split-Path -Parent $_.Source }
+        }
+    )
+    $libclangDirectory = $libclangCandidates | Where-Object {
+        (Test-Path -LiteralPath (Join-Path $_ 'libclang.dll') -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $_ 'clang.dll') -PathType Leaf)
+    } | Select-Object -First 1
+    if (-not $libclangDirectory) {
+        throw 'Rust bindgen requires libclang matching the Rust host architecture (x64 for the ARM64 demo build). Set LIBCLANG_PATH to its DLL directory; see SupplierAgent\README.md.'
+    }
+    $rustToolchain = $env:RUSTUP_TOOLCHAIN
+    $vcvars = $null
+    $vsInstallerDirectory = $null
+    if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [Runtime.InteropServices.Architecture]::Arm64) {
+        Assert-Command 'rustup' 'Install rustup and an x86_64-pc-windows-msvc toolchain for the x64 demo build.'
+        if (-not $rustToolchain) {
+            $installedToolchains = @(& rustup toolchain list)
+            if ($LASTEXITCODE -ne 0) { throw 'Could not list installed Rust toolchains.' }
+            $rustToolchain = $installedToolchains |
+                ForEach-Object { ($_ -split '\s+')[0] } |
+                Where-Object { $_ -match '-x86_64-pc-windows-msvc$' } |
+                Select-Object -First 1
+        }
+        if (-not $rustToolchain -or $rustToolchain -notmatch '^[A-Za-z0-9_.-]+-x86_64-pc-windows-msvc$') {
+            throw 'The Windows ARM64 demo uses x64 Rust/MSVC. Install an x86_64-pc-windows-msvc toolchain and select it with RUSTUP_TOOLCHAIN.'
+        }
+        $vswhereCommand = Get-Command vswhere.exe -CommandType Application -ErrorAction SilentlyContinue
+        $vswhere = if ($vswhereCommand) { $vswhereCommand.Source } else {
+            Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        }
+        if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw 'Visual Studio discovery tool vswhere.exe was not found. Install Visual Studio C++ Build Tools.'
+        }
+        $vsRoot = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $vsRoot) { throw 'No Visual Studio installation with x64 C++ tools was found.' }
+        $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvarsall.bat'
+        if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw "Visual Studio build environment not found: $vcvars" }
+        $vsInstallerDirectory = Split-Path -Parent $vswhere
+    }
     if ($tracesEnabled) { Assert-Command 'podman' 'Install Podman Desktop and initialize a Podman machine.' }
     if ($slimMode) {
         Assert-Command 'slimctl' 'Install slimctl; see docs\windows-setup.md.'
@@ -344,14 +388,21 @@ services:
     }
 
     Invoke-Build 'Building Rust suppliers...' {
-        if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
-            $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
-            if (-not (Test-Path -LiteralPath $vcvars)) { throw "Visual Studio x64 build environment not found: $vcvars" }
-            $buildCommand = 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "' +
-                $vcvars + '" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --locked --quiet'
-            & $env:ComSpec /d /s /c $buildCommand
-        } else {
-            & cargo build --manifest-path SupplierAgent\Cargo.toml --locked --quiet
+        $previousLibclangPath = $env:LIBCLANG_PATH
+        try {
+            $env:LIBCLANG_PATH = $libclangDirectory
+            $cargoArguments = @()
+            if ($rustToolchain) { $cargoArguments += "+$rustToolchain" }
+            if ($vcvars) {
+                $buildCommand = 'set "PATH=' + $vsInstallerDirectory + ';%PATH%" && call "' +
+                    $vcvars + '" x64 >nul && cargo ' + $cargoArguments[0] +
+                    ' build --manifest-path SupplierAgent\Cargo.toml --locked --quiet'
+                & $env:ComSpec /d /s /c $buildCommand
+            } else {
+                & cargo @cargoArguments build --manifest-path SupplierAgent\Cargo.toml --locked --quiet
+            }
+        } finally {
+            $env:LIBCLANG_PATH = $previousLibclangPath
         }
     }
     Invoke-Build 'Building .NET buyer...' {

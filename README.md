@@ -92,7 +92,8 @@ buyer command-line arguments. For secrets, prefer entering the verifier token
 at the prompt or setting it in the current process environment rather than
 putting it on the command line.
 
-The launcher requires .NET 10, Rust/MSVC build tools, `gh` authenticated as the
+The launcher requires .NET 10, Rust/MSVC build tools and matching-host libclang
+(see [supplier Windows setup](SupplierAgent/README.md#run-on-this-windows-arm64-machine)), `gh` authenticated as the
 selected Copilot account, and Podman with a Podman machine when traces are
 enabled. Optional SLIM modes additionally require the tools and login described
 in [Windows SLIM setup](docs/windows-setup.md). Logs are written under

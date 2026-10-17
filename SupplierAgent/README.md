@@ -29,6 +29,32 @@ and bundled x64 Copilot runtime run under Windows ARM64 emulation.
 
 From the repository root in PowerShell:
 
+SLIM's native dependencies use bindgen and require `libclang.dll` matching the
+**Rust host** architecture, not the Windows OS architecture. For this machine's
+x64 Rust build, install an isolated x64 library (requires Python with pip):
+
+```powershell
+python -m pip install --target "$env:LOCALAPPDATA\AgentConDemo\build-tools\libclang" --platform win_amd64 --only-binary=:all: --no-deps libclang==18.1.1
+```
+
+The location above is an example installation directory, not a launcher
+convention. Set `LIBCLANG_PATH` in the current terminal to the directory
+containing your installed DLL. Alternatively, the launcher discovers libclang
+beside `clang.exe` on PATH. No global PATH or rustup changes are needed:
+
+```powershell
+$env:LIBCLANG_PATH = "$env:LOCALAPPDATA\AgentConDemo\build-tools\libclang\clang\native"
+.\start-demo.ps1 -CopilotGhUser darrelmiller
+```
+
+The launcher discovers Visual Studio through `vswhere.exe`. On Windows ARM64
+it uses an installed x64 MSVC Rust toolchain, or honors `RUSTUP_TOOLCHAIN`
+when set; no Rust version or Visual Studio installation path is hard-coded.
+Install the matching **MSVC x64/x86 Spectre-mitigated libraries** component
+through Visual Studio Installer as well: SLIM's native dependencies require it.
+
+For a manual build in this machine's existing toolchain:
+
 ```powershell
 # Keep vcvars and cargo in the same cmd.exe process.
 & $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --locked'
