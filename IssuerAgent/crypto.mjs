@@ -45,31 +45,47 @@ export async function signingService(config) {
 }
 
 async function holderKey(header) {
-  if (header.jku !== undefined || header.x5u !== undefined || header.x5c !== undefined ||
-      (!!header.jwk === !!header.kid)) throw new Error('Unsupported key reference');
-  if (header.jwk) return publicP256(header.jwk);
-  if (typeof header.kid !== 'string' || header.kid.length > 2048) throw new Error('Invalid kid');
+  if (header.jku !== undefined || header.x5u !== undefined) {
+    throw new ProofValidationError('Remote proof key URLs are not supported; use a public P-256 jwk or self-contained DID key');
+  }
+  if (header.x5c !== undefined) throw new ProofValidationError('Certificate-based proof keys are not supported; use a public P-256 jwk or self-contained DID key');
+  if (header.jwk !== undefined && header.kid !== undefined) throw new ProofValidationError('Proof header contains both jwk and kid; supply exactly one key reference');
+  if (header.jwk === undefined && header.kid === undefined) throw new ProofValidationError('Proof header has no jwk or kid key reference');
+  const validateKey = key => {
+    if (key?.d !== undefined) throw new ProofValidationError('Proof key contains private key material; only a public key is allowed');
+    if (key?.kty !== 'EC' || key?.crv !== 'P-256') throw new ProofValidationError('Proof key must be an EC P-256 public key for ES256');
+    try { return publicP256(key); }
+    catch { throw new ProofValidationError('Proof P-256 public key has invalid coordinates or incompatible key parameters'); }
+  };
+  if (header.jwk !== undefined) return validateKey(header.jwk);
+  if (typeof header.kid !== 'string' || header.kid.length > 2048) throw new ProofValidationError('Proof kid must be a DID URL of at most 2048 characters');
   const [did, fragment, extra] = header.kid.split('#');
-  if (extra !== undefined) throw new Error('Invalid DID fragment');
+  if (extra !== undefined) throw new ProofValidationError('Proof kid contains multiple DID fragments');
   if (did.startsWith('did:jwk:')) {
-    if (fragment !== '0') throw new Error('Invalid did:jwk fragment');
+    if (fragment !== '0') throw new ProofValidationError('Proof did:jwk key ID must end with #0');
     const encoded = did.slice(8);
-    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error('Invalid did:jwk');
+    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new ProofValidationError('Proof did:jwk contains invalid base64url key data');
     const bytes = Buffer.from(encoded, 'base64url');
-    if (bytes.toString('base64url') !== encoded) throw new Error('Noncanonical did:jwk');
-    return publicP256(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== encoded) throw new ProofValidationError('Proof did:jwk key data is not canonical base64url');
+    let jwk;
+    try { jwk = JSON.parse(bytes.toString('utf8')); }
+    catch { throw new ProofValidationError('Proof did:jwk key data is not valid JSON'); }
+    return validateKey(jwk);
   }
   if (did.startsWith('did:key:')) {
     const fingerprint = did.slice(8);
     if (fragment !== fingerprint || !/^z[1-9A-HJ-NP-Za-km-z]+$/.test(fingerprint)) {
-      throw new Error('Invalid did:key fragment');
+      throw new ProofValidationError('Proof did:key must use a base58btc fingerprint and a matching #fingerprint fragment');
     }
     // Multicodec decoding and elliptic-curve point decompression are library operations.
-    const pair = await EcdsaMultikey.from({ publicKeyMultibase: fingerprint });
-    const jwk = await EcdsaMultikey.toJwk({ keyPair: pair });
-    return publicP256({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y });
+    let jwk;
+    try {
+      const pair = await EcdsaMultikey.from({ publicKeyMultibase: fingerprint });
+      jwk = await EcdsaMultikey.toJwk({ keyPair: pair });
+    } catch { throw new ProofValidationError('Proof did:key cannot be decoded as a supported P-256 multikey'); }
+    return validateKey({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y });
   }
-  throw new Error('Only inline jwk, did:jwk and P-256 did:key are supported');
+  throw new ProofValidationError('Proof kid method is unsupported; use did:jwk or P-256 did:key, not remote key identifiers');
 }
 
 export async function validateProof(jwt, origin, now, clientId) {
@@ -79,9 +95,7 @@ export async function validateProof(jwt, origin, now, clientId) {
   catch { throw new ProofValidationError('Malformed compact JWT proof'); }
   if (header.alg !== 'ES256') throw new ProofValidationError('Unsupported proof algorithm; issuer supports ES256 with P-256 keys');
   if (header.typ !== 'openid4vci-proof+jwt') throw new ProofValidationError('Proof typ must be openid4vci-proof+jwt');
-  let jwk;
-  try { jwk = await holderKey(header); }
-  catch { throw new ProofValidationError('Proof requires one public P-256 jwk or a supported did:jwk/did:key key ID; remote key URLs and private keys are not accepted'); }
+  const jwk = await holderKey(header);
   let payload;
   try {
     ({ payload } = await jwtVerify(jwt, await importJWK(jwk, 'ES256'), {

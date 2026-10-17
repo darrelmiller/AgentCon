@@ -101,13 +101,18 @@ Ask the demo operator for an offer QR code. There is no public offer creation on
 not verified until an offer is scanned and confirmed in the wallet.</p>`);
 }
 
-export async function offerPage(link, expiresAt) {
-  const qr = await QRCode.toDataURL(link, { width: 320, margin: 4, errorCorrectionLevel: 'M' });
+export async function offerPage(link, expiresAt, status) {
+  const qr = link && await QRCode.toDataURL(link, { width: 320, margin: 4, errorCorrectionLevel: 'M' });
   return page(`
+${status ? `<section aria-label="Issuance progress"><h2>${escapeHtml(status.stage)}</h2>
+<p>${escapeHtml(status.detail)}</p><p class="muted">Refresh this page after trying the wallet to see the latest issuer-side result.
+No wallet keys, proofs, tokens or credentials are shown or retained here.</p></section>` : ''}
+${link ? `
 <p>Scan this QR in an OpenID4VCI wallet supporting SD-JWT VC, or open the wallet link on your phone.
 The credential will be signed for your wallet's key, not a software test holder.</p>
 <img class="qr" src="${escapeHtml(qr)}" alt="QR code for this single-use demo credential offer">
-<a class="button" href="${escapeHtml(link)}">Open in wallet</a>
+<a class="button" href="${escapeHtml(link)}">Open in wallet</a>` : `
+<p>This offer has been redeemed. Do not rescan it; request a fresh offer for another attempt or wallet.</p>`}
 <p class="muted">Offer expires at ${escapeHtml(new Date(expiresAt * 1000).toISOString())}.
 The credential expires after 14 days. Keep this page private: its link grants one test issuance.</p>
 <p class="muted">Phone issuance is not verified until you scan and confirm it in the wallet.</p>

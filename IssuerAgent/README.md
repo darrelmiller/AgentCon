@@ -166,6 +166,17 @@ contains a server-generated, embedded PNG QR and wallet link:
 openid-credential-offer://?credential_offer_uri=<percent-encoded-HTTPS-offer-URL>
 ```
 
+After a wallet attempt, refresh the private offer page to see the last issuer-side
+stage: offer fetched, token redeemed, credential request rejected (with a fixed,
+non-sensitive reason), or credential issued. The page remains available until
+the original offer expiry even after redemption, but no longer shows a QR or
+wallet link. Raw offer JSON still becomes unavailable immediately on redemption.
+Each bounded progress record contains only expiry, stage and a fixed diagnostic;
+no wallet identifiers, keys, JWTs, tokens or credentials are stored in it.
+Successful issuer response does not establish that the wallet stored the credential.
+Use a separate offer for every wallet test. An unchanged stage means that the
+issuer has not observed the next protocol step; wallet-local errors are not visible.
+
 Scan with a compatible wallet on the phone, accept issuance, and confirm it is shown
 as a DEMO credential. **No phone roundtrip has been verified by the automated
 tests; actual mobile acceptance is only established after a successful scan.**
@@ -234,7 +245,8 @@ claim without age checks: this is not a production age-verification service.
 
 Token/offer lifetime: 10 minutes. Nonce lifetime: 5 minutes. Code redemption and
 credential issuance are single-use, including concurrent requests. After token
-redemption, the offer endpoints return 404. A token can issue one credential.
+redemption, the raw credential-offer endpoint returns 404; the private HTML page
+retains only progress until its original expiry. A token can issue one credential.
 Nonces obtained anonymously are usable with a valid access token; token-response
 nonces and authenticated `/nonce` responses are bound to that token. Replacing a
 token nonce invalidates its previous nonce.

@@ -325,6 +325,66 @@ test('proof diagnostics distinguish unsupported algorithms and anonymous iss wit
   }
 });
 
+test('key-reference diagnostics distinguish wallet header failures without echoing public keys', async t => {
+  const f = await fixture(t);
+  const cases = [
+    [{ kid: 'did:key:redacted-identity' }, /both jwk and kid/],
+    [{ jwk: undefined }, /no jwk or kid/],
+    [{ jwk: undefined, kid: 'did:key:zRedacted' }, /matching #fingerprint/],
+    [{ jwk: undefined, kid: 'did:jwk:redacted#wrong' }, /must end with #0/],
+    [{ jwk: undefined, kid: 'did:web:redacted.example#0' }, /method is unsupported/],
+    [{ jwk: undefined, kid: 'did:key:zBadKey#zBadKey' }, /cannot be decoded/],
+    [{ jwk: { ...f.holder.publicJwk, crv: 'P-384' } }, /EC P-256/],
+    [{ jwk: f.holder.privateJwk }, /private key material/],
+    [{ x5c: ['redacted-certificate'] }, /Certificate-based/],
+    [{ jku: 'https://redacted.example/keys' }, /Remote proof key URLs/],
+    [{ jwk: { ...f.holder.publicJwk, x: 'A'.repeat(43), y: 'A'.repeat(43) } }, /invalid coordinates/],
+  ];
+  for (const [header, expected] of cases) {
+    const session = await f.session();
+    const response = await f.issue(session, await f.proof(session.c_nonce, { header }));
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error, 'invalid_proof');
+    assert.match(response.body.error_description, expected);
+    assert.doesNotMatch(response.body.error_description, /redacted|zBadKey/);
+  }
+});
+
+test('private offer page reports issuer progress after redemption without retaining proof or credential data', async t => {
+  const f = await fixture(t);
+  const offer = await f.offer();
+  const path = new URL(offer.offer_page).pathname;
+  const page = () => f.request(path);
+  assert.match((await page()).body, /Offer fetched/);
+  const session = (await f.redeem(offer.code)).body;
+  const redeemed = await page();
+  assert.equal(redeemed.status, 200);
+  assert.match(redeemed.body, /Token redeemed/);
+  assert.doesNotMatch(redeemed.body, /data:image\/png|openid-credential-offer:/);
+  assert.equal((await f.request(new URL(offer.credential_offer_uri).pathname)).status, 404);
+  const proof = await f.proof(session.c_nonce, { header: { kid: 'did:key:private-test-identity' } });
+  const failed = await f.issue(session, proof);
+  const rejected = await page();
+  assert.match(rejected.body, /Credential request rejected/);
+  assert.match(rejected.body, /both jwk and kid/);
+  for (const secret of [session.access_token, session.c_nonce, proof,
+    f.holder.publicJwk.x, 'private-test-identity', failed.body.c_nonce, offer.code]) {
+    assert.equal(rejected.body.includes(secret), false);
+  }
+  assert.equal(rejected.headers.get('access-control-allow-origin'), null);
+  assert.equal(rejected.headers.get('cache-control'), 'no-store');
+  assert.equal(rejected.headers.get('referrer-policy'), 'no-referrer');
+  const issued = await f.issue(session, await f.proof(failed.body.c_nonce));
+  assert.equal(issued.status, 200);
+  const completed = await page();
+  assert.match(completed.body, /Credential issued/);
+  assert.match(completed.body, /Confirm that the wallet stored it successfully/);
+  assert.equal(completed.body.includes(issued.body.credentials[0].credential), false);
+  assert.equal((await f.request('/offers/' + random())).status, 404);
+  f.advance(601);
+  assert.equal((await page()).status, 404);
+});
+
 test('proof timestamps inside the advertised validation window are accepted', async t => {
   const f = await fixture(t);
   const s = await f.session();

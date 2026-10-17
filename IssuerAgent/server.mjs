@@ -49,8 +49,12 @@ async function body(req, type) {
 export async function createIssuer(config) {
   const signer = await signingService(config);
   const presentations = presentationService(config, signer.publicJwk);
-  const offers = new Map(), codes = new Map(), tokens = new Map(), nonces = new Map(), rates = new Map();
-  const stores = [offers, codes, tokens, nonces, rates];
+  const offers = new Map(), progress = new Map(), codes = new Map(), tokens = new Map(), nonces = new Map(), rates = new Map();
+  const stores = [offers, progress, codes, tokens, nonces, rates];
+  function recordProgress(offerId, stage, detail) {
+    const entry = progress.get(offerId);
+    if (entry && entry.expiresAt > config.now()) Object.assign(entry, { stage, detail });
+  }
   function cleanup() {
     const now = config.now();
     for (const store of stores) {
@@ -242,13 +246,14 @@ export async function createIssuer(config) {
         if (!auth || !equal(auth, config.adminToken)) fail(401, 'invalid_token', 'Administrator authorization required');
         const input = await body(req, 'application/json');
         fields(input, []);
-        capacity(offers, codes);
+        capacity(offers, progress, codes);
         const id = random(), code = random(), expiresAt = config.now() + config.offerTtl;
         const offer = {
           credential_issuer: config.origin, credential_configuration_ids: [CONFIG_ID],
           grants: { [GRANT]: { 'pre-authorized_code': code } },
         };
         offers.set(id, { expiresAt, offer });
+        progress.set(id, { expiresAt, stage: 'Offer created', detail: 'Waiting for the wallet to fetch this offer.' });
         codes.set(digest(code), { expiresAt, offerId: id });
         const offerUri = `${config.origin}/credential-offer/${id}`;
         return send(201, {
@@ -259,11 +264,19 @@ export async function createIssuer(config) {
         });
       }
       if (offerMatch) {
+        const id = offerMatch[2];
+        if (offerMatch[1] === 'offers') {
+          const status = progress.get(id);
+          if (!status) fail(404, 'not_found', 'Offer unavailable or expired');
+          const uri = `${config.origin}/credential-offer/${id}`;
+          return send(200, await offerPage(
+            offers.has(id) ? `openid-credential-offer://?credential_offer_uri=${encodeURIComponent(uri)}` : null,
+            status.expiresAt, status), true);
+        }
         const entry = offers.get(offerMatch[2]);
         if (!entry) fail(404, 'not_found', 'Offer unavailable or expired');
-        if (offerMatch[1] === 'credential-offer') return send(200, entry.offer);
-        const uri = `${config.origin}/credential-offer/${offerMatch[2]}`;
-        return send(200, await offerPage(`openid-credential-offer://?credential_offer_uri=${encodeURIComponent(uri)}`, entry.expiresAt), true);
+        recordProgress(id, 'Offer fetched', 'The wallet fetched the offer. Waiting for token redemption.');
+        return send(200, entry.offer);
       }
       if (path === '/token') {
         const input = await body(req, 'application/x-www-form-urlencoded');
@@ -278,12 +291,14 @@ export async function createIssuer(config) {
         if (!code || code.expiresAt <= config.now()) fail(400, 'invalid_grant', 'Invalid, redeemed or expired pre-authorized code');
         capacity(tokens, nonces);
         const accessToken = random(), tokenId = digest(accessToken);
-        const token = { expiresAt: config.now() + config.tokenTtl, clientId: input.client_id, used: false, busy: false };
+        const token = { expiresAt: config.now() + config.tokenTtl, clientId: input.client_id,
+          offerId: code.offerId, used: false, busy: false };
         const challenge = tokenNonce(token, tokenId);
         // No await between code lookup and redemption: exactly one concurrent request can succeed.
         codes.delete(codeId);
         offers.delete(code.offerId);
         tokens.set(tokenId, token);
+        recordProgress(code.offerId, 'Token redeemed', 'The wallet obtained an access token. Waiting for a credential proof.');
         return send(200, {
           access_token: accessToken, token_type: 'Bearer', expires_in: config.tokenTtl,
           scope: 'agentcon_demo_over21', ...challenge,
@@ -313,6 +328,7 @@ export async function createIssuer(config) {
         const { token, id } = activeToken(req);
         if (token.busy) fail(409, 'invalid_request', 'Issuance already in progress');
         token.busy = true;
+        recordProgress(token.offerId, 'Credential requested', 'The wallet submitted a credential request. Validating its proof.');
         try {
           const input = await body(req, 'application/json');
           fields(input, ['credential_configuration_id', 'proof', 'proofs']);
@@ -346,8 +362,11 @@ export async function createIssuer(config) {
           if (token.nonceId) nonces.delete(token.nonceId);
           token.used = true;
           const credential = await signer.issue(verified.jwk, config.now());
+          recordProgress(token.offerId, 'Credential issued', 'The issuer returned a signed credential. Confirm that the wallet stored it successfully.');
           return send(200, { credentials: [{ credential }] });
         } catch (error) {
+          recordProgress(token.offerId, 'Credential request rejected', error instanceof HttpError
+            ? `${error.error}: ${error.message}` : 'server_error: Demo issuer request failed');
           if (error instanceof HttpError && ['invalid_proof', 'invalid_nonce'].includes(error.error)) {
             // Retry requires a freshly signed proof, never acceptance of the failed proof.
             Object.assign(error.extra, tokenNonce(token, id));
