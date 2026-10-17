@@ -119,13 +119,19 @@ The credential expires after 14 days. Keep this page private: its link grants on
 `);
 }
 
-export async function presentationPage(link, issuer, expiresAt) {
+export async function presentationPage(link, issuer, expiresAt, lightSsiLink) {
   const qr = await QRCode.toDataURL(link, { width: 320, margin: 4, errorCorrectionLevel: 'M' });
+  const lightSsiQr = lightSsiLink &&
+    await QRCode.toDataURL(lightSsiLink, { width: 320, margin: 4, errorCorrectionLevel: 'M' });
   return page(`
-<p>Scan with a compatible OpenID4VP wallet, select the credential issued by ${escapeHtml(issuer)},
+<p>Select the QR profile supported by your OpenID4VP wallet, then choose the credential issued by ${escapeHtml(issuer)}
 and approve disclosure of <code>over_21</code>. No birth date is requested.</p>
+<h2>Sphereon and other DID JWK wallets</h2>
 <img class="qr" alt="Wallet presentation QR code" src="${escapeHtml(qr)}">
 <a class="button" href="${escapeHtml(link)}">Open in wallet</a>
+${lightSsiLink ? `<h2>Light SSI and DID key wallets</h2>
+<img class="qr" alt="Light SSI DID key presentation QR code" src="${escapeHtml(lightSsiQr)}">
+<a class="button" href="${escapeHtml(lightSsiLink)}">Open Light SSI request in wallet</a>` : ''}
 <p>After approving in your wallet, return to the buyer and ask it to continue the pending purchase.</p>
 <p class="muted">Request expires at ${escapeHtml(new Date(expiresAt * 1000).toISOString())}.
 Keep this page private. This authorizes only a simulated purchase.</p>

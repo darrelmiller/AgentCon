@@ -48,7 +48,7 @@ async function body(req, type) {
 
 export async function createIssuer(config) {
   const signer = await signingService(config);
-  const presentations = presentationService(config, signer.publicJwk);
+  const presentations = await presentationService(config, signer.publicJwk);
   const offers = new Map(), progress = new Map(), codes = new Map(), tokens = new Map(), nonces = new Map(), rates = new Map();
   const stores = [offers, progress, codes, tokens, nonces, rates];
   function recordProgress(offerId, stage, detail) {
@@ -146,7 +146,7 @@ export async function createIssuer(config) {
         '/.well-known/openid-configuration', '/.well-known/jwt-vc-issuer', '/jwks',
         '/credential-types/age-over-21',
       ].includes(path) || /^\/credential-offer\/[A-Za-z0-9_-]{43}$/.test(path) ||
-          /^\/presentations\/[A-Za-z0-9_-]{43}\/request$/.test(path) ? 'GET'
+          /^\/presentations\/[A-Za-z0-9_-]{43}\/request(?:\/light-ssi)?$/.test(path) ? 'GET'
         : ['/token', '/nonce', '/credential'].includes(path) ||
           /^\/presentations\/[A-Za-z0-9_-]{43}\/response$/.test(path) ? 'POST' : undefined;
       if (walletMethod) {
@@ -182,7 +182,7 @@ export async function createIssuer(config) {
           return res.end();
         }
       }
-      const presentationMatch = /^\/presentations\/([A-Za-z0-9_-]{43})(?:\/(request|response))?$/.exec(path);
+      const presentationMatch = /^\/presentations\/([A-Za-z0-9_-]{43})(?:\/(request(?:\/light-ssi)?|response))?$/.exec(path);
       const statusMatch = /^\/admin\/presentations\/([A-Za-z0-9_-]{43})$/.exec(path);
       if (path === '/admin/presentations' || statusMatch) {
         const auth = bearer(req);
@@ -211,8 +211,9 @@ export async function createIssuer(config) {
           return send(200, {});
         }
         try {
-          if (action === 'request') {
-            const request = presentations.request(id);
+          if (action?.startsWith('request')) {
+            const request = action === 'request/light-ssi'
+              ? presentations.lightSsiRequest(id) : presentations.request(id);
             res.writeHead(200, { 'Content-Type': 'application/oauth-authz-req+jwt' });
             return res.end(request);
           }

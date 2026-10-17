@@ -12,6 +12,7 @@ import { signingService, validateProof, credentialType, LEGACY_VCT, digest, rand
 import { createIssuer } from '../server.mjs';
 import { SDJwtVcInstance } from '@sd-jwt/sd-jwt-vc';
 import { createHash, createPrivateKey, sign } from 'node:crypto';
+import * as EcdsaMultikey from '@digitalbazaar/ecdsa-multikey';
 
 async function fixture(t) {
   const issuer = await generateKeyPair('ES256', { extractable: true });
@@ -24,10 +25,10 @@ async function fixture(t) {
     offerTtl: 600, tokenTtl: 600, nonceTtl: 300,
   };
   const signer = await signingService(config);
-  const verifier = presentationService(config, signer.publicJwk);
+  const verifier = await presentationService(config, signer.publicJwk);
   const credential = await signer.issue(holderJwk, time);
   async function presentation(challenge, options = {}) {
-    const request = decodeJwt(verifier.request(challenge.id));
+    const request = options.request ?? decodeJwt(verifier.request(challenge.id));
     const sd = options.credential ?? credential;
     const kb = await new SignJWT({
       aud: request.client_id, nonce: request.nonce, iat: time, sd_hash: digest(sd), ...options.claims,
@@ -89,6 +90,30 @@ test('Light SSI proof shape issues a credential that can be presented to the sup
 
   const challenge = f.verifier.create('light-ssi-presentation', 'wallet-context');
   await f.verifier.verify(challenge.id, await f.presentation(challenge, { credential }));
+  assert.equal(f.verifier.status(challenge.id).verified, true);
+});
+
+test('Light SSI DID key and Sphereon DID JWK request profiles verify their bound presentations', async t => {
+  const f = await fixture(t);
+  const challenge = f.verifier.create('wallet-profile-task', 'wallet-profile-context');
+  const didKeyRequest = f.verifier.lightSsiRequest(challenge.id);
+  const didKeyHeader = decodeProtectedHeader(didKeyRequest);
+  const fingerprint = didKeyHeader.kid.split('#')[0].slice('did:key:'.length);
+  assert.equal(didKeyHeader.kid, `did:key:${fingerprint}#${fingerprint}`);
+  const didKey = await EcdsaMultikey.from({ publicKeyMultibase: fingerprint });
+  const publicJwk = await EcdsaMultikey.toJwk({ keyPair: didKey });
+  assert.equal(publicJwk.x, f.signer.publicJwk.x);
+  assert.equal(publicJwk.y, f.signer.publicJwk.y);
+  await jwtVerify(didKeyRequest, await importJWK(publicJwk, 'ES256'), {
+    algorithms: ['ES256'], typ: 'oauth-authz-req+jwt',
+  });
+  const request = decodeJwt(didKeyRequest);
+  assert.equal(request.client_id, `decentralized_identifier:did:key:${fingerprint}`);
+  assert.equal(request.iss, request.client_id);
+  assert.equal(decodeJwt(f.verifier.request(challenge.id)).client_id,
+    challenge.authorizationRequest.client_id);
+
+  await f.verifier.verify(challenge.id, await f.presentation(challenge, { request }));
   assert.equal(f.verifier.status(challenge.id).verified, true);
 });
 
@@ -200,12 +225,18 @@ test('HTTP handoff exposes QR and request but status and session creation requir
   const path = new URL(challenge.presentationUrl).pathname;
   const page = await fetch(f.local + path);
   assert.equal(page.headers.get('cache-control'), 'no-store');
-  assert.match(await page.text(), /data:image\/png;base64/);
+  const html = await page.text();
+  assert.equal((html.match(/data:image\/png;base64/g) ?? []).length, 2);
+  assert.match(html, /Light SSI and DID key wallets/);
   const request = await fetch(f.local + path + '/request');
   assert.equal(request.headers.get('access-control-allow-origin'), '*');
   assert.equal(request.headers.get('content-type'), 'application/oauth-authz-req+jwt');
   const object = decodeJwt(await request.text());
   assert.equal(object.client_id, challenge.authorizationRequest.client_id);
+  const lightRequest = await fetch(f.local + path + '/request/light-ssi');
+  assert.equal(lightRequest.status, 200);
+  assert.equal(lightRequest.headers.get('access-control-allow-origin'), '*');
+  assert.match(decodeJwt(await lightRequest.text()).client_id, /^decentralized_identifier:did:key:/);
   assert.equal((await fetch(`${f.local}/admin/presentations/${challenge.id}`)).status, 401);
   const credential = await f.signer.issue(f.holderJwk, f.config.now());
   const kb = await new SignJWT({ aud: object.client_id, nonce: object.nonce, iat: f.config.now(), sd_hash: digest(credential) })

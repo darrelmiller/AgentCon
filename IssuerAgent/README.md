@@ -205,12 +205,16 @@ task/context IDs through `POST /admin/presentations` (admin bearer token; JSON
 `{taskId, contextId}`), then receives the experimental A2A authorization request,
 presentation page URL, wallet URI and expiry.
 
-`GET /presentations/<id>` renders a local QR for a compatible wallet. The QR invokes
-`openid4vp://` with `client_id` and an HTTPS `request_uri`.
-`GET /presentations/<id>/request` returns an ES256-signed JWT request object
+`GET /presentations/<id>` renders separate local QR profiles for DID JWK and
+DID key wallets. Both use `openid4vp://` with `client_id` and an HTTPS
+`request_uri`; the DID-key profile is at
+`GET /presentations/<id>/request/light-ssi`.
+`GET /presentations/<id>/request` returns the DID JWK ES256-signed JWT request object
 (`application/oauth-authz-req+jwt`, `oauth-authz-req+jwt` protected-header type,
 `decentralized_identifier:did:jwk:...` client identifier, DID key ID and
-`direct_post`). This is the final OpenID4VP decentralized-identifier prefix,
+`direct_post`) used by the Sphereon-compatible QR. The Light SSI QR uses a
+locally resolvable `decentralized_identifier:did:key:...` identifier and
+matching `kid`. This is the final OpenID4VP decentralized-identifier prefix,
 not the older unprefixed DID client ID. The verifier signs with
 the existing issuer key; the DID resolves that public key without a network key
 lookup. The signed request includes issuer, wallet audience, issue time and expiry.
