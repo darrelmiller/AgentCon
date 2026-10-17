@@ -121,6 +121,33 @@ test('Light SSI DID key and Sphereon DID JWK request profiles verify their bound
   assert.equal(f.verifier.status(challenge.id).verified, true);
 });
 
+test('single-query response aliases retain issuer and holder validation and reject ambiguous responses', async t => {
+  const f = await fixture(t);
+  const wrongKey = await generateKeyPair('ES256');
+  for (const options of [
+    {}, { claims: { nonce: random() } }, { claims: { aud: 'other-task' } },
+    { claims: { sd_hash: random() } }, { key: wrongKey.privateKey },
+    { credential: f.credential.split('~')[0] + '~' },
+  ]) {
+    const challenge = f.verifier.create(random(), 'alias-context');
+    const request = decodeJwt(f.verifier.lightSsiRequest(challenge.id));
+    const response = await f.presentation(challenge, { ...options, request });
+    const { age } = JSON.parse(response.vp_token);
+    const alias = { ...response, vp_token: JSON.stringify({ wallet_query: age }) };
+    await assert.rejects(f.verifier.verify(challenge.id, {
+      ...alias, vp_token: JSON.stringify({ first: age, second: age }),
+    }), /additional query IDs/);
+    if (Object.keys(options).length === 0) {
+      await f.verifier.verify(challenge.id, alias);
+      assert.equal(f.verifier.status(challenge.id).verified, true);
+      await assert.rejects(f.verifier.verify(challenge.id, alias), /already submitted/);
+    } else {
+      await assert.rejects(f.verifier.verify(challenge.id, alias));
+      assert.equal(f.verifier.status(challenge.id).verified, false);
+    }
+  }
+});
+
 test('final OID4VP DID prefix, HTTPS type and signed request resolve without vendor SDKs', async t => {
   const f = await fixture(t);
   const challenge = f.verifier.create('standard-task', 'standard-context');
@@ -264,7 +291,8 @@ test('HTTP handoff exposes QR and request but status and session creation requir
     ...[
       [null, 'DCQL vp_token must be an object keyed by query ID, not a scalar or array'],
       [['sensitive-wallet-token'], 'DCQL vp_token must be an object keyed by query ID, not a scalar or array'],
-      [{ privateQueryId: ['sensitive-wallet-token'] }, 'DCQL vp_token is missing the requested age query ID'],
+      [{}, 'DCQL vp_token contains no presentations'],
+      [{ privateQueryId: ['sensitive-wallet-token'] }, 'Invalid issuer JWT header or untrusted issuer key'],
       [{ age: [], privateQueryId: [] }, 'DCQL vp_token contains additional query IDs'],
       [{ age: {} }, 'DCQL age value must be an array of presentation strings'],
       [{ age: [] }, 'DCQL age array is empty; one presentation is required'],

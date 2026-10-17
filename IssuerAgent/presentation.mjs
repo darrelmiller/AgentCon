@@ -109,32 +109,35 @@ export async function presentationService(config, issuerJwk) {
       if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) {
         throw new PresentationError('DCQL vp_token must be an object keyed by query ID, not a scalar or array');
       }
-      if (!Object.hasOwn(tokens, 'age')) {
-        throw new PresentationError('DCQL vp_token is missing the requested age query ID');
+      const entries = Object.values(tokens);
+      if (entries.length === 0) {
+        throw new PresentationError('DCQL vp_token contains no presentations');
       }
-      if (Object.keys(tokens).length !== 1) {
+      if (entries.length !== 1) {
         throw new PresentationError('DCQL vp_token contains additional query IDs');
       }
-      if (!Array.isArray(tokens.age)) {
-        throw new PresentationError(typeof tokens.age === 'string'
+      // There is only one requested query; validate its proof even if a wallet renames its ID.
+      const age = entries[0];
+      if (!Array.isArray(age)) {
+        throw new PresentationError(typeof age === 'string'
           ? 'DCQL age value is a string; an array of presentation strings is required'
           : 'DCQL age value must be an array of presentation strings');
       }
-      if (tokens.age.length !== 1) {
-        throw new PresentationError(tokens.age.length === 0
+      if (age.length !== 1) {
+        throw new PresentationError(age.length === 0
           ? 'DCQL age array is empty; one presentation is required'
           : 'DCQL age array contains multiple presentations; exactly one is required');
       }
-      if (typeof tokens.age[0] !== 'string') {
+      if (typeof age[0] !== 'string') {
         throw new PresentationError('DCQL age presentation must be a string, not an object or other value');
       }
-      if (!tokens.age[0] || tokens.age[0].length > 12000) {
+      if (!age[0] || age[0].length > 12000) {
         throw new PresentationError('DCQL age presentation is empty or exceeds the size limit');
       }
       session.busy = true;
       let stage = 'Invalid issuer JWT header or untrusted issuer key';
       try {
-        const presentation = tokens.age[0];
+        const presentation = age[0];
         const [credential] = presentation.split('~');
         const header = decodeProtectedHeader(credential);
         if (header.alg !== 'ES256' || header.typ !== 'dc+sd-jwt' || !trustedKids.includes(header.kid) ||
