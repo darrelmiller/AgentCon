@@ -111,6 +111,13 @@ Proof errors return fixed diagnostic descriptions for malformed JWTs, unsupporte
 algorithms/keys, audience, timestamps, nonce shape and client binding. These never
 include submitted JWTs, keys, DIDs, claim values or credentials. Invalid proofs
 still rotate the nonce and cannot issue a credential.
+Some wallets send both a public `jwk` and a DID `kid` in the proof header even
+though the OID4VCI profile specifies them as alternatives. For interoperability,
+the issuer accepts this combination only for supported self-contained
+`did:jwk`/P-256 `did:key` identifiers when both resolve to the exact same
+validated public coordinates. A mismatch, unsupported DID, private key,
+remote key URL or certificate is rejected; proof signatures are still verified
+with the matched P-256 key before issuing a holder-bound credential.
 
 ## Run locally
 

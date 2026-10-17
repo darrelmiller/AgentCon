@@ -44,22 +44,16 @@ export async function signingService(config) {
   };
 }
 
-async function holderKey(header) {
-  if (header.jku !== undefined || header.x5u !== undefined) {
-    throw new ProofValidationError('Remote proof key URLs are not supported; use a public P-256 jwk or self-contained DID key');
-  }
-  if (header.x5c !== undefined) throw new ProofValidationError('Certificate-based proof keys are not supported; use a public P-256 jwk or self-contained DID key');
-  if (header.jwk !== undefined && header.kid !== undefined) throw new ProofValidationError('Proof header contains both jwk and kid; supply exactly one key reference');
-  if (header.jwk === undefined && header.kid === undefined) throw new ProofValidationError('Proof header has no jwk or kid key reference');
-  const validateKey = key => {
-    if (key?.d !== undefined) throw new ProofValidationError('Proof key contains private key material; only a public key is allowed');
-    if (key?.kty !== 'EC' || key?.crv !== 'P-256') throw new ProofValidationError('Proof key must be an EC P-256 public key for ES256');
-    try { return publicP256(key); }
-    catch { throw new ProofValidationError('Proof P-256 public key has invalid coordinates or incompatible key parameters'); }
-  };
-  if (header.jwk !== undefined) return validateKey(header.jwk);
-  if (typeof header.kid !== 'string' || header.kid.length > 2048) throw new ProofValidationError('Proof kid must be a DID URL of at most 2048 characters');
-  const [did, fragment, extra] = header.kid.split('#');
+function publicProofKey(key) {
+  if (key?.d !== undefined) throw new ProofValidationError('Proof key contains private key material; only a public key is allowed');
+  if (key?.kty !== 'EC' || key?.crv !== 'P-256') throw new ProofValidationError('Proof key must be an EC P-256 public key for ES256');
+  try { return publicP256(key); }
+  catch { throw new ProofValidationError('Proof P-256 public key has invalid coordinates or incompatible key parameters'); }
+}
+
+async function didProofKey(kid) {
+  if (typeof kid !== 'string' || kid.length > 2048) throw new ProofValidationError('Proof kid must be a DID URL of at most 2048 characters');
+  const [did, fragment, extra] = kid.split('#');
   if (extra !== undefined) throw new ProofValidationError('Proof kid contains multiple DID fragments');
   if (did.startsWith('did:jwk:')) {
     if (fragment !== '0') throw new ProofValidationError('Proof did:jwk key ID must end with #0');
@@ -70,22 +64,36 @@ async function holderKey(header) {
     let jwk;
     try { jwk = JSON.parse(bytes.toString('utf8')); }
     catch { throw new ProofValidationError('Proof did:jwk key data is not valid JSON'); }
-    return validateKey(jwk);
+    return publicProofKey(jwk);
   }
   if (did.startsWith('did:key:')) {
     const fingerprint = did.slice(8);
     if (fragment !== fingerprint || !/^z[1-9A-HJ-NP-Za-km-z]+$/.test(fingerprint)) {
       throw new ProofValidationError('Proof did:key must use a base58btc fingerprint and a matching #fingerprint fragment');
     }
-    // Multicodec decoding and elliptic-curve point decompression are library operations.
     let jwk;
     try {
       const pair = await EcdsaMultikey.from({ publicKeyMultibase: fingerprint });
       jwk = await EcdsaMultikey.toJwk({ keyPair: pair });
     } catch { throw new ProofValidationError('Proof did:key cannot be decoded as a supported P-256 multikey'); }
-    return validateKey({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y });
+    return publicProofKey({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y });
   }
   throw new ProofValidationError('Proof kid method is unsupported; use did:jwk or P-256 did:key, not remote key identifiers');
+}
+
+async function holderKey(header) {
+  if (header.jku !== undefined || header.x5u !== undefined) {
+    throw new ProofValidationError('Remote proof key URLs are not supported; use a public P-256 jwk or self-contained DID key');
+  }
+  if (header.x5c !== undefined) throw new ProofValidationError('Certificate-based proof keys are not supported; use a public P-256 jwk or self-contained DID key');
+  if (header.jwk === undefined && header.kid === undefined) throw new ProofValidationError('Proof header has no jwk or kid key reference');
+  const jwk = header.jwk === undefined ? undefined : publicProofKey(header.jwk);
+  if (header.kid === undefined) return jwk;
+  const didKey = await didProofKey(header.kid);
+  if (jwk && (jwk.x !== didKey.x || jwk.y !== didKey.y)) {
+    throw new ProofValidationError('Proof jwk does not match the public key identified by kid');
+  }
+  return jwk ?? didKey;
 }
 
 export async function validateProof(jwt, origin, now, clientId) {

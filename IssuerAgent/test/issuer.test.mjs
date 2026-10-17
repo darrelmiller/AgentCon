@@ -328,7 +328,7 @@ test('proof diagnostics distinguish unsupported algorithms and anonymous iss wit
 test('key-reference diagnostics distinguish wallet header failures without echoing public keys', async t => {
   const f = await fixture(t);
   const cases = [
-    [{ kid: 'did:key:redacted-identity' }, /both jwk and kid/],
+    [{ kid: 'did:key:redacted-identity' }, /base58btc fingerprint/],
     [{ jwk: undefined }, /no jwk or kid/],
     [{ jwk: undefined, kid: 'did:key:zRedacted' }, /matching #fingerprint/],
     [{ jwk: undefined, kid: 'did:jwk:redacted#wrong' }, /must end with #0/],
@@ -350,6 +350,27 @@ test('key-reference diagnostics distinguish wallet header failures without echoi
   }
 });
 
+test('accepts a wallet JWK plus matching did:key and rejects a conflicting DID key', async t => {
+  const f = await fixture(t);
+  const pair = await EcdsaMultikey.fromJwk({ jwk: f.holder.publicJwk });
+  const exported = await pair.export({ publicKey: true });
+  const kid = `did:key:${exported.publicKeyMultibase}#${exported.publicKeyMultibase}`;
+  const session = await f.session();
+  const matching = await f.proof(session.c_nonce, { header: { kid } });
+  assert.equal((await f.issue(session, matching, true)).status, 200);
+
+  const other = await generateKeyPair('ES256', { extractable: true });
+  const otherPair = await EcdsaMultikey.fromJwk({ jwk: await exportJWK(other.publicKey) });
+  const otherKey = await otherPair.export({ publicKey: true });
+  const conflictingSession = await f.session();
+  const conflicting = await f.proof(conflictingSession.c_nonce, {
+    header: { kid: `did:key:${otherKey.publicKeyMultibase}#${otherKey.publicKeyMultibase}` },
+  });
+  const rejected = await f.issue(conflictingSession, conflicting, true);
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.error_description, /jwk does not match/);
+});
+
 test('private offer page reports issuer progress after redemption without retaining proof or credential data', async t => {
   const f = await fixture(t);
   const offer = await f.offer();
@@ -366,7 +387,7 @@ test('private offer page reports issuer progress after redemption without retain
   const failed = await f.issue(session, proof);
   const rejected = await page();
   assert.match(rejected.body, /Credential request rejected/);
-  assert.match(rejected.body, /both jwk and kid/);
+  assert.match(rejected.body, /base58btc fingerprint/);
   for (const secret of [session.access_token, session.c_nonce, proof,
     f.holder.publicJwk.x, 'private-test-identity', failed.body.c_nonce, offer.code]) {
     assert.equal(rejected.body.includes(secret), false);
