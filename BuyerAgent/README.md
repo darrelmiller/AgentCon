@@ -457,8 +457,8 @@ ignored by Git.
 | `Buyer:MaxConversations` | `32` | Maximum distinct in-memory contexts, 1-128 |
 | `Buyer:CopilotStateDirectory` | `%LOCALAPPDATA%\AgentConDemo\buyer-copilot` | Absolute directory for isolated runtime state, outside the repo by default |
 
-For Luca's laptop over plaintext LAN HTTP, list his card URL
-(`http://<luca-laptop-address>:6000/.well-known/agent-card.json`) in the
+For a supplier on another machine over plaintext LAN HTTP, list its card URL
+(`http://<supplier-host>:6000/.well-known/agent-card.json`) in the
 catalog and opt in deliberately:
 
 ```powershell

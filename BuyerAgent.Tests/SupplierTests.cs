@@ -7,11 +7,11 @@ namespace BuyerAgent.Tests;
 
 public sealed class SupplierTests : IDisposable
 {
-    private const string SupplierA = "urn:air:luca.example:agent:wine-supplier";
+    private const string SupplierA = "urn:air:supplier.example:agent:wine-supplier";
     private const string SupplierB = "urn:air:cellar.example:agent:wine-supplier";
     private readonly TempCatalogs _files = new();
     private readonly FakeNetwork _network = new FakeNetwork()
-        .Supplier(6000, "Luca's Wine Supplier")
+        .Supplier(6000, "Example Wine Supplier")
         .Supplier(6001, "Cellar Wine Supplier");
 
     public void Dispose() => _files.Dispose();
@@ -47,7 +47,7 @@ public sealed class SupplierTests : IDisposable
         var conversation = new BuyerConversation();
         var (tools, turn) = Tools(TwoSupplierCatalog(), conversation, SupplierCommunicationMode.Native);
         using var selected = JsonDocument.Parse(await tools.SelectAsync(SupplierA));
-        Assert.Equal("Luca's Wine Supplier", selected.RootElement.GetProperty("agentCard").GetProperty("name").GetString());
+        Assert.Equal("Example Wine Supplier", selected.RootElement.GetProperty("agentCard").GetProperty("name").GetString());
         Assert.Equal(SupplierA, selected.RootElement.GetProperty("selectedSupplier").GetProperty("identifier").GetString());
         Assert.Equal(SupplierA, conversation.SelectedSupplier!.Identifier);
         Assert.Equal(new Uri("http://localhost:6000/a2a"), conversation.SelectedSupplier.Endpoint);
@@ -229,7 +229,7 @@ public sealed class SupplierTests : IDisposable
         var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => unknown.SelectAsync("http://localhost:6000"));
         Assert.Contains("No A2A Agent Card entry", failure.Message);
         var (prefix, _) = Tools(catalog, new BuyerConversation());
-        await Assert.ThrowsAsync<InvalidOperationException>(() => prefix.SelectAsync("urn:air:luca.example"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => prefix.SelectAsync("urn:air:supplier.example"));
         var (self, _) = Tools(catalog, new BuyerConversation());
         await Assert.ThrowsAsync<InvalidOperationException>(() => self.SelectAsync("urn:agentcon:agent:buyer"));
         Assert.DoesNotContain(_network.Requests, request => request.Uri.Port is 5100 or 6000 or 6001);
@@ -325,7 +325,7 @@ public sealed class SupplierTests : IDisposable
         TempCatalogs.Agent("urn:agentcon:agent:buyer", "http://localhost:5100/.well-known/agent-card.json",
             "AgentCon Wine Buyer", "Wine buyer", ["wine", "buyer"]),
         TempCatalogs.Agent(SupplierA, "http://localhost:6000/.well-known/agent-card.json",
-            "Luca's wines", "Italian wine supplier", ["wine", "supplier"]),
+            "Example wines", "Italian wine supplier", ["wine", "supplier"]),
         TempCatalogs.Agent(SupplierB, "http://localhost:6001/.well-known/agent-card.json",
             "Cellar", "Wine merchant and supplier", ["wine"]),
         new { identifier = "urn:test:mcp", type = "application/mcp-server-card+json", url = "http://localhost:7000/mcp", tags = new[] { "wine" } });
