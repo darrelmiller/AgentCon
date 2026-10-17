@@ -11,6 +11,12 @@ const walletRequestUri = (clientId, requestUri) => `openid4vp://?${new URLSearch
   request_uri_method: 'get',
 })}`;
 
+export class PresentationError extends Error {
+  constructor(reason) {
+    super(`Presentation rejected: ${reason}`);
+  }
+}
+
 export async function presentationService(config, issuerJwk) {
   const publicKey = publicP256({
     kty: issuerJwk.kty, crv: issuerJwk.crv, x: issuerJwk.x, y: issuerJwk.y,
@@ -35,7 +41,7 @@ export async function presentationService(config, issuerJwk) {
   function get(id) {
     cleanup();
     const session = sessions.get(id);
-    if (!session) throw new Error('Presentation unavailable or expired');
+    if (!session) throw new PresentationError('Presentation unavailable or expired');
     return session;
   }
   return {
@@ -96,28 +102,32 @@ export async function presentationService(config, issuerJwk) {
     },
     async verify(id, input) {
       const session = get(id);
-      if (session.verified || session.busy) throw new Error('Presentation already submitted');
-      if (input.state !== session.state) throw new Error('Invalid state');
+      if (session.verified || session.busy) throw new PresentationError('Presentation already submitted');
+      if (input.state !== session.state) throw new PresentationError('Invalid state');
       let tokens;
-      try { tokens = JSON.parse(input.vp_token); } catch { throw new Error('Expected DCQL vp_token'); }
+      try { tokens = JSON.parse(input.vp_token); } catch { throw new PresentationError('Expected DCQL vp_token object'); }
       if (!tokens || Object.keys(tokens).length !== 1 || !Array.isArray(tokens.age) ||
           tokens.age.length !== 1 || typeof tokens.age[0] !== 'string' || tokens.age[0].length > 12000) {
-        throw new Error('Expected one age presentation');
+        throw new PresentationError('Expected one age presentation in DCQL vp_token');
       }
       session.busy = true;
+      let stage = 'Invalid issuer JWT header or untrusted issuer key';
       try {
         const presentation = tokens.age[0];
         const [credential] = presentation.split('~');
         const header = decodeProtectedHeader(credential);
         if (header.alg !== 'ES256' || header.typ !== 'dc+sd-jwt' || !trustedKids.includes(header.kid) ||
             header.jwk || header.jku || header.x5u || header.x5c) throw new Error('Untrusted issuer key');
+        stage = 'Invalid issuer signature, issuer or credential lifetime';
         const { payload } = await jwtVerify(credential, await importJWK(issuerJwk, 'ES256'), {
           algorithms: ['ES256'], issuer: config.origin, currentDate: new Date(config.now() * 1000),
         });
+        stage = 'Invalid issuer credential claims';
         if (!Number.isSafeInteger(payload.exp) || !Number.isSafeInteger(payload.iat) ||
             payload.iat > config.now() || payload.exp <= config.now() ||
             ![credentialType(config.origin), LEGACY_VCT].includes(payload.vct) ||
             payload.demo_only !== true) throw new Error('Invalid issuer claims');
+        stage = 'Invalid credential holder public key';
         const holder = publicP256(payload.cnf?.jwk);
         const sd = new SDJwtVcInstance({
           hasher,
@@ -128,24 +138,36 @@ export async function presentationService(config, issuerJwk) {
             return true;
           },
         });
+        stage = 'Invalid selective disclosures or missing over_21 claim';
         const disclosed = await sd.verify(presentation, { requiredClaimKeys: ['over_21'] });
         if (disclosed.payload.over_21 !== true) throw new Error('Required claim not disclosed');
+        stage = 'Missing or invalid holder binding JWT header';
         const segments = presentation.split('~');
         const kb = segments.pop();
         if (!kb) throw new Error('Holder binding required');
         const kbHeader = decodeProtectedHeader(kb);
         if (kbHeader.alg !== 'ES256' || kbHeader.typ !== 'kb+jwt' ||
             kbHeader.jwk || kbHeader.jku || kbHeader.x5u || kbHeader.x5c) throw new Error('Invalid holder header');
+        stage = 'Invalid holder signature, audience or JWT lifetime';
         const verified = await jwtVerify(kb, await importJWK(holder, 'ES256'), {
           algorithms: ['ES256'], audience: [session.clientId, session.didKeyClientId],
           currentDate: new Date(config.now() * 1000),
         });
         const claims = verified.payload;
-        if (![session.clientId, session.didKeyClientId].includes(claims.aud) || claims.nonce !== session.nonce ||
-            !Number.isSafeInteger(claims.iat) || claims.iat > config.now() + 5 || claims.iat < config.now() - 300 ||
-            claims.sd_hash !== digest(`${segments.join('~')}~`)) throw new Error('Invalid holder binding');
-        if (session.expiresAt <= config.now()) throw new Error('Presentation expired');
+        if (![session.clientId, session.didKeyClientId].includes(claims.aud)) {
+          throw new PresentationError('Invalid holder binding audience');
+        }
+        if (claims.nonce !== session.nonce) throw new PresentationError('Invalid holder binding nonce');
+        if (!Number.isSafeInteger(claims.iat) || claims.iat > config.now() + 5 || claims.iat < config.now() - 300) {
+          throw new PresentationError('Invalid holder binding issuance time');
+        }
+        if (claims.sd_hash !== digest(`${segments.join('~')}~`)) {
+          throw new PresentationError('Invalid holder binding disclosure hash');
+        }
+        if (session.expiresAt <= config.now()) throw new PresentationError('Presentation expired');
         session.verified = true;
+      } catch (error) {
+        throw error instanceof PresentationError ? error : new PresentationError(stage);
       } finally {
         session.busy = false;
       }

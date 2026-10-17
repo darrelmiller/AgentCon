@@ -212,6 +212,9 @@ DID key wallets. Both use `openid4vp://` with `client_id`, `response_type=vp_tok
 The outer response type matches the signed request, allowing scanners to recognize
 the presentation flow before fetching it. Light SSI's real-device acceptance of
 these request profiles remains unconfirmed.
+Rejected presentation POSTs return fixed validation-stage diagnostics (for example,
+DCQL response shape, issuer signature, disclosure or holder-binding failure).
+They never echo credential contents, wallet keys, token values or library errors.
 `GET /presentations/<id>/request` returns the DID JWK ES256-signed JWT request object
 (`application/oauth-authz-req+jwt`, `oauth-authz-req+jwt` protected-header type,
 `decentralized_identifier:did:jwk:...` client identifier, DID key ID and

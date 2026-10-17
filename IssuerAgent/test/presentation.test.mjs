@@ -256,6 +256,23 @@ test('HTTP handoff exposes QR and request but status and session creation requir
   const credential = await f.signer.issue(f.holderJwk, f.config.now());
   const kb = await new SignJWT({ aud: object.client_id, nonce: object.nonce, iat: f.config.now(), sd_hash: digest(credential) })
     .setProtectedHeader({ alg: 'ES256', typ: 'kb+jwt' }).sign(f.holder.privateKey);
+  for (const [input, reason] of [
+    [{ state: 'sensitive-wallet-state', vp_token: 'sensitive-wallet-token' }, 'Invalid state'],
+    [{ state: object.state, vp_token: 'sensitive-wallet-token' }, 'Expected DCQL vp_token object'],
+    [{ state: object.state, vp_token: JSON.stringify({ age: credential + kb }) },
+      'Expected one age presentation in DCQL vp_token'],
+    [{ state: object.state, vp_token: JSON.stringify({ age: ['sensitive-wallet-token'] }) },
+      'Invalid issuer JWT header or untrusted issuer key'],
+  ]) {
+    const rejected = await fetch(f.local + path + '/response', {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(input),
+    });
+    assert.equal(rejected.status, 400);
+    assert.deepEqual(await rejected.json(), {
+      error: 'invalid_request', error_description: `Presentation rejected: ${reason}`,
+    });
+  }
   const result = await fetch(f.local + path + '/response', {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ state: object.state, vp_token: JSON.stringify({ age: [credential + kb] }) }),

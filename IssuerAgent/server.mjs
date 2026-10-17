@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { CONFIG_ID, GRANT, ProofValidationError, credentialType, digest, random, signingService, validateProof } from './crypto.mjs';
 import { isMain, loadConfig } from './config.mjs';
 import { offerPage, rootPage } from './ui.mjs';
-import { presentationService } from './presentation.mjs';
+import { presentationService, PresentationError } from './presentation.mjs';
 
 const MAX_BODY = 16 * 1024;
 class HttpError extends Error {
@@ -207,7 +207,10 @@ export async function createIssuer(config) {
           fields(input, ['vp_token', 'state', 'error', 'error_description']);
           if (input.error) fail(400, 'access_denied', 'Wallet did not authorize the purchase');
           try { await presentations.verify(id, input); }
-          catch { fail(400, 'invalid_request', 'Presentation signature, disclosure, holder binding, state or expiry invalid'); }
+          catch (error) {
+            fail(400, 'invalid_request', error instanceof PresentationError
+              ? error.message : 'Presentation verification failed');
+          }
           return send(200, {});
         }
         try {
