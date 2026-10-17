@@ -235,7 +235,10 @@ try {
         }
 
         $containerJson = (& podman ps -a --filter "name=^$dashboardName$" --format json 2>$null | Out-String).Trim()
-        $containers = if ($LASTEXITCODE -eq 0 -and $containerJson) { @($containerJson | ConvertFrom-Json) } else { @() }
+        if ($LASTEXITCODE -ne 0) { throw 'Could not list Podman containers. Check podman ps -a.' }
+        $containers = @(
+            if ($containerJson) { $containerJson | ConvertFrom-Json }
+        )
         if ($containers.Count -gt 0) {
             $container = $containers[0]
             $imageName = (& podman inspect --format '{{.ImageName}}' $dashboardName 2>$null | Out-String).Trim()
