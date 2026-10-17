@@ -101,11 +101,11 @@ Tested on a local node, with the site served at `http://localhost:8099`
 - **Sellers:** each seller's Ed25519 private key comes from Vault through an
   ExternalSecret, mounted as a file (mode 0400) at `/var/run/secrets/identity`.
   Vault namespace `eticloud/apps/phoenix`, KV v2 mount `secret`, path
-  `agntcy/slim/agentcon-sellers`, one property per seller
+  `dev/agntcy/slim/agentcon-sellers`, one property per seller
   (`barolo-supplier-key`, `sardinian-supplier-key`, `french-supplier-key`),
   through ClusterSecretStore `vault-eticloud-apps-phoenix`. Each seller's
   ExternalSecret reads only its own key; the Azure credential is a separate
-  secret (`azure-ai`). The keys match the published
+  secret (`dev/azure-ai`). The keys match the published
   `did.json` and `jwks.json` (cisco-eti/agntcy-deployment#548).
 - **Laptop buyer and CLI:** keys stay on the laptops; only their public keys are
   published.
@@ -151,8 +151,8 @@ Sellers need an LLM only for natural-language requests; structured RFQs are
 answered without one.
 
 - **Credential (decided):** the multi-cluster demo's Azure OpenAI credential,
-  in its own Vault secret: namespace `eticloud/apps/phoenix`, `secret/azure-ai`
-  (`remoteRef.key: azure-ai`), latest version, properties `azure-openai-token`
+  in its own Vault secret: namespace `eticloud/apps/phoenix`, `secret/dev/azure-ai`
+  (`remoteRef.key: dev/azure-ai`), latest version, properties `azure-openai-token`
   and `azure-openai-url` (the base endpoint, `https://<resource>.openai.azure.com/`).
   Agents need only the model name besides those two files. The endpoint serves
   `gpt-6-luna` (the model the local demo uses through Copilot), its dated
@@ -172,11 +172,16 @@ answered without one.
   `SessionConfig::with_provider(ProviderConfig { type: "openai", base_url: <azure-openai-url> + "openai/v1", api_key, model })`.
   The endpoint's Azure v1 route is OpenAI-compatible: `GET /openai/v1/models`
   lists the models above, and `POST /openai/v1/chat/completions` with a model
-  name works (probed by Luca). One chat call with the pinned model confirms it
+  name works (probed against the endpoint). One chat call with the pinned model confirms it
   before the chart bakes it in.
   When no provider is configured, the supplier keeps today's Copilot behaviour
   for laptop runs.
 - The key is never put in an environment variable dump, a log or a trace.
+
+**Vault paths must be under `dev/`.** The phoenix ClusterSecretStore logs in with
+this cluster's role `external-secrets-comn-dev-use2-1`, which can read only
+`secret/data/dev/*`; anything else fails with `403 permission denied` and the
+pods wait in `PodInitializing` for their Secret volumes.
 
 ## Image and chart
 
@@ -234,8 +239,8 @@ answered without one.
 
 ## To confirm before deploying
 
-1. ~~Vault secrets.~~ Done: `azure-ai` (`azure-openai-token`, `azure-openai-url`)
-   and `agntcy/slim/agentcon-sellers` (the three seller keys), both verified.
+1. ~~Vault secrets.~~ Done: `dev/azure-ai` (`azure-openai-token`, `azure-openai-url`)
+   and `dev/agntcy/slim/agentcon-sellers` (the three seller keys), both verified.
 2. cisco-eti/agntcy-deployment#548 (the did:web host) is merged and serving, so
    the sellers' initContainer can fetch `jwks.json` from
    `https://agents.slim.outshift.io`.

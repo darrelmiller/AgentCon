@@ -34,7 +34,8 @@ identity:
   jwksUrl: https://agents.slim.outshift.io/.well-known/jwks.json
   # The seller's Ed25519 private key (PKCS#8 PEM).
   secretStore: vault-eticloud-apps-phoenix
-  vaultPath: agntcy/slim/agentcon-sellers
+  # This cluster's External Secrets role reads only secret/data/dev/*.
+  vaultPath: dev/agntcy/slim/agentcon-sellers
   keyProperty: barolo-supplier-key
   refreshInterval: 1h
   # Use an existing Secret (key "key.pem") instead of the ExternalSecret.
@@ -45,7 +46,7 @@ identity:
 modelCreds:
   enabled: true
   secretStore: vault-eticloud-apps-phoenix
-  vaultPath: azure-ai
+  vaultPath: dev/azure-ai
   apiKeyProperty: azure-openai-token
   baseUrlProperty: azure-openai-url
   model: gpt-6-luna-2026-09-22

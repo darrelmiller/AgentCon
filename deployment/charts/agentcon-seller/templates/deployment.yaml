@@ -23,6 +23,8 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        # The secret files below are mode 0440 with group 65532, so the seller (uid/gid 65532) can read them.
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       initContainers:
@@ -83,6 +85,7 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             runAsUser: 65532
+            runAsGroup: 65532
             capabilities:
               drop: ["ALL"]
           volumeMounts:
@@ -115,12 +118,12 @@ spec:
         - name: identity
           secret:
             secretName: {{ include "seller.identitySecret" . }}
-            defaultMode: 0400
+            defaultMode: 0440
         {{- if .Values.modelCreds.enabled }}
         - name: model
           secret:
             secretName: {{ include "seller.modelSecret" . }}
-            defaultMode: 0400
+            defaultMode: 0440
         {{- end }}
         - name: spiffe
           csi:
