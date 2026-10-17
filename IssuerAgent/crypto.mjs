@@ -128,10 +128,12 @@ export async function validateProof(jwt, origin, now, clientId) {
   if (typeof payload.nonce !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(payload.nonce)) {
     throw new ProofValidationError('Proof nonce must be the c_nonce supplied by the issuer');
   }
-  if (payload.iss !== undefined && (typeof payload.iss !== 'string' || !clientId || payload.iss !== clientId)) {
+  if (payload.iss !== undefined &&
+      (typeof payload.iss !== 'string' || payload.iss.length === 0 || payload.iss.length > 2048 ||
+       (clientId !== undefined && payload.iss !== clientId))) {
     throw new ProofValidationError(clientId
       ? 'Proof iss must match the client_id used at token redemption'
-      : 'Proof iss must be omitted for anonymous pre-authorized issuance');
+      : 'Proof iss must be a non-empty string of at most 2048 characters');
   }
   return { jwk, nonce: payload.nonce };
 }

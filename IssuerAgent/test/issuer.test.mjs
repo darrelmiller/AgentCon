@@ -256,7 +256,7 @@ test('proof validation rejects signature, audience, typ, stale/future timestamps
     { claims: { exp: f.config.now() - 1 } },
     { claims: { nbf: f.config.now() + 60 } },
     { claims: { nbf: f.config.now() - 0.5 } },
-    { claims: { iss: 'unexpected-client' } },
+    { claims: { iss: '' } },
     { header: { jku: 'https://attacker.invalid/jwks' } },
     { header: { x5c: [] } },
     { header: { jwk: undefined, kid: 'did:web:attacker.invalid#key' } },
@@ -291,20 +291,24 @@ test('nonce failure rotates challenge; old, foreign and expired challenges canno
   assert.equal((await f.issue(s, await f.proof(challenge.body.c_nonce))).status, 200);
 });
 
-test('client_id is optional, but proof issuer must match if present', async t => {
+test('client_id is optional and anonymous proofs may include an ignored issuer', async t => {
   const f = await fixture(t);
+  const anonymous = await f.session();
+  assert.equal((await f.issue(anonymous, await f.proof(anonymous.c_nonce, {
+    claims: { iss: 'did:key:wallet-client' },
+  }))).status, 200);
   const s = await f.session({ client_id: 'wallet-client' });
   const failed = await f.issue(s, await f.proof(s.c_nonce, { claims: { iss: 'different-client' } }));
   assert.equal(failed.body.error, 'invalid_proof');
   assert.equal((await f.issue(s, await f.proof(failed.body.c_nonce, { claims: { iss: 'wallet-client' } }))).status, 200);
 });
 
-test('proof diagnostics distinguish unsupported algorithms and anonymous iss without echoing proof data', async t => {
+test('proof diagnostics distinguish unsupported algorithms and malformed iss without echoing proof data', async t => {
   const f = await fixture(t);
   for (const [overrides, message] of [
     [{ header: { alg: 'unsupported-wallet-algorithm' } }, /supports ES256/],
     [{ header: { typ: 'JWT' } }, /typ must be openid4vci-proof\+jwt/],
-    [{ claims: { iss: 'did:key:wallet-identity-must-not-be-echoed' } }, /iss must be omitted/],
+    [{ claims: { iss: 'wallet-identity-must-not-be-echoed'.repeat(100) } }, /iss must be a non-empty string/],
     [{ claims: { aud: 'https://wrong-audience.invalid' } }, /aud must exactly match/],
     [{ claims: { iat: f.config.now() * 1000 } }, /integer seconds/],
   ]) {
