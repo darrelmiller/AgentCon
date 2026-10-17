@@ -129,11 +129,8 @@ export async function validateProof(jwt, origin, now, clientId) {
     throw new ProofValidationError('Proof nonce must be the c_nonce supplied by the issuer');
   }
   if (payload.iss !== undefined) {
-    if (clientId === undefined) {
-      throw new ProofValidationError('Proof iss must be omitted for anonymous pre-authorized issuance');
-    }
     if (typeof payload.iss !== 'string' || payload.iss.length === 0 ||
-        payload.iss.length > 2048 || payload.iss !== clientId) {
+        payload.iss.length > 2048 || (clientId !== undefined && payload.iss !== clientId)) {
       throw new ProofValidationError('Proof iss must match the client_id used at token redemption');
     }
   }

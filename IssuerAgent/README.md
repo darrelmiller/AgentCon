@@ -99,9 +99,10 @@ The `/admin/*` APIs have **no CORS grant** and still require the admin token.
 HTML pages are not cross-origin APIs. CORS does not override wallet trust policy.
 
 Anonymous pre-authorized redemption is supported; a `client_id` is optional.
-For anonymous pre-authorized redemption, a proof `iss` must be omitted. When a
-`client_id` was supplied at token redemption, any proof `iss` must match it.
-Proofs require ES256, the correct `typ`,
+When anonymous pre-authorized redemption is used, a proof `iss` is accepted as
+a wallet-compatibility concession but is ignored and never treated as an
+authenticated client identity. When a `client_id` was supplied at token
+redemption, any proof `iss` must match it. Proofs require ES256, the correct `typ`,
 exact issuer audience, `iat` within five minutes (five-second forward skew),
 valid optional `exp`/`nbf`, and a live one-use nonce. Embedded private keys,
 unsupported curves, unsafe JOSE key URLs/certificates, unknown DID methods,

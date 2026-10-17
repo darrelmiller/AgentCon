@@ -291,28 +291,28 @@ test('nonce failure rotates challenge; old, foreign and expired challenges canno
   assert.equal((await f.issue(s, await f.proof(challenge.body.c_nonce))).status, 200);
 });
 
-test('client_id is optional, anonymous proofs omit iss, and identified proofs match client_id', async t => {
+test('client_id is optional and anonymous proof iss is ignored; identified proofs match client_id', async t => {
   const f = await fixture(t);
   const anonymous = await f.session();
-  const rejected = await f.issue(anonymous, await f.proof(anonymous.c_nonce, {
+  const anonymousResult = await f.issue(anonymous, await f.proof(anonymous.c_nonce, {
     claims: { iss: 'did:key:wallet-client' },
   }));
-  assert.equal(rejected.status, 400);
-  assert.equal(rejected.body.error, 'invalid_proof');
-  assert.match(rejected.body.error_description, /iss must be omitted for anonymous/);
-  assert.equal((await f.issue(anonymous, await f.proof(rejected.body.c_nonce))).status, 200);
+  assert.equal(anonymousResult.status, 200);
+  const anonymousWithoutIssuer = await f.session();
+  assert.equal((await f.issue(anonymousWithoutIssuer,
+    await f.proof(anonymousWithoutIssuer.c_nonce))).status, 200);
   const s = await f.session({ client_id: 'wallet-client' });
   const failed = await f.issue(s, await f.proof(s.c_nonce, { claims: { iss: 'different-client' } }));
   assert.equal(failed.body.error, 'invalid_proof');
   assert.equal((await f.issue(s, await f.proof(failed.body.c_nonce, { claims: { iss: 'wallet-client' } }))).status, 200);
 });
 
-test('proof diagnostics distinguish unsupported algorithms and anonymous iss without echoing proof data', async t => {
+test('proof diagnostics distinguish unsupported algorithms and malformed iss without echoing proof data', async t => {
   const f = await fixture(t);
   for (const [overrides, message] of [
     [{ header: { alg: 'unsupported-wallet-algorithm' } }, /supports ES256/],
     [{ header: { typ: 'JWT' } }, /typ must be openid4vci-proof\+jwt/],
-    [{ claims: { iss: 'wallet-identity-must-not-be-echoed'.repeat(100) } }, /iss must be omitted for anonymous/],
+    [{ claims: { iss: 'wallet-identity-must-not-be-echoed'.repeat(100) } }, /iss must match the client_id/],
     [{ claims: { aud: 'https://wrong-audience.invalid' } }, /aud must exactly match/],
     [{ claims: { iat: f.config.now() * 1000 } }, /integer seconds/],
   ]) {
