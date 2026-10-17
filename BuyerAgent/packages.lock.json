@@ -4,20 +4,42 @@
     "net10.0": {
       "A2A": {
         "type": "Direct",
-        "requested": "[1.0.0-preview2, )",
-        "resolved": "1.0.0-preview2",
-        "contentHash": "sYFCdcwX/AdEoNSCCOWH8Upo+mmm82qDFXiwZqBBQoLhzQt4KCKvE8txmNaqGuNF8mSrfesSIuqf0rz7oPMl2Q==",
+        "requested": "[1.0.0-preview3, )",
+        "resolved": "1.0.0-preview3",
+        "contentHash": "18nGNS2+ZzHfkQB6uPIkokeUfZrMt2EPsHC9CdRG+yOKatDWwFDfE4+x7UoZd9vQFnzvkd5Od+DASdyQ3yDEpw==",
         "dependencies": {
-          "Microsoft.Extensions.AI.Abstractions": "10.4.1"
+          "Microsoft.Extensions.AI.Abstractions": "10.10.1"
         }
       },
       "A2A.AspNetCore": {
         "type": "Direct",
-        "requested": "[1.0.0-preview2, )",
-        "resolved": "1.0.0-preview2",
-        "contentHash": "x7E3BqcRrEtOJA21gu77DU2EL5HhWlYUmHYqg9Vjxq0UkqxIniDU3VdoMaZsSP5ock+MJhzZfivmYO+04RORBg==",
+        "requested": "[1.0.0-preview3, )",
+        "resolved": "1.0.0-preview3",
+        "contentHash": "Ktjsq7T/lzKnGRkD77/0LJNuLFEYUS/YX+z0ZmrbBS3gpYLPZxp3eI0mjyLc6fcBhlTwufacE+L58LzdDDlyZQ==",
         "dependencies": {
-          "A2A": "1.0.0-preview2"
+          "A2A": "1.0.0-preview3"
+        }
+      },
+      "Agntcy.Slim.SlimRpc": {
+        "type": "Direct",
+        "requested": "[3.3.3, )",
+        "resolved": "3.3.3",
+        "contentHash": "bjCjFRy8bt5o+brNnj0wOQHj7XtzkpJoVg0qMaSHz77TrFIYp6nIK6mmzT9dLvb2noCjYq880qIaFpTYSbqlrQ==",
+        "dependencies": {
+          "Agntcy.Slim": "3.3.3",
+          "Google.Protobuf": "3.28.0"
+        }
+      },
+      "Agntcy.SlimA2A": {
+        "type": "Direct",
+        "requested": "[0.6.0, )",
+        "resolved": "0.6.0",
+        "contentHash": "q+daGrzFd7+C3Yii+e+Owy/49vKPE7D+vpRNi5IcbesPhX7xIU4vNpVecOx4K5scTbKoAgP036fbqBNBQ0MqDA==",
+        "dependencies": {
+          "A2A": "1.0.0-preview3",
+          "Agntcy.Slim.SlimRpc": "3.3.3",
+          "Google.Api.CommonProtos": "2.15.0",
+          "Google.Protobuf": "3.28.0"
         }
       },
       "GitHub.Copilot.SDK": {
@@ -74,6 +96,24 @@
           "OpenTelemetry.Api.ProviderBuilderExtensions": "[1.19.0, 2.0.0)"
         }
       },
+      "Agntcy.Slim": {
+        "type": "Transitive",
+        "resolved": "3.3.3",
+        "contentHash": "oOdr3R6DyDF33KfFi0tM8yJNkQrxRSI4yBX6fTtx3jCU14w5kQgoB9r84XvSEa92xe0tAY8rwS8ErtLamG4KiA=="
+      },
+      "Google.Api.CommonProtos": {
+        "type": "Transitive",
+        "resolved": "2.15.0",
+        "contentHash": "k+43CTEgMbT4C2JjcIJon3GvMNFJ3kLMjPTedOkXUAt0D5cFfrlee+M4oieueAVhbXktR89yoj5O/kVmC/AKJw==",
+        "dependencies": {
+          "Google.Protobuf": "[3.25.0, 4.0.0)"
+        }
+      },
+      "Google.Protobuf": {
+        "type": "Transitive",
+        "resolved": "3.28.0",
+        "contentHash": "lVsLcLIHpkOABswgydr0sjkIhSN5XE9C6AgLXxvMsa6pSSJIpmAIPvK/NZpuF+HTB6xp1R8T5nhLausWVOrU/w=="
+      },
       "Humanizer.Core": {
         "type": "Transitive",
         "resolved": "2.14.1",
@@ -95,8 +135,8 @@
       },
       "Microsoft.Extensions.AI.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.4.1",
-        "contentHash": "ZxhU/wg9BOc3ohibhLl18toPLWm96ysQoE+3OhCgrZ0TUPZd7bsUmGteeatz08yweyuPIEhtyUzEZTF+3bMWEQ=="
+        "resolved": "10.10.1",
+        "contentHash": "Kz6ezQfRb9x2TkIWyaXkVAfpvyoAlEDfC59klPrdr2XD5WM4HNw+PREAZ+Fo43GPldtX+E0i1aYzMFQ/zXYMLg=="
       },
       "OpenTelemetry": {
         "type": "Transitive",

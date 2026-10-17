@@ -3,7 +3,10 @@ using System.Text.Json;
 
 namespace BuyerAgent;
 
-/// <summary>A supplier selected from an AI Catalog entry, with its validated A2A JSON-RPC endpoint.</summary>
+/// <summary>
+/// A supplier selected from an AI Catalog entry, with its validated A2A JSON-RPC endpoint and, when both sides
+/// support it, the SLIMRPC target (slim://org/namespace/app) its calls use instead.
+/// </summary>
 public sealed record SupplierBinding(
     string Identifier, string? Version, string? DisplayName, Uri CardUrl, Uri Endpoint, string Catalog)
 {
@@ -12,6 +15,7 @@ public sealed record SupplierBinding(
     public IReadOnlyList<SupplierFormat> Formats { get; init; } = [];
     public SupplierCommunicationMode Mode { get; init; }
     public bool Streaming { get; init; }
+    public string? SlimTarget { get; init; }
     public object Describe() => new
     {
         identifier = Identifier,
@@ -19,6 +23,8 @@ public sealed record SupplierBinding(
         displayName = DisplayName,
         cardUrl = CardUrl.AbsoluteUri,
         endpoint = Endpoint.AbsoluteUri,
+        transport = SlimTarget is null ? "JSONRPC" : "SLIMRPC",
+        slimTarget = SlimTarget,
         catalog = Catalog,
         inputModes = InputModes,
         communicationMode = Mode.ToString(),
@@ -29,8 +35,11 @@ public sealed record SupplierBinding(
 
 public sealed record SupplierSelection(SupplierBinding Binding, AgentCard Card);
 
-public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options, AiCatalogClient catalog)
+public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options, AiCatalogClient catalog, BuyerSlim? slim = null)
 {
+    /// <summary>True when the buyer talks SLIM, so a first request that names no supplier polls them all in one multicast.</summary>
+    public bool SlimEnabled => slim?.Configured == true;
+
     public object AssessPrice(string wine, int vintage, string currency, int cases, int bottlesPerCase,
         decimal casePriceMinor, decimal deliveryMinor, decimal totalMinor, decimal? maxTotalUsd)
     {
@@ -39,18 +48,47 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             throw new ArgumentException("Quote quantities and amounts must be positive and bounded; delivery cannot be negative.");
         if (totalMinor != cases * casePriceMinor + deliveryMinor)
             return new { withinBallpark = false, reason = "Quote total does not match quantity, case price and delivery." };
-        if (!wine.Equals("Barolo", StringComparison.OrdinalIgnoreCase) || vintage != 2019 || currency != "USD")
+        var reference = PriceReference(wine, vintage);
+        if (reference is null || currency != "USD")
             return new { withinBallpark = false, reason = "No configured demo price reference for this wine, vintage or currency. Ask the caller before ordering." };
+        var (label, minBottle, maxBottle) = reference.Value;
         var bottlePrice = casePriceMinor / bottlesPerCase / 100;
-        var allowed = bottlePrice >= options.DemoMinBottlePriceUsd && bottlePrice <= options.DemoMaxBottlePriceUsd &&
+        var allowed = bottlePrice >= minBottle && bottlePrice <= maxBottle &&
             (maxTotalUsd is null || totalMinor / 100 <= maxTotalUsd);
         return new { withinBallpark = allowed, bottlePriceUsd = bottlePrice, totalUsd = totalMinor / 100,
-            reference = "Configured 2019 Barolo demo price range.",
-            minBottlePriceUsd = options.DemoMinBottlePriceUsd, maxBottlePriceUsd = options.DemoMaxBottlePriceUsd,
+            reference = $"Configured {label} demo price range.",
+            minBottlePriceUsd = minBottle, maxBottlePriceUsd = maxBottle,
             reason = allowed ? "Within demo price range and supplied budget." : "Outside demo price range or caller budget; stop and ask the caller." };
     }
-    public SupplierGateway ForMode(SupplierCommunicationMode mode) => new(httpClient, options.WithMode(mode), catalog);
-    public SupplierGateway ForOptions(BuyerOptions snapshot) => new(httpClient, snapshot, catalog);
+    // Buyer-side market references per bottle (USD); quotes for anything else are never auto-ordered.
+    private (string Label, decimal MinBottle, decimal MaxBottle)? PriceReference(string wine, int vintage) => wine switch
+    {
+        _ when wine.Equals("Barolo", StringComparison.OrdinalIgnoreCase) && vintage == 2019 =>
+            ("2019 Barolo", options.DemoMinBottlePriceUsd, options.DemoMaxBottlePriceUsd),
+        _ when wine.Contains("Vermentino", StringComparison.OrdinalIgnoreCase) && vintage == 2020 =>
+            ("2020 Vermentino di Gallura", 20m, 80m),
+        _ when wine.Contains("Cannonau", StringComparison.OrdinalIgnoreCase) && vintage == 2019 =>
+            ("2019 Cannonau di Sardegna", 8m, 40m),
+        _ when wine.Contains("Margaux", StringComparison.OrdinalIgnoreCase) && vintage == 2015 =>
+            ("2015 Château Margaux", 400m, 2000m),
+        _ when wine.Contains("Ruinart", StringComparison.OrdinalIgnoreCase) && vintage == 2013 =>
+            ("2013 Dom Ruinart Blanc de Blancs", 100m, 600m),
+        _ => null
+    };
+    public SupplierGateway ForMode(SupplierCommunicationMode mode) => new(httpClient, options.WithMode(mode), catalog, slim);
+    public SupplierGateway ForOptions(BuyerOptions snapshot) => new(httpClient, snapshot, catalog, slim);
+
+    /// <summary>
+    /// The client for a supplier call: SLIMRPC when the binding has a SLIM target and the buyer is connected to the node,
+    /// otherwise HTTP JSON-RPC. Dispose <c>Owned</c> (the per-call HTTP client); SLIM clients are shared and owned by
+    /// <see cref="BuyerSlim"/>.
+    /// </summary>
+    internal (IA2AClient Client, IDisposable? Owned) OpenClient(SupplierBinding supplier)
+    {
+        if (supplier.SlimTarget is { } target && slim?.ClientFor(target) is { } slimClient) return (slimClient, null);
+        var http = new A2AClient(supplier.Endpoint, httpClient);
+        return (http, http);
+    }
     public async Task<SupplierBinding> RefreshModeAsync(SupplierBinding supplier, CancellationToken cancellationToken)
     {
         var refreshed = (await SelectAsync(supplier.Identifier, supplier.Version, cancellationToken)).Binding;
@@ -83,10 +121,15 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         if (mode != SupplierCommunicationMode.NaturalLanguage &&
             !formats.Any(format => format.Direction == "input"))
             throw new InvalidOperationException("Seller has no input structures understood in the configured communication mode.");
+        // Prefer the card's SLIMRPC interface when the buyer is configured for SLIM; JSON-RPC stays the fallback.
+        var slimTarget = slim?.Configured == true
+            ? card.SupportedInterfaces.FirstOrDefault(candidate => candidate.ProtocolBinding == "SLIMRPC" &&
+                candidate.ProtocolVersion == "1.0" && BuyerSlim.TargetName(candidate.Url) is not null)?.Url
+            : null;
         return new SupplierSelection(
             new SupplierBinding(entry.Identifier, entry.Version, entry.DisplayName ?? card.Name, entry.CardUrl, endpoint, entry.Catalog)
             { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = formats,
-                Mode = mode, Streaming = card.Capabilities.Streaming == true },
+                Mode = mode, Streaming = card.Capabilities.Streaming == true, SlimTarget = slimTarget },
             card);
     }
 
@@ -196,7 +239,9 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             tags: [new("gen_ai.operation.name", "invoke_agent"), new("gen_ai.agent.name", "SupplierAgent"),
                 new("gen_ai.provider.name", "agentcon.supplier"), new("agentcon.a2a.task.id", message.TaskId),
                 new("agentcon.a2a.context.id", message.ContextId)]);
-        using var client = new A2AClient(supplier.Endpoint, httpClient);
+        activity?.SetTag("agentcon.a2a.transport", supplier.SlimTarget is null ? "JSONRPC" : "SLIMRPC");
+        var (client, owned) = OpenClient(supplier);
+        using var ownedClient = owned;
         try
         {
             message.Metadata ??= new();
@@ -221,7 +266,7 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             SendMessageResponse response;
             if (supplier.Streaming && retainStream is not null)
             {
-                var stream = new SupplierStream(httpClient, this, supplier, message);
+                var stream = new SupplierStream(this, supplier, message);
                 try
                 {
                     response = await stream.StartAsync(request, cancellationToken);
@@ -255,9 +300,115 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         }
     }
 
+    /// <summary>One supplier's answer to a multicast: its response, or why there is none.</summary>
+    public sealed record MulticastReply(SupplierBinding Supplier, SendMessageResponse? Response, string? Error);
+
+    /// <summary>
+    /// Sends the same message to every supplier. Over SLIM (every supplier on SLIM and the buyer connected) this is a
+    /// single SendMessage on a group channel. Otherwise it is an HTTP fan-out: the message to each supplier with
+    /// returnImmediately, then GetTask polling until each task is final or needs input/authorization.
+    /// </summary>
+    public async Task<(string Transport, IReadOnlyList<MulticastReply> Replies)> MulticastAsync(
+        IReadOnlyList<SupplierBinding> suppliers, Message message, CancellationToken cancellationToken)
+    {
+        if (suppliers.Count == 0) throw new InvalidOperationException("No supplier understands this message.");
+        foreach (var supplier in suppliers)
+            foreach (var part in message.Parts)
+                CreatePart(supplier, part.Text ?? "", part.Data?.GetRawText(), part.MediaType);
+        using var activity = BuyerTelemetry.Source.StartActivity("invoke_agent SupplierAgents (multicast)", System.Diagnostics.ActivityKind.Client,
+            System.Diagnostics.Activity.Current?.Context ?? default,
+            tags: [new("gen_ai.operation.name", "invoke_agent"), new("agentcon.a2a.multicast.members", suppliers.Count)]);
+        var timeout = TimeSpan.FromSeconds(Math.Min(options.RequestTimeoutSeconds, 60));
+        message.Metadata ??= new();
+        message.Metadata.TryAdd(MessageInferenceCounter.MetadataKey, JsonSerializer.SerializeToElement(0));
+        var accepted = suppliers.SelectMany(supplier => supplier.Mode == SupplierCommunicationMode.NaturalLanguage
+                ? ["text/plain"]
+                : supplier.Formats.Where(format => format.Direction == "output").Select(format => format.MediaType))
+            .Append("text/plain").Distinct().ToList();
+        var useSlim = slim is not null && suppliers.All(supplier => supplier.SlimTarget is not null) &&
+            slim.CanMulticast(suppliers.Select(supplier => supplier.SlimTarget!));
+        var previousGroup = ExchangeStore.CurrentGroup.Value;
+        ExchangeStore.CurrentGroup.Value = (Guid.NewGuid().ToString("N"), useSlim
+            ? $"SLIM multicast · 1 SendMessage to {suppliers.Count} suppliers"
+            : $"HTTP fan-out · {suppliers.Count} × SendMessage + GetTask polling");
+        try
+        {
+            return await MulticastCoreAsync(suppliers, message, useSlim, accepted, timeout, activity, cancellationToken);
+        }
+        finally
+        {
+            ExchangeStore.CurrentGroup.Value = previousGroup;
+        }
+    }
+
+    private async Task<(string Transport, IReadOnlyList<MulticastReply> Replies)> MulticastCoreAsync(
+        IReadOnlyList<SupplierBinding> suppliers, Message message, bool useSlim, List<string> accepted, TimeSpan timeout,
+        System.Diagnostics.Activity? activity, CancellationToken cancellationToken)
+    {
+        if (useSlim)
+        {
+            activity?.SetTag("agentcon.a2a.transport", "SLIMRPC multicast");
+            var byTarget = suppliers.ToDictionary(supplier => BuyerSlim.TargetName(supplier.SlimTarget!)!, StringComparer.Ordinal);
+            var request = new SendMessageRequest
+            {
+                Message = message,
+                Configuration = new SendMessageConfiguration { ReturnImmediately = false, AcceptedOutputModes = accepted }
+            };
+            var replies = new Dictionary<string, MulticastReply>(StringComparer.Ordinal);
+            await foreach (var (target, response) in slim!.MulticastAsync(byTarget.Keys.ToList(), request, timeout, cancellationToken))
+            {
+                var supplier = byTarget[target];
+                try
+                {
+                    ValidateOutputs(supplier, (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
+                        .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
+                    replies[target] = new(supplier, response, null);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    replies[target] = new(supplier, null, exception.Message);
+                }
+            }
+            return ("SLIMRPC multicast: one SendMessage to the group", byTarget
+                .Select(pair => replies.GetValueOrDefault(pair.Key) ?? new(pair.Value, null, "No multicast reply before the timeout."))
+                .ToList());
+        }
+        activity?.SetTag("agentcon.a2a.transport", "HTTP fan-out with polling");
+        var fanout = await Task.WhenAll(suppliers.Select(async supplier =>
+        {
+            try
+            {
+                // Each HTTP request is its own A2A message; the content is identical.
+                var copy = JsonSerializer.Deserialize<Message>(JsonSerializer.Serialize(message, A2AJsonUtilities.DefaultOptions),
+                    A2AJsonUtilities.DefaultOptions)!;
+                copy.MessageId = Guid.NewGuid().ToString("N");
+                var response = await SendAsync(supplier, copy, cancellationToken, returnImmediately: true);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                deadline.CancelAfter(timeout);
+                // Poll with backoff (0.5 s doubling to 2 s) so a slow supplier does not flood the dashboard.
+                var interval = TimeSpan.FromMilliseconds(500);
+                while (response.Task is { } task && task.Status.State is TaskState.Submitted or TaskState.Working)
+                {
+                    await Task.Delay(interval, deadline.Token);
+                    interval = TimeSpan.FromMilliseconds(Math.Min(interval.TotalMilliseconds * 2, 2000));
+                    response = new SendMessageResponse { Task = await GetTaskAsync(supplier, task.Id, deadline.Token) };
+                }
+                return new MulticastReply(supplier, response, null);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException or A2AException ||
+                exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                return new MulticastReply(supplier, null, exception is OperationCanceledException
+                    ? "No final answer before the polling timeout." : exception.Message);
+            }
+        }));
+        return ("HTTP fan-out: one SendMessage per supplier, then GetTask polling", fanout);
+    }
+
     public async Task<AgentTask> GetTaskAsync(SupplierBinding supplier, string taskId, CancellationToken cancellationToken)
     {
-        using var client = new A2AClient(supplier.Endpoint, httpClient);
+        var (client, owned) = OpenClient(supplier);
+        using var ownedClient = owned;
         var task = await client.GetTaskAsync(new GetTaskRequest { Id = taskId }, cancellationToken);
         ValidateOutputs(supplier, (task.Artifacts ?? []).SelectMany(artifact => artifact.Parts).Concat(task.Status.Message?.Parts ?? []));
         return task;
@@ -350,6 +501,9 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
         {
             throw new ArgumentException("Provide text or a structured JSON data part.");
         }
+        if (await PollAllSuppliersAsync(taskId, contextId, mediaType))
+            return await SendToAllCoreAsync(nativeText ?? text, dataJson, mediaType, null,
+                "The caller named no supplier, so this first request went to every catalog supplier in one SLIM multicast.");
         var supplier = await gateway.RefreshModeAsync(ResolveDestination(taskId, contextId, supplierIdentifier), turnCancellation);
         if (nativeText is not null && supplier.Mode == SupplierCommunicationMode.NaturalLanguage)
         {
@@ -375,6 +529,127 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
             response = JsonSerializer.SerializeToElement(response, A2AJsonUtilities.DefaultOptions)
         }, JsonOptions);
     });
+
+    /// <summary>
+    /// Sends one message to every catalog supplier that understands it (SLIM multicast or HTTP fan-out with polling)
+    /// and records each reply like send_supplier_message does, so quotes can be assessed and ordered point-to-point.
+    /// </summary>
+    public Task<string> SendToAllAsync(string text = "", string? dataJson = null, string? mediaType = null) =>
+        ExecuteAsync("send_to_all_suppliers", async () =>
+    {
+        if (turn.SupplierStream is not null)
+            throw new InvalidOperationException("Seller is waiting for input or wallet approval. Return the handoff; do not send another request in this turn.");
+        if (string.IsNullOrWhiteSpace(text) && dataJson is null)
+            throw new ArgumentException("Provide text or a structured JSON data part.");
+        return await SendToAllCoreAsync(text, dataJson, mediaType, null, null);
+    });
+
+    /// <summary>
+    /// On SLIM, a first request in which the caller names no catalog supplier polls every seller in one multicast.
+    /// Continuations, purchases and a second broadcast in the same turn stay point-to-point. Whether the caller
+    /// named a supplier comes from the caller's own message, not from the model's choice of target.
+    /// </summary>
+    private async Task<bool> PollAllSuppliersAsync(string? taskId, string? contextId, string? mediaType)
+    {
+        if (!gateway.SlimEnabled || turn.LastBroadcast is not null ||
+            taskId is not null || contextId is not null || mediaType == SupplierFormats.Purchase)
+            return false;
+        var suppliers = (await gateway.SearchAsync(null, turnCancellation)).Matches;
+        var request = string.Join(" ", turn.Message.Parts.Where(part => part.Text is not null).Select(part => part.Text));
+        return suppliers.Count > 1 &&
+            !suppliers.Any(entry => request.Contains(entry.Identifier, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<string> SendToAllCoreAsync(string text, string? dataJson, string? mediaType,
+        IReadOnlyList<string>? candidates, string? note)
+    {
+        var catalog = await gateway.SearchAsync(null, turnCancellation);
+        var included = new List<SupplierBinding>();
+        var skipped = new List<object>();
+        foreach (var entry in catalog.Matches.Where(entry => candidates is null || candidates.Contains(entry.Identifier)))
+        {
+            try
+            {
+                var supplier = (await gateway.SelectAsync(entry.Identifier, entry.Version, turnCancellation)).Binding;
+                // Typed messages go only to suppliers that understand the media type; text only to text suppliers.
+                var understood = dataJson is null
+                    ? supplier.Mode == SupplierCommunicationMode.NaturalLanguage
+                    : supplier.Mode != SupplierCommunicationMode.NaturalLanguage && supplier.InputModes.Contains(mediaType ?? "");
+                if (understood) included.Add(supplier);
+                else skipped.Add(new { supplier = entry.Identifier, reason = "does not accept this message type in its current mode" });
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+            {
+                skipped.Add(new { supplier = entry.Identifier, reason = exception.Message });
+            }
+        }
+        if (included.Count == 0)
+        {
+            // Not a tool failure: tell the model which message types the suppliers accept so it can resend this turn.
+            return JsonSerializer.Serialize(new
+            {
+                sent = false,
+                reason = "No catalog supplier accepts this message type in its current mode. Resend with a type they accept.",
+                accepted = await Task.WhenAll(catalog.Matches.Select(async entry =>
+                {
+                    try
+                    {
+                        var supplier = (await gateway.SelectAsync(entry.Identifier, entry.Version, turnCancellation)).Binding;
+                        return (object)new { supplier = entry.Identifier, communicationMode = supplier.Mode.ToString(),
+                            textAccepted = supplier.Mode == SupplierCommunicationMode.NaturalLanguage,
+                            understoodStructures = supplier.Formats.Where(format => format.Direction == "input")
+                                .Select(format => new { format.MediaType, format.Schema }) };
+                    }
+                    catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException)
+                    {
+                        return new { supplier = entry.Identifier, error = exception.Message };
+                    }
+                })),
+                skipped
+            }, JsonOptions);
+        }
+        var part = gateway.CreatePart(included[0], text, dataJson, mediaType);
+        var (transport, replies) = await gateway.MulticastAsync(included, new Message
+        {
+            MessageId = Guid.NewGuid().ToString("N"),
+            Role = Role.User,
+            Parts = [part],
+            Metadata = new() { [MessageInferenceCounter.MetadataKey] = JsonSerializer.SerializeToElement(turn.Inference.SinceLastMessage()) }
+        }, turnCancellation);
+        var captured = new List<SendMessageResponse>();
+        foreach (var reply in replies.Where(reply => reply.Response is not null))
+        {
+            Capture(reply.Supplier, reply.Response!);
+            captured.Add(reply.Response!);
+        }
+        turn.LastBroadcast = captured;
+        return JsonSerializer.Serialize(new
+        {
+            untrustedSupplierData = true,
+            transport,
+            note,
+            // Compact per-supplier summary: full responses can exceed the model's tool-result limit.
+            replies = replies.Select(reply =>
+            {
+                var task = reply.Response?.Task;
+                var message = reply.Response?.Message;
+                var parts = (task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
+                    .Concat(task?.Status.Message?.Parts ?? []).Concat(message?.Parts ?? []).ToList();
+                return new
+                {
+                    supplier = reply.Supplier.Identifier,
+                    transport = reply.Supplier.SlimTarget is null ? "JSONRPC" : "SLIMRPC",
+                    taskId = task?.Id,
+                    contextId = task?.ContextId ?? message?.ContextId,
+                    state = task?.Status.State.ToString(),
+                    text = string.Join(" ", parts.Where(part => part.Text is not null).Select(part => part.Text)),
+                    data = parts.Where(part => part.Data is not null).Select(part => part.Data).ToList(),
+                    error = reply.Error
+                };
+            }),
+            skipped
+        }, JsonOptions);
+    }
 
     public Task<string> GetTaskAsync(string taskId, string? supplierIdentifier = null) => ExecuteAsync("get_supplier_task", async () =>
     {

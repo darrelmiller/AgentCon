@@ -1,6 +1,10 @@
 pub mod authorization;
+#[cfg(feature = "copilot")]
+mod copilot;
 pub mod domain;
 pub mod inference;
+mod openai;
+pub mod slim;
 pub mod telemetry;
 
 use std::{
@@ -27,7 +31,7 @@ use tokio::sync::Mutex;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use domain::{PURCHASE, QUOTE, RECEIPT, RFQ, Request, WineStore};
+use domain::{Inventory, PURCHASE, QUOTE, RECEIPT, RFQ, Request, WineStore};
 use inference::{Intent, Interpreter};
 
 #[derive(Default)]
@@ -37,6 +41,7 @@ pub struct Metrics {
 }
 
 pub struct Supplier {
+    inventory: &'static Inventory,
     store: Mutex<WineStore>,
     interpreter: Arc<dyn Interpreter>,
     pub metrics: Arc<Metrics>,
@@ -44,6 +49,10 @@ pub struct Supplier {
     pending: Mutex<std::collections::HashMap<String, PendingPurchase>>,
     structured: AtomicBool,
     control_token: Option<String>,
+    /// SLIMRPC interface URL (slim://org/namespace/app), if configured.
+    slim_url: Option<String>,
+    /// Set once the app is registered on the SLIM node; only then is SLIMRPC advertised.
+    slim_ready: AtomicBool,
 }
 
 struct PendingPurchase {
@@ -54,6 +63,7 @@ struct PendingPurchase {
 impl Supplier {
     pub fn new(interpreter: Arc<dyn Interpreter>) -> Self {
         Self {
+            inventory: &domain::BAROLO,
             store: Mutex::new(WineStore::default()),
             interpreter,
             metrics: Arc::new(Metrics::default()),
@@ -61,11 +71,34 @@ impl Supplier {
             pending: Mutex::new(std::collections::HashMap::new()),
             structured: AtomicBool::new(true),
             control_token: None,
+            slim_url: None,
+            slim_ready: AtomicBool::new(false),
         }
     }
 
     pub fn with_verifier(mut self, verifier: Arc<dyn authorization::Verifier>) -> Self {
         self.verifier = Some(verifier);
+        self
+    }
+
+    /// The SLIMRPC interface (see `slim::serve`) to advertise while `set_slim_ready(true)` holds.
+    pub fn with_slim_url(mut self, url: String) -> Self {
+        self.slim_url = Some(url);
+        self
+    }
+
+    /// Tracks the SLIM node connection: while true, the Agent Card and /health advertise SLIMRPC and /ready is 200.
+    pub fn set_slim_ready(&self, ready: bool) {
+        self.slim_ready.store(ready, Ordering::Relaxed);
+    }
+
+    fn advertised_slim_url(&self) -> Option<&str> {
+        self.slim_ready.load(Ordering::Relaxed).then_some(self.slim_url.as_deref()).flatten()
+    }
+
+    pub fn with_inventory(mut self, inventory: &'static Inventory) -> Self {
+        self.inventory = inventory;
+        self.store = Mutex::new(WineStore::new(inventory));
         self
     }
 
@@ -229,9 +262,9 @@ impl Supplier {
             }),
             Intent::Help => Ok(Outcome {
                 state: TaskState::Completed,
-                text: "AgentCon wine supplier: 2019 Barolo quotes and orders, with delivery in the US or Canada. \
+                text: format!("{}: {} quotes and orders, with delivery in the US or Canada. \
                        Natural language uses the official Copilot Rust SDK; agreed typed data parts \
-                       use deterministic code.".into(), data: None, authorization: None,
+                       use deterministic code.", self.inventory.supplier_name, self.inventory.summary()), data: None, authorization: None,
             }),
         }
     }
@@ -351,7 +384,7 @@ impl Outcome {
         Self {
             state: TaskState::AuthRequired,
             text: format!(
-                "Wallet authorization is required before this purchase. Open {} and scan the QR code with Sphereon Wallet. Select the AgentCon over_21 credential and approve disclosure. Then return to the buyer and ask it to continue this pending purchase. No order has been created.",
+                "Wallet authorization is required before this purchase. Open {} and scan the QR code with your OID4VP wallet. Select the AgentCon over_21 credential and approve disclosure. Then return to the buyer and ask it to continue this pending purchase. No order has been created.",
                 challenge.presentation_url
             ),
             data: None,
@@ -397,6 +430,16 @@ impl AgentExecutor for SupplierExecutor {
             .and_then(|value| serde_json::from_value(value.clone()).ok());
         let watch_enabled = ctx.metadata.as_ref().and_then(|metadata|
             metadata.get("agentcon.internal.watchAuthorization")).and_then(|value| value.as_bool()) == Some(true);
+        // Report the task as working first (standard A2A lifecycle): a returnImmediately caller gets this and polls
+        // GetTask while the final event below completes into the task store.
+        let working = Task {
+            id: ctx.task_id.clone(),
+            context_id: ctx.context_id.clone(),
+            status: TaskStatus { state: TaskState::Working, message: None, timestamp: Some(chrono::Utc::now()) },
+            artifacts: None,
+            history: None,
+            metadata: None,
+        };
         let initial = stream::once(async move {
             let mut execution = ExecutionTrace { span: execution_span.clone(), completed: false };
             let started = Instant::now();
@@ -438,7 +481,7 @@ impl AgentExecutor for SupplierExecutor {
             });
             if watch_enabled && let Some(challenge) = &outcome.authorization {
                 outcome.text = format!(
-                    "Wallet authorization is required before this purchase. Open {} and scan the QR code with Sphereon Wallet. Select the AgentCon over_21 credential and approve disclosure. This original purchase will complete automatically after task-bound verifier approval. Do not submit another order. No order has been created yet.",
+                    "Wallet authorization is required before this purchase. Open {} and scan the QR code with your OID4VP wallet. Select the AgentCon over_21 credential and approve disclosure. This original purchase will complete automatically after task-bound verifier approval. Do not submit another order. No order has been created yet.",
                     challenge.presentation_url);
             }
             execution.completed = true;
@@ -491,6 +534,7 @@ impl AgentExecutor for SupplierExecutor {
                 ])),
             }))
         }.instrument(span));
+        let initial = stream::once(std::future::ready(Ok(StreamResponse::Task(working)))).chain(initial);
         Box::pin(initial.flat_map(move |event| {
             let watching = watch_enabled && matches!(&event,
                 Ok(StreamResponse::Task(task)) if task.status.state == TaskState::AuthRequired &&
@@ -579,10 +623,10 @@ impl AgentExecutor for SupplierExecutor {
     }
 }
 
-pub fn card(origin: &str) -> AgentCard {
+pub fn card(origin: &str, inventory: &Inventory, slim_url: Option<&str>) -> AgentCard {
     AgentCard {
-        name: "AgentCon Demo Wine Supplier".into(),
-        description: "Wine supplier: Copilot-mediated natural-language quotes and orders; deterministic v1 RFQ/order profiles. Delivery throughout the US and Canada.".into(),
+        name: inventory.supplier_name.clone(),
+        description: format!("Wine supplier of {}: Copilot-mediated natural-language quotes and orders; deterministic v1 RFQ/order profiles. Delivery throughout the US and Canada.", inventory.summary()),
         version: env!("CARGO_PKG_VERSION").into(),
         provider: Some(AgentProvider { organization: "AgentCon demo".into(), url: "https://github.com/darrelmiller/AgentCon".into() }),
         capabilities: AgentCapabilities { streaming: Some(true), push_notifications: Some(false),
@@ -605,9 +649,9 @@ pub fn card(origin: &str) -> AgentCard {
         skills: vec![
             AgentSkill {
                 id: "demo-wine".into(), name: "Demo wine quote and order".into(),
-                description: "2019 Barolo, 1-48 cases, delivery anywhere in the US or Canada. USD 144/case plus USD 25 flat delivery in either country. Natural language invokes Copilot. Typed schemaVersion:1, kind:rfq/purchase-order data is deterministic; deliveryCountry US/CA (default US). demoOnly:true required; artifacts carry typed quote/receipt.".into(),
+                description: format!("{}, 1-48 cases, delivery anywhere in the US or Canada. {} plus USD {} flat delivery in either country. Natural language invokes Copilot. Typed schemaVersion:1, kind:rfq/purchase-order data is deterministic; deliveryCountry US/CA (default US). demoOnly:true required; artifacts carry typed quote/receipt.", inventory.summary(), inventory.price_list(), inventory.delivery_minor / 100),
                 tags: vec!["wine".into(), "supplier".into(), "demo".into()],
-                examples: Some(vec!["Quote 12 cases of 2019 Barolo delivered to San Jose for the demo.".into()]),
+                examples: Some(inventory.wines.iter().map(|w| format!("Quote 12 cases of {} {} delivered to San Jose for the demo.", w.vintage, w.name)).collect()),
                 input_modes: Some(vec!["text/plain".into(), RFQ.into(), PURCHASE.into()]),
                 output_modes: Some(vec!["text/plain".into(), QUOTE.into(), RECEIPT.into()]),
                 security_requirements: None,
@@ -615,15 +659,17 @@ pub fn card(origin: &str) -> AgentCard {
         ],
         default_input_modes: vec!["text/plain".into(), RFQ.into(), PURCHASE.into()],
         default_output_modes: vec!["text/plain".into(), QUOTE.into(), RECEIPT.into()],
-        supported_interfaces: vec![AgentInterface::new(format!("{origin}/a2a"), TRANSPORT_PROTOCOL_JSONRPC)],
+        supported_interfaces: std::iter::once(AgentInterface::new(format!("{origin}/a2a"), TRANSPORT_PROTOCOL_JSONRPC))
+            .chain(slim_url.map(|url| AgentInterface::new(url.to_owned(), a2a::TRANSPORT_PROTOCOL_SLIMRPC)))
+            .collect(),
         security_schemes: None, security_requirements: None,
         documentation_url: Some("https://github.com/darrelmiller/AgentCon/tree/main/SupplierAgent".into()),
         icon_url: None, signatures: None,
     }
 }
 
-pub fn configured_card(origin: &str, structured: bool) -> AgentCard {
-    let mut value = card(origin);
+pub fn configured_card(origin: &str, structured: bool, inventory: &Inventory, slim_url: Option<&str>) -> AgentCard {
+    let mut value = card(origin, inventory, slim_url);
     if !structured {
         value.description = "Wine supplier: text/plain quotes and orders via Copilot. Structured data parts are disabled.".into();
         value.default_input_modes = vec!["text/plain".into()];
@@ -632,8 +678,7 @@ pub fn configured_card(origin: &str, structured: bool) -> AgentCard {
             skill.input_modes = Some(vec!["text/plain".into()]);
             skill.output_modes = Some(vec!["text/plain".into()]);
             skill.description =
-                "2019 Barolo demo quotes/orders via Copilot text/plain. Typed data is disabled."
-                    .into();
+                format!("{} demo quotes/orders via Copilot text/plain. Typed data is disabled.", inventory.summary());
         }
         if let Some(extensions) = &mut value.capabilities.extensions {
             extensions.retain(|extension| {
@@ -733,17 +778,29 @@ async fn preserve_output_modes(request: HttpRequest, next: Next) -> Response {
     next.run(request).await
 }
 
+/// The supplier's A2A request handler. Share one instance across bindings (HTTP JSON-RPC and
+/// SLIMRPC) so both see the same tasks.
+pub fn request_handler(supplier: Arc<Supplier>) -> Arc<DefaultRequestHandler> {
+    Arc::new(DefaultRequestHandler::new(SupplierExecutor(supplier), InMemoryTaskStore::new()))
+}
+
 pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
+    let handler = request_handler(supplier.clone());
+    app_with_handler(supplier, origin, handler)
+}
+
+pub fn app_with_handler(
+    supplier: Arc<Supplier>,
+    origin: &str,
+    handler: Arc<DefaultRequestHandler>,
+) -> Router {
     let metrics = supplier.metrics.clone();
     let verifier_configured = supplier.verifier.is_some();
-    let handler = Arc::new(DefaultRequestHandler::new(
-        SupplierExecutor(supplier.clone()),
-        InMemoryTaskStore::new(),
-    ));
     let schema_supplier = supplier.clone();
     let card_supplier = supplier.clone();
     let control_supplier = supplier.clone();
     let health_supplier = supplier.clone();
+    let ready_supplier = supplier.clone();
     let card_origin = origin.to_owned();
     let control_host = origin.strip_prefix("http://").unwrap_or("").to_owned();
     Router::new()
@@ -791,7 +848,7 @@ pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
             let origin = card_origin.clone();
             async move {
                 ([(axum::http::header::CACHE_CONTROL, "no-store")],
-                    Json(configured_card(&origin, supplier.structured.load(Ordering::Relaxed))))
+                    Json(configured_card(&origin, supplier.structured.load(Ordering::Relaxed), supplier.inventory, supplier.advertised_slim_url())))
             }
         }))
         .route(
@@ -806,8 +863,22 @@ pub fn app(supplier: Arc<Supplier>, origin: &str) -> Router {
                     "inferenceAttempts": metrics.inference_attempts.load(Ordering::Relaxed),
                     "structuredDataParts": supplier.structured.load(Ordering::Relaxed),
                     "oid4vp": if verifier_configured { "presentation-verifier-configured" } else { "verifier-not-configured" },
-                    "slim": "not-implemented"
+                    "slim": supplier.advertised_slim_url().unwrap_or(if supplier.slim_url.is_some() { "unavailable" } else { "disabled" })
                 }))
+                }
+            }),
+        )
+        // Readiness for orchestrators: 503 while SLIM is configured but not connected to the node.
+        .route(
+            "/ready",
+            axum::routing::get(move || {
+                let supplier = ready_supplier.clone();
+                async move {
+                    if supplier.slim_url.is_none() || supplier.advertised_slim_url().is_some() {
+                        (axum::http::StatusCode::OK, "ready")
+                    } else {
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "SLIM node not connected")
+                    }
                 }
             }),
         )

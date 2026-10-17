@@ -54,6 +54,8 @@ public static class BuyerApplication
         builder.Services.AddSingleton<IBuyerHarness, CopilotBuyerHarness>();
         var card = BuyerCard.Create(options);
         builder.Services.AddA2AAgent<BuyerHandler>(card);
+        builder.Services.AddSingleton<BuyerSlim>();
+        builder.Services.AddHostedService(provider => provider.GetRequiredService<BuyerSlim>());
         builder.Services.AddSingleton<SupplierStreamMonitor>();
         builder.Services.AddHostedService(provider => provider.GetRequiredService<SupplierStreamMonitor>());
         configureHost?.Invoke(builder);
@@ -96,7 +98,8 @@ public static class BuyerApplication
         app.MapGet("/.well-known/agent-card.json", (HttpContext context) =>
         {
             context.Response.Headers.CacheControl = "no-store";
-            return Results.Json(BuyerCard.Create(options.WithMode(options.CommunicationMode)), A2A.A2AJsonUtilities.DefaultOptions);
+            return Results.Json(BuyerCard.Create(options.WithMode(options.CommunicationMode),
+                context.RequestServices.GetRequiredService<BuyerSlim>().ServingUrl), A2A.A2AJsonUtilities.DefaultOptions);
         });
         if (options.ExchangeCaptureEnabled) ExchangeDashboard.Map(app);
         return app;

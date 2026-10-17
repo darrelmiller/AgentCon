@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "seller.fullname" . }}
+  labels:
+    {{- include "seller.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One SLIM app per seller: never run two pods with the same identity.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "seller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "seller.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ print (include "seller.slimConfig" .) (include "seller.inventory" .) | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "seller.fullname" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Peers' public keys from the did:web domain, the trust anchor (public keys only).
+        - name: fetch-jwks
+          image: {{ .Values.jwksFetcher.image }}
+          command: ["curl", "--fail", "--silent", "--show-error", "--proto", "=https", "--max-time", "20",
+                    "--retry", "5", "--retry-all-errors", "--output", "/var/run/agentcon/jwks.json",
+                    {{ .Values.identity.jwksUrl | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 100
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: trust
+              mountPath: /var/run/agentcon
+      containers:
+        - name: seller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: SUPPLIER_INVENTORY
+              value: /etc/agentcon/inventory.json
+            - name: SUPPLIER_SLIM_CONFIG
+              value: /etc/agentcon/slim.json
+            - name: SUPPLIER_SLIM_NAME
+              value: {{ printf "%s/%s" .Values.slim.organization .Values.agentName | quote }}
+            {{- if .Values.modelCreds.enabled }}
+            - name: MODEL_API_KEY_FILE
+              value: /var/run/secrets/model/api-key
+            - name: MODEL_BASE_URL_FILE
+              value: /var/run/secrets/model/base-url
+            - name: MODEL_NAME
+              value: {{ .Values.modelCreds.model | quote }}
+            {{- end }}
+            {{- with .Values.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+          # The HTTP interface listens on loopback only; the binary probes itself.
+          readinessProbe:
+            exec:
+              command: ["agentcon-supplier", "ready-probe"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Restart if the SLIM node connection stays down (the client stopped reconnecting).
+          livenessProbe:
+            exec:
+              command: ["agentcon-supplier", "ready-probe"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 9
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agentcon
+              readOnly: true
+            - name: trust
+              mountPath: /var/run/agentcon
+              readOnly: true
+            - name: identity
+              mountPath: /var/run/secrets/identity
+              readOnly: true
+            {{- if .Values.modelCreds.enabled }}
+            - name: model
+              mountPath: /var/run/secrets/model
+              readOnly: true
+            {{- end }}
+            - name: spiffe
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "seller.fullname" . }}
+        - name: trust
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: identity
+          secret:
+            secretName: {{ include "seller.identitySecret" . }}
+            defaultMode: 0400
+        {{- if .Values.modelCreds.enabled }}
+        - name: model
+          secret:
+            secretName: {{ include "seller.modelSecret" . }}
+            defaultMode: 0400
+        {{- end }}
+        - name: spiffe
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

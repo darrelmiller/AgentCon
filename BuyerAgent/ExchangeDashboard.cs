@@ -8,7 +8,7 @@ namespace BuyerAgent;
 
 public sealed class ExchangeDashboard(
     HttpClient http, AiCatalogClient catalog, BuyerOptions options, ExchangeStore store,
-    ILogger<ExchangeDashboard> logger)
+    ILogger<ExchangeDashboard> logger, BuyerSlim? slim = null)
 {
     public static bool IsLocalRequest(HttpContext context, BuyerOptions options)
     {
@@ -182,6 +182,7 @@ public sealed class ExchangeDashboard(
                 var status = "unavailable";
                 bool? structured = null;
                 string? problem = null;
+                string? slimUrl = null;
                 try
                 {
                     using var response = await http.GetAsync(health, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -192,6 +193,10 @@ public sealed class ExchangeDashboard(
                         if (body.RootElement.TryGetProperty("structuredDataParts", out var enabled) &&
                             enabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
                             structured = enabled.GetBoolean();
+                        // A supplier serving SLIMRPC reports its slim:// name; its SLIM exchanges are recorded under it.
+                        if (body.RootElement.TryGetProperty("slim", out var slim) && slim.ValueKind == JsonValueKind.String &&
+                            BuyerSlim.TargetName(slim.GetString()!) is { } name)
+                            slimUrl = $"slim://{name}";
                     }
                     else problem = $"Health endpoint returned HTTP {(int)response.StatusCode}.";
                 }
@@ -204,7 +209,7 @@ public sealed class ExchangeDashboard(
                 {
                     identifier = entry.Identifier, name = entry.DisplayName ?? entry.Identifier,
                     origin = entry.CardUrl.GetLeftPart(UriPartial.Authority),
-                    cardUrl = entry.CardUrl.AbsoluteUri, status, problem, structuredDataParts = structured,
+                    cardUrl = entry.CardUrl.AbsoluteUri, slimUrl, status, problem, structuredDataParts = structured,
                     controlsEnabled = entry.CardUrl.IsLoopback && !string.IsNullOrWhiteSpace(options.SupplierControlToken) && structured is not null
                 };
             }));
@@ -218,6 +223,8 @@ public sealed class ExchangeDashboard(
         {
             capturedAt = DateTimeOffset.UtcNow,
             buyer = new { name = "Buyer Agent", origin = options.ListenUrl.TrimEnd('/'), status = "HTTP ready",
+                // slimUrl once serving on SLIM; slimConfigured without slimUrl means the node is unreachable.
+                slimUrl = slim?.ServingUrl, slimConfigured = slim?.Configured == true,
                 communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport },
             sellers, catalogError, warnings, capture = store.Snapshot()
         };

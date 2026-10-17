@@ -131,7 +131,16 @@ public sealed class NativeBuyerTests
         await using var app = await StartAsync(network, files);
         using var http = app.GetTestClient();
         using var buyer = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
-        Assert.Equal(TaskState.Failed, (await buyer.SendMessageAsync(Request(json, type))).Task!.Status.State);
+        if (type == "application/json")
+        {
+            // Plain JSON is not one of the card's input modes, so the A2A SDK rejects it before the buyer runs.
+            var error = await Assert.ThrowsAsync<A2AException>(() => buyer.SendMessageAsync(Request(json, type)));
+            Assert.Equal(A2AErrorCode.ContentTypeNotSupported, error.ErrorCode);
+        }
+        else
+        {
+            Assert.Equal(TaskState.Failed, (await buyer.SendMessageAsync(Request(json, type))).Task!.Status.State);
+        }
         Assert.Empty(network.Calls);
     }
 

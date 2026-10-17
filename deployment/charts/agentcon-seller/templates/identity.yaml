@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "seller.fullname" . }}
+  labels:
+    {{- include "seller.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Issues the pod spiffe://<trust domain>/ns/<namespace>/sa/<service account>, used for mTLS to the SLIM node.
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: {{ include "seller.fullname" . }}
+  labels:
+    {{- include "seller.labels" . | nindent 4 }}
+spec:
+  className: {{ .Values.spiffe.className }}
+  spiffeIDTemplate: {{ printf "spiffe://%s/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}" .Values.spiffe.trustDomain | quote }}
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ .Release.Namespace }}
+  podSelector:
+    matchLabels:
+      {{- include "seller.selectorLabels" . | nindent 6 }}

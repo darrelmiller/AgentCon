@@ -1,0 +1,12 @@
+{
+  "supplierName": "AgentCon Demo Wine Supplier",
+  "deliveryMinor": 2500,
+  "wines": [
+    {
+      "name": "Barolo",
+      "aliases": ["barolo"],
+      "vintage": 2019,
+      "casePriceMinor": 14400
+    }
+  ]
+}

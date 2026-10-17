@@ -29,7 +29,7 @@ public static class SupplierAuthorization
             pageUri.GetLeftPart(UriPartial.Authority) == uri.GetLeftPart(UriPartial.Authority))
             page = $"Open {pageUri.AbsoluteUri} to display the QR code. ";
         return "The purchase is waiting for wallet authorization; no order has been confirmed. " +
-            page + $"On your phone, open this presentation in Sphereon Wallet: {wallet}\n" +
+            page + $"On your phone, open this presentation in your OID4VP wallet: {wallet}\n" +
             "Select the over_21 credential issued by agentcon-issuer and approve disclosure. " +
             "Do not paste the credential or its presentation into this chat. " +
             (automaticCompletion

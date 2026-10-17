@@ -115,6 +115,11 @@ public sealed class BuyerHandler(
             }
 
             var supplierTask = turn.SupplierResponses.LastOrDefault()?.Task;
+            // After a multicast, the turn fails only if every supplier failed; otherwise report a successful reply.
+            if (turn.LastBroadcast is { Count: > 0 } broadcast && broadcast.Contains(turn.SupplierResponses.LastOrDefault()))
+                supplierTask = broadcast.Select(response => response.Task)
+                    .FirstOrDefault(task => task?.Status.State is not (TaskState.Failed or TaskState.Rejected or TaskState.Canceled))
+                    ?? supplierTask;
             var message = CreateReply(reply, context);
             message.Metadata = new()
             {

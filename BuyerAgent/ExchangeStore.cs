@@ -9,10 +9,14 @@ public sealed record ExchangeEntry(
     int? HttpStatus, string Status, string? ErrorType, double? DurationMs)
 {
     public DateTimeOffset? ResponseStartedAt { get; init; }
+    /// <summary>Set when the exchange is part of one "send to all suppliers" multicast, shared by its exchanges.</summary>
+    public string? Group { get; init; }
+    public string? GroupLabel { get; init; }
 }
 
 public sealed record ObservedTask(
-    string Agent, string Endpoint, string Id, string? ContextId, string State, DateTimeOffset UpdatedAt);
+    string Agent, string Endpoint, string Id, string? ContextId, string State, DateTimeOffset UpdatedAt,
+    string? PresentationUrl = null);
 
 public sealed class ExchangeStore(BuyerOptions options)
 {
@@ -28,6 +32,9 @@ public sealed class ExchangeStore(BuyerOptions options)
 
     public bool Enabled => options.ExchangeCaptureEnabled;
 
+    /// <summary>The multicast in progress on this async flow; exchanges begun under it are grouped in the dashboard.</summary>
+    public static readonly AsyncLocal<(string Id, string Label)?> CurrentGroup = new();
+
     public (long Id, long Generation) Begin(Uri endpoint)
     {
         lock (_gate)
@@ -35,7 +42,8 @@ public sealed class ExchangeStore(BuyerOptions options)
             var id = ++_sequence;
             _exchanges.Add(new(id, DateTimeOffset.UtcNow, endpoint.GetLeftPart(UriPartial.Path),
                 Activity.Current?.TraceId.ToHexString(), Activity.Current?.SpanId.ToHexString(),
-                "", "", false, false, null, "sending", null, null));
+                "", "", false, false, null, "sending", null, null)
+                { Group = CurrentGroup.Value?.Id, GroupLabel = CurrentGroup.Value?.Label });
             if (_exchanges.Count > MaxExchanges)
             {
                 _exchanges.RemoveAt(0);
@@ -141,7 +149,7 @@ public sealed class ExchangeStore(BuyerOptions options)
                     result.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.Object &&
                     Text(status, "state") is { } state &&
                     (Text(result, "id") ?? Text(result, "taskId")) is { } id)
-                    Task("seller", endpoint, id, Text(result, "contextId"), state);
+                    Task("seller", endpoint, id, Text(result, "contextId"), state, PresentationUrl(status));
             }
         }
         catch (JsonException)
@@ -150,17 +158,35 @@ public sealed class ExchangeStore(BuyerOptions options)
         }
     }
 
+    // The supplier's wallet QR page for an auth-required purchase (status.message.metadata["agentcon.presentation"]).
+    private string? PresentationUrl(JsonElement status)
+    {
+        if (!status.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object ||
+            !message.TryGetProperty("metadata", out var metadata) || metadata.ValueKind != JsonValueKind.Object ||
+            !metadata.TryGetProperty("agentcon.presentation", out var presentation) ||
+            presentation.ValueKind != JsonValueKind.Object ||
+            Text(presentation, "presentationUrl") is not { } url ||
+            !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.UserInfo.Length != 0)
+            return null;
+        var allowed = uri.Scheme == Uri.UriSchemeHttps ||
+            options.AllowLoopbackPresentationHttp && uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback;
+        return allowed ? uri.AbsoluteUri : null;
+    }
+
     private static string? Text(JsonElement value, string name) =>
         value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString() : null;
 
-    private void Task(string agent, string endpoint, string id, string? context, string state)
+    private void Task(string agent, string endpoint, string id, string? context, string state, string? presentationUrl = null)
     {
         var index = _tasks.FindIndex(task => task.Agent == agent && task.Endpoint == endpoint && task.Id == id);
         var previous = index >= 0 ? _tasks[index] : null;
-        if (previous?.State == state && previous.ContextId == context) return;
+        // Keep the QR page only while the task still waits for wallet authorization.
+        var page = state.Contains("AUTH_REQUIRED", StringComparison.OrdinalIgnoreCase)
+            ? presentationUrl ?? previous?.PresentationUrl : null;
+        if (previous?.State == state && previous.ContextId == context && previous.PresentationUrl == page) return;
         if (index >= 0) _tasks.RemoveAt(index);
-        _tasks.Add(new(agent, endpoint, id, context ?? previous?.ContextId, state, DateTimeOffset.UtcNow));
+        _tasks.Add(new(agent, endpoint, id, context ?? previous?.ContextId, state, DateTimeOffset.UtcNow, page));
         if (_tasks.Count > MaxTasks) _tasks.RemoveAt(0);
     }
 }

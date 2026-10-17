@@ -12,7 +12,7 @@ public sealed class CatalogTests : IDisposable
     public void Dispose() => _files.Dispose();
 
     [Fact]
-    public async Task RepositoryCatalogIsTheDefaultAndContainsDemoSupplier()
+    public async Task RepositoryCatalogIsTheDefaultAndContainsDemoSuppliers()
     {
         var options = new BuyerOptions();
         var location = options.GetCatalogUri();
@@ -20,12 +20,17 @@ public sealed class CatalogTests : IDisposable
         Assert.Equal("catalog.json", Path.GetFileName(location.LocalPath));
         Assert.True(File.Exists(location.LocalPath));
         var result = await Client(options).SearchAsync("wine supplier", CancellationToken.None);
-        var supplier = Assert.Single(result.Matches);
-        Assert.Equal("urn:agentcon:agent:demo-wine-supplier", supplier.Identifier);
-        Assert.Equal(new Uri("http://localhost:6000/.well-known/agent-card.json"), supplier.CardUrl);
-        Assert.Equal(1, result.AgentEntriesScanned);
+        // Search ranks by relevance, so compare the set of suppliers rather than their order.
+        Assert.Equal(
+            [
+                ("urn:agentcon:agent:demo-wine-supplier", new Uri("http://localhost:6000/.well-known/agent-card.json")),
+                ("urn:agentcon:agent:french-wine-supplier", new Uri("http://localhost:6200/.well-known/agent-card.json")),
+                ("urn:agentcon:agent:sardinian-wine-supplier", new Uri("http://localhost:6100/.well-known/agent-card.json")),
+            ],
+            result.Matches.Select(match => (match.Identifier, match.CardUrl)).OrderBy(match => match.Identifier, StringComparer.Ordinal));
+        Assert.Equal(3, result.AgentEntriesScanned);
         Assert.Equal(1, result.ExcludedSelfEntries);
-        Assert.Contains("One candidate matched", result.Note);
+        Assert.Contains("Multiple candidates matched", result.Note);
         Assert.Empty(result.Warnings);
         Assert.Empty(_network.Requests);
     }

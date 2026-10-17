@@ -107,15 +107,16 @@ public static class SupplierFormats
         {
             Rfq => RoundTrip<WineRfq>(data, value =>
             {
-                if (!value.Wine.Equals("Barolo", StringComparison.OrdinalIgnoreCase) ||
+                // Inventory (which wines are sold) is the supplier's decision over A2A, not the codec's.
+                if (string.IsNullOrWhiteSpace(value.Wine) || value.Wine.Any(char.IsControl) ||
                     string.IsNullOrWhiteSpace(value.DeliveryCity) || value.DeliveryCity.Any(char.IsControl) ||
                     value.DeliveryCountry is not ("US" or "CA"))
-                    throw new InvalidOperationException("Native wine RFQ supports Barolo with a nonempty delivery city in the US or Canada.");
+                    throw new InvalidOperationException("Native wine RFQ requires a wine and a nonempty delivery city in the US or Canada.");
             }),
             Purchase => RoundTrip<WinePurchaseOrder>(data),
             Quote => RoundTrip<WineQuote>(data, value =>
             {
-                if (value.TotalMinor != value.Cases * 14400 + 2500)
+                if (value.TotalMinor != value.Cases * value.CasePriceMinor + value.DeliveryMinor)
                     throw new InvalidOperationException("Native quote total is inconsistent.");
             }),
             Receipt => RoundTrip<WineReceipt>(data, value =>
