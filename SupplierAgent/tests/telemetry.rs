@@ -1,3 +1,6 @@
+// Uses GitHub Copilot SDK session events, so it needs the `copilot` feature.
+#![cfg(feature = "copilot")]
+
 use std::sync::Arc;
 
 use agentcon_supplier::{

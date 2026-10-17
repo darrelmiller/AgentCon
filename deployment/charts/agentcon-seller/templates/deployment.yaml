@@ -52,10 +52,6 @@ spec:
               value: /etc/agentcon/slim.json
             - name: SUPPLIER_SLIM_NAME
               value: {{ printf "%s/%s" .Values.slim.organization .Values.agentName | quote }}
-            - name: SUPPLIER_COPILOT_STATE
-              value: /var/lib/agentcon/copilot
-            - name: HOME
-              value: /var/lib/agentcon
             {{- if .Values.modelCreds.enabled }}
             - name: MODEL_API_KEY_FILE
               value: /var/run/secrets/model/api-key
@@ -86,7 +82,7 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            runAsUser: 10001
+            runAsUser: 65532
             capabilities:
               drop: ["ALL"]
           volumeMounts:
@@ -107,8 +103,6 @@ spec:
             - name: spiffe
               mountPath: /spiffe-workload-api
               readOnly: true
-            - name: state
-              mountPath: /var/lib/agentcon
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -132,10 +126,6 @@ spec:
           csi:
             driver: csi.spiffe.io
             readOnly: true
-        # The Copilot runtime bundled in the binary extracts here.
-        - name: state
-          emptyDir:
-            sizeLimit: 1Gi
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi

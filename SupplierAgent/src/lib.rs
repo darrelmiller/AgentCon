@@ -1,6 +1,9 @@
 pub mod authorization;
+#[cfg(feature = "copilot")]
+mod copilot;
 pub mod domain;
 pub mod inference;
+mod openai;
 pub mod slim;
 pub mod telemetry;
 

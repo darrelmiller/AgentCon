@@ -1,35 +1,31 @@
-# AgentCon wine supplier: one generic image for every seller. Each seller is configured by input files:
-# SUPPLIER_INVENTORY (stock), SUPPLIER_SLIM_CONFIG (SLIM node and identity), MODEL_* (model endpoint).
+# AgentCon wine supplier (seller agent): one generic image for every seller, configured by input files:
+# SUPPLIER_INVENTORY (stock), SUPPLIER_SLIM_CONFIG (SLIM node and identity), MODEL_* (OpenAI-compatible model
+# endpoint). Built without the GitHub Copilot interpreter (`--no-default-features`), which is for laptops.
 #
 #   docker build -t agentcon-supplier SupplierAgent
-#
-# The binary bundles the GitHub Copilot CLI runtime (github-copilot-sdk `bundled-cli`), which it extracts into
-# SUPPLIER_COPILOT_STATE at first use, so the image needs no Node.js. That directory must be writable.
 
 FROM rust:1.94-bookworm AS build
-# aws-lc-sys (rustls' crypto provider) builds AWS-LC from source with cmake.
+# Build-time only; none of this reaches the runtime image:
+# - cmake and libclang: aws-lc-sys (crypto for rustls and SLIM's MLS) builds AWS-LC from C, and SLIM's crates
+#   enable its `bindgen` feature, which needs libclang.
+# - libssl-dev and pkg-config: a2a-rs pulls in reqwest's native-tls, which links OpenSSL.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake \
+    && apt-get install -y --no-install-recommends cmake clang libclang-dev libssl-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 # Dependencies first, so source edits reuse the cached dependency layer.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && echo '' > src/lib.rs \
-    && cargo build --release --locked \
+    && cargo build --release --locked --no-default-features \
     && rm -rf src
 COPY schemas schemas
 COPY src src
-RUN touch src/main.rs src/lib.rs && cargo build --release --locked
+RUN touch src/main.rs src/lib.rs && cargo build --release --locked --no-default-features
 
-FROM debian:bookworm-slim
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home-dir /var/lib/agentcon --create-home supplier
+# glibc, libgcc and libssl3, no shell or package manager; runs as uid 65532.
+FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /build/target/release/agentcon-supplier /usr/local/bin/agentcon-supplier
-USER 10001
-ENV SUPPLIER_PORT=6000 \
-    SUPPLIER_COPILOT_STATE=/var/lib/agentcon/copilot
+ENV SUPPLIER_PORT=6000
 # The HTTP interface listens on loopback only; probe it with the binary itself.
-HEALTHCHECK --interval=15s --timeout=5s CMD ["agentcon-supplier", "ready-probe"]
-ENTRYPOINT ["agentcon-supplier"]
+HEALTHCHECK --interval=15s --timeout=5s CMD ["/usr/local/bin/agentcon-supplier", "ready-probe"]
+ENTRYPOINT ["/usr/local/bin/agentcon-supplier"]

@@ -40,7 +40,8 @@ identity:
   # Use an existing Secret (key "key.pem") instead of the ExternalSecret.
   existingSecret: ""
 
-# OpenAI-compatible model endpoint (an Azure OpenAI resource; the supplier appends openai/v1).
+# OpenAI-compatible model endpoint (an Azure OpenAI resource; the supplier appends openai/v1). Required:
+# the image has no GitHub Copilot interpreter.
 modelCreds:
   enabled: true
   secretStore: vault-eticloud-apps-phoenix
