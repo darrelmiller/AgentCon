@@ -100,10 +100,10 @@ test('HTTP lifecycle discovers HTTPS issuer keys and signs selective demo claim 
   const header = decodeProtectedHeader(signed);
   assert.equal(header.typ, 'dc+sd-jwt');
   assert.equal(header.alg, 'ES256');
-  assert.equal(header.kid, jwks.keys[0].kid);
-  assert.match(header.kid, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(header.kid, jwks.keys[1].kid);
+  assert.match(header.kid, /^did:jwk:[A-Za-z0-9_-]+#0$/);
   assert.equal(jwks.keys.length, 2, 'Keep the original key ID discoverable for existing credentials');
-  assert.match(jwks.keys[1].kid, /^did:jwk:[A-Za-z0-9_-]+#0$/);
+  assert.match(jwks.keys[0].kid, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(jwks.keys[1].x, jwks.keys[0].x);
   assert.equal(jwks.keys[1].y, jwks.keys[0].y);
   const { payload } = await jwtVerify(signed, await importJWK(jwks.keys[0]), {

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, decodeJwt, decodeProtectedHeader } from 'jose';
 import { presentationService } from '../presentation.mjs';
-import { signingService, credentialType, LEGACY_VCT, digest, random } from '../crypto.mjs';
+import { signingService, validateProof, credentialType, LEGACY_VCT, digest, random } from '../crypto.mjs';
 import { createIssuer } from '../server.mjs';
 import { SDJwtVcInstance } from '@sd-jwt/sd-jwt-vc';
 import { createHash, createPrivateKey, sign } from 'node:crypto';
@@ -72,6 +72,24 @@ test('OID4VP DCQL request is task-bound, minimal, and verifies issuer plus holde
     taskId: 'purchase-task', contextId: 'wine-context', verified: true, expiresAt: challenge.expiresAt,
   });
   await assert.rejects(f.verifier.verify(challenge.id, response), /already submitted/);
+});
+
+test('Light SSI proof shape issues a credential that can be presented to the supplier verifier', async t => {
+  const f = await fixture(t);
+  const nonce = random();
+  const proof = await new SignJWT({
+    aud: f.config.origin, iat: f.config.now(), nonce, iss: 'wallet-client-id',
+  }).setProtectedHeader({
+    alg: 'ES256', typ: 'openid4vci-proof+jwt',
+    jwk: f.holderJwk, kid: 'did:key:wallet-key#signing-key',
+  }).sign(f.holder.privateKey);
+  const { jwk } = await validateProof(proof, f.config.origin, f.config.now());
+  const credential = await f.signer.issue(jwk, f.config.now());
+  assert.equal(decodeProtectedHeader(credential.split('~')[0]).kid, f.signer.legacyPublicJwk.kid);
+
+  const challenge = f.verifier.create('light-ssi-presentation', 'wallet-context');
+  await f.verifier.verify(challenge.id, await f.presentation(challenge, { credential }));
+  assert.equal(f.verifier.status(challenge.id).verified, true);
 });
 
 test('final OID4VP DID prefix, HTTPS type and signed request resolve without vendor SDKs', async t => {

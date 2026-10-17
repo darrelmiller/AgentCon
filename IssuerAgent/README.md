@@ -20,20 +20,21 @@ credential package, database, automatic key generation, or remote DID resolution
 - Expiry: 14 days. No credential status/revocation service is advertised.
 - `iss` is the configured **public HTTPS origin**. Public key discovery is
   `/.well-known/jwt-vc-issuer` → `/jwks`; no private material is returned.
-  New credentials use an RFC 7638 SHA-256 JWK thumbprint as `kid`, selected from
-  that JWKS. The original DID key ID remains published for existing credentials;
-  no signing-key rotation or reissuance is required.
+  New credentials use a self-describing `did:jwk:...#0` issuer key ID so wallets
+  that resolve credential `kid` values locally can verify them. The same key is
+  also published under its RFC 7638 SHA-256 JWK thumbprint in the JWKS for
+  standards-based discovery; no signing-key rotation is involved.
 
 ### Wallet-neutral profile
 
-The issuer no longer depends on Sphereon's SDK/parser or its DID-only
-credential-signature discovery. HTTPS type metadata describes the demo type,
-display text and disclosure policy. Legacy single-proof request shapes and DID
-holder proofs remain accepted as additive protocol support, not vendor branches.
-The signing key, holder binding, replay checks and demo-only semantics are unchanged.
-Older wallets requiring DID-only issuer-key discovery may no longer import new
-credentials. Compatibility with Light SSI Wallet, Lissi ID-Wallet and Hopae EUDI
-Wallet requires real-device validation; trust policies may impose further limits.
+The issuer no longer depends on Sphereon's SDK/parser. HTTPS type metadata describes
+the demo type, display text and disclosure policy, while the signed issuer `kid`
+remains a self-describing DID so wallets without HTTPS JWKS resolution can verify
+credentials locally. The same public key is published under its thumbprint too.
+Legacy single-proof request shapes and DID holder proofs remain supported; the
+signing key, holder binding, replay checks and demo-only semantics are unchanged.
+Compatibility with Light SSI Wallet, Lissi ID-Wallet and Hopae EUDI Wallet still
+requires real-device validation; wallet trust policies may impose further limits.
 
 ### Historical Sphereon profile (superseded)
 
@@ -99,8 +100,8 @@ The `/admin/*` APIs have **no CORS grant** and still require the admin token.
 HTML pages are not cross-origin APIs. CORS does not override wallet trust policy.
 
 Anonymous pre-authorized redemption is supported; a `client_id` is optional.
-When anonymous pre-authorized redemption is used, a proof `iss` is accepted as
-a wallet-compatibility concession but is ignored and never treated as an
+When anonymous pre-authorized redemption is used, a bounded proof `iss` is accepted
+as a wallet-compatibility concession but ignored and never treated as an
 authenticated client identity. When a `client_id` was supplied at token
 redemption, any proof `iss` must match it. Proofs require ES256, the correct `typ`,
 exact issuer audience, `iat` within five minutes (five-second forward skew),

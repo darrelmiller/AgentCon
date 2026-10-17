@@ -40,7 +40,7 @@ export async function signingService(config) {
       iss: config.origin, iat: now, exp: now + 14 * 24 * 60 * 60,
       vct: credentialType(config.origin), title: 'AgentCon Demo over 21 — NOT age verification',
       demo_only: true, cnf: { jwk: holder }, over_21: true,
-    }, { _sd: ['over_21'] }, { header: { typ: 'dc+sd-jwt', kid } }),
+    }, { _sd: ['over_21'] }, { header: { typ: 'dc+sd-jwt', kid: legacyPublicJwk.kid } }),
   };
 }
 
