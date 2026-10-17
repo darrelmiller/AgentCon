@@ -9,7 +9,7 @@ import { exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, decodeJwt, d
 import * as EcdsaMultikey from '@digitalbazaar/ecdsa-multikey';
 import { SDJwtVcInstance } from '@sd-jwt/sd-jwt-vc';
 import { createIssuer } from '../server.mjs';
-import { CONFIG_ID, GRANT, VCT, random } from '../crypto.mjs';
+import { CONFIG_ID, GRANT, credentialType, random } from '../crypto.mjs';
 import { loadConfig } from '../config.mjs';
 import { escapeHtml } from '../ui.mjs';
 import { createOffer } from '../create-offer.mjs';
@@ -71,7 +71,7 @@ async function fixture(t, overrides = {}) {
   return { config, holder, issuer, local, request, json, offer, redeem, session, proof, issue, advance: seconds => { time += seconds; } };
 }
 
-test('draft15 HTTP lifecycle signs selective demo claim for the phone proof key', async t => {
+test('HTTP lifecycle discovers HTTPS issuer keys and signs selective demo claim for the wallet key', async t => {
   const f = await fixture(t);
   const metadata = await f.request('/.well-known/openid-credential-issuer');
   assert.equal(metadata.body.credential_issuer, ORIGIN);
@@ -100,17 +100,21 @@ test('draft15 HTTP lifecycle signs selective demo claim for the phone proof key'
   const header = decodeProtectedHeader(signed);
   assert.equal(header.typ, 'dc+sd-jwt');
   assert.equal(header.alg, 'ES256');
-  assert.equal(header.kid, jwks.keys[0].kid);
+  assert.equal(header.kid, jwks.keys[1].kid);
   assert.match(header.kid, /^did:jwk:[A-Za-z0-9_-]+#0$/);
-  const didKey = JSON.parse(Buffer.from(header.kid.slice(8).split('#')[0], 'base64url').toString());
-  // This is the public key the pinned SDK's offline DID resolution returns.
-  await jwtVerify(signed, await importJWK(didKey, 'ES256'), {
-    issuer: ORIGIN, currentDate: new Date(f.config.now() * 1000),
-  });
+  assert.equal(jwks.keys.length, 2, 'Keep the original key ID discoverable for existing credentials');
+  assert.match(jwks.keys[0].kid, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(jwks.keys[1].x, jwks.keys[0].x);
+  assert.equal(jwks.keys[1].y, jwks.keys[0].y);
   const { payload } = await jwtVerify(signed, await importJWK(jwks.keys[0]), {
     issuer: ORIGIN, currentDate: new Date(f.config.now() * 1000),
   });
-  assert.equal(payload.vct, VCT);
+  assert.equal(payload.vct, credentialType(ORIGIN));
+  assert.equal(metadata.body.credential_configurations_supported[CONFIG_ID].vct, payload.vct);
+  const type = await f.request(new URL(payload.vct).pathname);
+  assert.equal(type.status, 200);
+  assert.equal(type.body.vct, payload.vct);
+  assert.deepEqual(type.body.claims.map(claim => claim.path), [['over_21'], ['demo_only']]);
   assert.equal(payload.demo_only, true);
   assert.equal(payload.exp - payload.iat, 14 * 86400);
   assert.equal(payload.over_21, undefined);
@@ -130,12 +134,84 @@ test('draft15 HTTP lifecycle signs selective demo claim for the phone proof key'
     },
   });
   const verified = await sd.verify(credential, {
-    expectedIssuer: ORIGIN, expectedVct: VCT, currentDate: f.config.now(),
+    expectedIssuer: ORIGIN, expectedVct: credentialType(ORIGIN), currentDate: f.config.now(),
   });
   assert.equal(verified.payload.over_21, true);
   assert.equal((await f.issue(s, jwt)).status, 401);
   assert.equal((await f.redeem(s.offer.code)).body.error, 'invalid_grant');
   assert.equal((await f.request(new URL(s.offer.credential_offer_uri).pathname)).status, 404);
+});
+
+test('browser wallet APIs support CORS preflight and authenticated issuance, but not admin access', async t => {
+  const f = await fixture(t);
+  const origin = 'https://wallet.example';
+  const offer = await f.offer();
+  const routes = [
+    ...['/.well-known/openid-credential-issuer', '/.well-known/oauth-authorization-server',
+      '/.well-known/openid-configuration', '/.well-known/jwt-vc-issuer', '/jwks',
+      '/credential-types/age-over-21', new URL(offer.credential_offer_uri).pathname].map(path => [path, 'GET']),
+    ...['/token', '/nonce', '/credential'].map(path => [path, 'POST']),
+  ];
+  for (const [path, method] of routes) {
+    const preflight = await f.request(path, { method: 'OPTIONS', headers: {
+      origin, 'access-control-request-method': method,
+      'access-control-request-headers': 'authorization,content-type',
+    } });
+    assert.equal(preflight.status, 204, path);
+    assert.equal(preflight.headers.get('access-control-allow-origin'), '*', path);
+    assert.equal(preflight.headers.get('access-control-allow-methods'), method);
+    assert.equal(preflight.headers.get('access-control-allow-credentials'), null);
+    assert.match(preflight.headers.get('access-control-allow-headers'), /Authorization/);
+    if (method === 'GET') {
+      const result = await f.request(path, { headers: { origin } });
+      assert.equal(result.status, 200, path);
+      assert.equal(result.headers.get('access-control-allow-origin'), '*');
+    }
+  }
+  const token = await f.request('/token', {
+    method: 'POST', headers: { origin, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: GRANT, 'pre-authorized_code': offer.code }),
+  });
+  assert.equal(token.status, 200);
+  assert.equal(token.headers.get('access-control-allow-origin'), '*');
+  const nonce = await f.request('/nonce', { method: 'POST', headers: { origin } });
+  assert.equal(nonce.status, 200);
+  const credential = await f.request('/credential', {
+    method: 'POST', headers: { origin, 'content-type': 'application/json', authorization: `Bearer ${token.body.access_token}` },
+    body: JSON.stringify({ credential_configuration_id: CONFIG_ID,
+      proofs: { jwt: [await f.proof(nonce.body.c_nonce)] } }),
+  });
+  assert.equal(credential.status, 200);
+  assert.equal(credential.headers.get('access-control-allow-origin'), '*');
+  const unauthorized = await f.request('/credential', { method: 'POST', headers: { origin } });
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get('access-control-allow-origin'), '*');
+  assert.match(unauthorized.headers.get('access-control-expose-headers'), /WWW-Authenticate/);
+  const expired = await f.request(new URL(offer.credential_offer_uri).pathname, { headers: { origin } });
+  assert.equal(expired.status, 404);
+  assert.equal(expired.headers.get('access-control-allow-origin'), '*');
+  for (const path of ['/admin/offers', '/admin/presentations', '/admin/presentations/' + random(), '/unknown']) {
+    const denied = await f.request(path, { method: 'OPTIONS', headers: {
+      origin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization',
+    } });
+    assert.notEqual(denied.status, 204);
+    assert.equal(denied.headers.get('access-control-allow-origin'), null);
+  }
+  for (const headers of [
+    { 'access-control-request-method': 'DELETE' },
+    { 'access-control-request-method': 'POST', 'access-control-request-headers': 'x-admin-token' },
+  ]) {
+    assert.equal((await f.request('/token', { method: 'OPTIONS', headers: { origin, ...headers } })).status, 403);
+  }
+});
+
+test('rate-limit responses remain readable by browser wallets', async t => {
+  const f = await fixture(t, { rateLimit: 1 });
+  await f.request('/jwks');
+  const limited = await f.request('/jwks', { headers: { origin: 'https://wallet.example' } });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get('access-control-allow-origin'), '*');
+  assert.ok(limited.headers.get('retry-after'));
 });
 
 test('final-style proofs and anonymous nonce endpoint work without a token nonce', async t => {
@@ -180,12 +256,12 @@ test('proof validation rejects signature, audience, typ, stale/future timestamps
     { claims: { exp: f.config.now() - 1 } },
     { claims: { nbf: f.config.now() + 60 } },
     { claims: { nbf: f.config.now() - 0.5 } },
-    { claims: { iss: 'unexpected-client' } },
+    { claims: { iss: '' } },
     { header: { jku: 'https://attacker.invalid/jwks' } },
     { header: { x5c: [] } },
     { header: { jwk: undefined, kid: 'did:web:attacker.invalid#key' } },
     { header: { jwk: undefined, kid: 'https://attacker.invalid/key' } },
-    { header: { kid: 'did:key:zInvalid#zInvalid' } },
+    { header: { jwk: undefined, kid: 'did:key:zInvalid#zInvalid' } },
     { header: { jwk: f.holder.privateJwk } },
     { header: { jwk: { ...f.holder.publicJwk, crv: 'P-384' } } },
     { header: { jwk: { ...f.holder.publicJwk, x: 'A'.repeat(43), y: 'A'.repeat(43) } } },
@@ -215,15 +291,133 @@ test('nonce failure rotates challenge; old, foreign and expired challenges canno
   assert.equal((await f.issue(s, await f.proof(challenge.body.c_nonce))).status, 200);
 });
 
-test('client_id is optional, but proof issuer must match if present', async t => {
+test('client_id is optional and anonymous proof iss is ignored; identified proofs match client_id', async t => {
   const f = await fixture(t);
+  const anonymous = await f.session();
+  const anonymousResult = await f.issue(anonymous, await f.proof(anonymous.c_nonce, {
+    claims: { iss: 'did:key:wallet-client' },
+  }));
+  assert.equal(anonymousResult.status, 200);
+  const anonymousWithoutIssuer = await f.session();
+  assert.equal((await f.issue(anonymousWithoutIssuer,
+    await f.proof(anonymousWithoutIssuer.c_nonce))).status, 200);
   const s = await f.session({ client_id: 'wallet-client' });
   const failed = await f.issue(s, await f.proof(s.c_nonce, { claims: { iss: 'different-client' } }));
   assert.equal(failed.body.error, 'invalid_proof');
   assert.equal((await f.issue(s, await f.proof(failed.body.c_nonce, { claims: { iss: 'wallet-client' } }))).status, 200);
 });
 
-test('pinned Sphereon proof timestamps (iat minus 60 seconds, exp plus 600) are accepted', async t => {
+test('proof diagnostics distinguish unsupported algorithms and malformed iss without echoing proof data', async t => {
+  const f = await fixture(t);
+  for (const [overrides, message] of [
+    [{ header: { alg: 'unsupported-wallet-algorithm' } }, /supports ES256/],
+    [{ header: { typ: 'JWT' } }, /typ must be openid4vci-proof\+jwt/],
+    [{ claims: { iss: 'wallet-identity-must-not-be-echoed'.repeat(100) } }, /iss must match the client_id/],
+    [{ claims: { aud: 'https://wrong-audience.invalid' } }, /aud must exactly match/],
+    [{ claims: { iat: f.config.now() * 1000 } }, /integer seconds/],
+  ]) {
+    const session = await f.session();
+    const valid = await f.proof(session.c_nonce, { claims: overrides.claims });
+    // An unsupported alg must be diagnosed before attempting signature verification.
+    const proof = overrides.header
+      ? [Buffer.from(JSON.stringify({ ...decodeProtectedHeader(valid), ...overrides.header })).toString('base64url'),
+        ...valid.split('.').slice(1)].join('.')
+      : valid;
+    const failed = await f.issue(session, proof, true);
+    assert.equal(failed.status, 400);
+    assert.equal(failed.body.error, 'invalid_proof');
+    assert.match(failed.body.error_description, message);
+    assert.doesNotMatch(failed.body.error_description, /wallet-identity-must-not-be-echoed|wrong-audience/);
+    assert.notEqual(failed.body.c_nonce, session.c_nonce);
+    assert.equal((await f.issue(session, await f.proof(failed.body.c_nonce), true)).status, 200);
+  }
+});
+
+test('key-reference diagnostics distinguish wallet header failures without echoing public keys', async t => {
+  const f = await fixture(t);
+  const cases = [
+    [{ jwk: undefined, kid: 'did:key:redacted-identity' }, /base58btc fingerprint/],
+    [{ jwk: undefined }, /no jwk or kid/],
+    [{ jwk: undefined, kid: 'did:key:zRedacted' }, /matching #fingerprint/],
+    [{ jwk: undefined, kid: 'did:jwk:redacted#wrong' }, /must end with #0/],
+    [{ jwk: undefined, kid: 'did:web:redacted.example#0' }, /method is unsupported/],
+    [{ jwk: undefined, kid: 'did:key:zBadKey#zBadKey' }, /cannot be decoded/],
+    [{ jwk: { ...f.holder.publicJwk, crv: 'P-384' } }, /EC P-256/],
+    [{ jwk: f.holder.privateJwk }, /private key material/],
+    [{ x5c: ['redacted-certificate'] }, /Certificate-based/],
+    [{ jku: 'https://redacted.example/keys' }, /Remote proof key URLs/],
+    [{ jwk: { ...f.holder.publicJwk, x: 'A'.repeat(43), y: 'A'.repeat(43) } }, /invalid coordinates/],
+  ];
+  for (const [header, expected] of cases) {
+    const session = await f.session();
+    const response = await f.issue(session, await f.proof(session.c_nonce, { header }));
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error, 'invalid_proof');
+    assert.match(response.body.error_description, expected);
+    assert.doesNotMatch(response.body.error_description, /redacted|zBadKey/);
+  }
+});
+
+test('uses the signed public JWK when wallets also supply arbitrary key identifiers', async t => {
+  const f = await fixture(t);
+  for (const kid of [
+    'did:key:z6MkWalletIdentifier',
+    'did:key:z6MkWalletIdentifier#signing-key',
+    'wallet-key-1',
+    'urn:wallet:key:signing-key',
+  ]) {
+    const session = await f.session();
+    const proof = await f.proof(session.c_nonce, { header: { kid } });
+    assert.equal((await f.issue(session, proof, true)).status, 200, kid);
+  }
+  const session = await f.session();
+  const other = await generateKeyPair('ES256', { extractable: true });
+  const mismatch = await f.proof(session.c_nonce, {
+    header: { jwk: await exportJWK(other.publicKey), kid: 'unresolved-wallet-key' },
+  });
+  const rejected = await f.issue(session, mismatch, true);
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.error_description, /signature or JWT time validation failed/);
+});
+
+test('private offer page reports issuer progress after redemption without retaining proof or credential data', async t => {
+  const f = await fixture(t);
+  const offer = await f.offer();
+  const path = new URL(offer.offer_page).pathname;
+  const page = () => f.request(path);
+  assert.match((await page()).body, /Offer fetched/);
+  const session = (await f.redeem(offer.code)).body;
+  const redeemed = await page();
+  assert.equal(redeemed.status, 200);
+  assert.match(redeemed.body, /Token redeemed/);
+  assert.doesNotMatch(redeemed.body, /data:image\/png|openid-credential-offer:/);
+  assert.equal((await f.request(new URL(offer.credential_offer_uri).pathname)).status, 404);
+  const proof = await f.proof(session.c_nonce, {
+    header: { jwk: undefined, kid: 'did:key:private-test-identity' },
+  });
+  const failed = await f.issue(session, proof);
+  const rejected = await page();
+  assert.match(rejected.body, /Credential request rejected/);
+  assert.match(rejected.body, /base58btc fingerprint/);
+  for (const secret of [session.access_token, session.c_nonce, proof,
+    f.holder.publicJwk.x, 'private-test-identity', failed.body.c_nonce, offer.code]) {
+    assert.equal(rejected.body.includes(secret), false);
+  }
+  assert.equal(rejected.headers.get('access-control-allow-origin'), null);
+  assert.equal(rejected.headers.get('cache-control'), 'no-store');
+  assert.equal(rejected.headers.get('referrer-policy'), 'no-referrer');
+  const issued = await f.issue(session, await f.proof(failed.body.c_nonce));
+  assert.equal(issued.status, 200);
+  const completed = await page();
+  assert.match(completed.body, /Credential issued/);
+  assert.match(completed.body, /Confirm that the wallet stored it successfully/);
+  assert.equal(completed.body.includes(issued.body.credentials[0].credential), false);
+  assert.equal((await f.request('/offers/' + random())).status, 404);
+  f.advance(601);
+  assert.equal((await page()).status, 404);
+});
+
+test('proof timestamps inside the advertised validation window are accepted', async t => {
   const f = await fixture(t);
   const s = await f.session();
   const jwt = await f.proof(s.c_nonce, {

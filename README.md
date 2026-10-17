@@ -45,6 +45,87 @@ See [BuyerAgent setup and usage](BuyerAgent/README.md).
 
 See [SupplierAgent setup, agreed schemas and limits](SupplierAgent/README.md).
 The local supplier gates all purchases on task-bound OID4VP wallet verification
-through the demo issuer. Real purchasing/payment/fulfillment and SLIMRPC remain
-unimplemented. Buyer and supplier dashboard checkboxes control native input
-support and structured advertisement; outbound format negotiation is automatic.
+through the demo issuer. Real purchasing/payment/fulfillment are not implemented.
+The buyer and Rust supplier also support an optional SLIMRPC binding; regular
+HTTP JSON-RPC remains the default for the initial demo. Buyer and supplier
+dashboard checkboxes control native input support and structured advertisement;
+outbound format negotiation is automatic.
+
+## Start the local demo on Windows
+
+From the repository root in PowerShell:
+
+```powershell
+.\start-demo.ps1
+```
+
+This builds and starts the three local suppliers and buyer, opens the buyer's
+`/demo` dashboard, and starts/reuses the Aspire dashboard through Podman. The
+default transport is **HTTP JSON-RPC**. A stopped Podman machine is started
+automatically when traces are enabled. Use `-NoTraces` to skip Podman/Aspire,
+`-NoBrowser` to suppress browser tabs, or `-CheckOnly -NoTraces` to validate
+the configuration and ports without building or starting services. Ctrl+C
+stops the agent processes; the Aspire container remains running, matching the
+Bash launcher.
+
+Equivalent environment variables from `start-demo.sh` and PowerShell options:
+
+| Environment variable | PowerShell option | Default |
+| --- | --- | --- |
+| `COPILOT_GH_USER` | `-CopilotGhUser` | `lumuscar_cisco` |
+| `COPILOT_MODEL` | `-CopilotModel` | `gpt-6-luna` |
+| `BAROLO_INVENTORY` | `-BaroloInventory` | `SupplierAgent\inventories\barolo.json` |
+| `SARDINIA_INVENTORY` | `-SardiniaInventory` | `SupplierAgent\inventories\sardinia.json` |
+| `FRANCE_INVENTORY` | `-FranceInventory` | `SupplierAgent\inventories\france.json` |
+| `SUPPLIER_VERIFIER_URL` | `-SupplierVerifierUrl` | unset |
+| `SUPPLIER_VERIFIER_TOKEN` | `-SupplierVerifierToken` | unset; prompted if a verifier URL is set |
+| `TRACES=0` | `-NoTraces` | Aspire traces enabled |
+| `SLIM` | `-Slim` | unset; `public` or `local` opts into SLIMRPC |
+| `SLIM_NAMESPACE` | `-SlimNamespace` | `agentcon` |
+| `SLIM_IDENTITY` | `-SlimIdentity` | `shared-secret`; optionally `did-key` |
+
+Other script options: `-BuyerArgs` passes additional arguments through to the
+buyer, for example
+`.\start-demo.ps1 -BuyerArgs @('--Buyer:NativeStructuredSupport=true')`.
+The positional arguments accepted by the Bash script are likewise additional
+buyer command-line arguments. For secrets, prefer entering the verifier token
+at the prompt or setting it in the current process environment rather than
+putting it on the command line.
+
+The launcher requires .NET 10, Rust/MSVC build tools and matching-host libclang
+(see [supplier Windows setup](SupplierAgent/README.md#run-on-this-windows-arm64-machine)), `gh` authenticated as the
+selected Copilot account, and Podman with a Podman machine when traces are
+enabled. Optional SLIM modes additionally require the tools and login described
+in [Windows SLIM setup](docs/windows-setup.md). Logs are written under
+`artifacts\demo-logs`; supplier Copilot state is kept outside the repository
+under `%LOCALAPPDATA%\AgentConDemo`.
+
+### Compare HTTP with local SLIMRPC
+
+Use the same request in both runs so the exchange dashboard shows the transport
+difference, not a different task:
+
+```powershell
+# First run: ordinary HTTP JSON-RPC
+.\start-demo.ps1 -NoTraces
+a2a send -a http://localhost:5100 --timeout 150s --context-id http-demo `
+  'Use send_to_all_suppliers to ask every catalog supplier for a quote for one case of 2019 Barolo delivered to San Jose, US. Do not purchase.'
+```
+
+Stop the first run with Ctrl+C, then start all four agents on a local SLIM node
+and send the same request over SLIMRPC:
+
+```powershell
+.\start-demo.ps1 -Slim local -NoTraces
+$env:A2A_SLIMRPC_PLUGIN_CONFIG = "$env:LOCALAPPDATA\AgentConDemo\slim\slim-client.json"
+a2a send -e slim://agntcy/agentcon/buyer --transport slimrpc --timeout 150s --context-id slim-demo `
+  'Use send_to_all_suppliers to ask every catalog supplier for a quote for one case of 2019 Barolo delivered to San Jose, US. Do not purchase.'
+```
+
+In the buyer's exchange dashboard, compare **HTTP fan-out** (one request per
+supplier, then task polling) with **SLIM multicast** (one group `SendMessage`
+reaching all three registered suppliers, with their replies). SLIM suppliers
+connect outbound to the node, so they do not need a SLIM listener exposed to
+the buyer. This all-local run demonstrates the transport and group-routing
+behavior; it does not by itself prove lower latency, internet-scale reachability,
+or production-grade identity/security.

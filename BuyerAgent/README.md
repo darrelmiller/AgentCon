@@ -504,7 +504,7 @@ never put a token in appsettings or a command-line argument.
   Supplier failures and tool failures cannot be converted to successful buyer
   completion simply because the model produces reassuring prose.
 - Supplier `auth-required` messages relay experimental OID4VP metadata and
-  deterministic Sphereon instructions to the caller. The issuer-hosted presentation
+  deterministic wallet instructions to the caller. The issuer-hosted presentation
   page renders the QR; the phone posts credentials directly to that verifier, never
   to buyer chat or telemetry. Streaming supplier completion updates the original
   buyer task automatically after wallet approval; nonstreaming sellers still
