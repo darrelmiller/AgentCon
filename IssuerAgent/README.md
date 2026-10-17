@@ -206,9 +206,12 @@ task/context IDs through `POST /admin/presentations` (admin bearer token; JSON
 presentation page URL, wallet URI and expiry.
 
 `GET /presentations/<id>` renders separate local QR profiles for DID JWK and
-DID key wallets. Both use `openid4vp://` with `client_id` and an HTTPS
+DID key wallets. Both use `openid4vp://` with `client_id`, `response_type=vp_token` and an HTTPS
 `request_uri`; the DID-key profile is at
 `GET /presentations/<id>/request/light-ssi`.
+The outer response type matches the signed request, allowing scanners to recognize
+the presentation flow before fetching it. Light SSI's real-device acceptance of
+these request profiles remains unconfirmed.
 `GET /presentations/<id>/request` returns the DID JWK ES256-signed JWT request object
 (`application/oauth-authz-req+jwt`, `oauth-authz-req+jwt` protected-header type,
 `decentralized_identifier:did:jwk:...` client identifier, DID key ID and

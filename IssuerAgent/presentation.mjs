@@ -6,6 +6,11 @@ import { credentialType, digest, random, LEGACY_VCT } from './crypto.mjs';
 import { publicP256 } from './config.mjs';
 import { presentationPage } from './ui.mjs';
 
+const walletRequestUri = (clientId, requestUri) => `openid4vp://?${new URLSearchParams({
+  client_id: clientId, response_type: 'vp_token', request_uri: requestUri,
+  request_uri_method: 'get',
+})}`;
+
 export async function presentationService(config, issuerJwk) {
   const publicKey = publicP256({
     kty: issuerJwk.kty, crv: issuerJwk.crv, x: issuerJwk.x, y: issuerJwk.y,
@@ -69,16 +74,11 @@ export async function presentationService(config, issuerJwk) {
       session.request = signRequest(requestObject(clientId), requestKid);
       session.didKeyRequest = signRequest(requestObject(didKeyClientId), didKeyKid);
       const requestUri = `${config.origin}/presentations/${id}/request`;
-      const didKeyRequestUri = `${requestUri}/light-ssi`;
-      const walletUri = clientIdValue => `openid4vp://?${new URLSearchParams({
-        client_id: clientIdValue, request_uri: clientIdValue === clientId ? requestUri : didKeyRequestUri,
-        request_uri_method: 'get',
-      })}`;
       return {
         id, taskId, contextId, expiresAt: session.expiresAt,
         authorizationRequest: { client_id: clientId, request_uri: requestUri },
         presentationUrl: `${config.origin}/presentations/${id}`,
-        walletUri: walletUri(clientId),
+        walletUri: walletRequestUri(clientId, requestUri),
       };
     },
     status(id) {
@@ -91,13 +91,8 @@ export async function presentationService(config, issuerJwk) {
       const session = get(id);
       const requestUri = `${config.origin}/presentations/${id}/request`;
       const didKeyRequestUri = `${requestUri}/light-ssi`;
-      const uri = clientId => `openid4vp://?${new URLSearchParams({
-        client_id: clientId,
-        request_uri: clientId === session.clientId ? requestUri : didKeyRequestUri,
-        request_uri_method: 'get',
-      })}`;
-      return presentationPage(uri(session.clientId), config.origin, session.expiresAt,
-        uri(session.didKeyClientId));
+      return presentationPage(walletRequestUri(session.clientId, requestUri), config.origin, session.expiresAt,
+        walletRequestUri(session.didKeyClientId, didKeyRequestUri));
     },
     async verify(id, input) {
       const session = get(id);

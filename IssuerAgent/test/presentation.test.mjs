@@ -49,6 +49,10 @@ test('OID4VP DCQL request is task-bound, minimal, and verifies issuer plus holde
   const challenge = f.verifier.create('purchase-task', 'wine-context');
   const request = decodeJwt(f.verifier.request(challenge.id));
   assert.equal(request.client_id, challenge.authorizationRequest.client_id);
+  const walletUri = new URL(challenge.walletUri);
+  assert.equal(walletUri.searchParams.get('response_type'), request.response_type);
+  assert.equal(walletUri.searchParams.get('client_id'), request.client_id);
+  assert.equal(walletUri.searchParams.get('request_uri'), challenge.authorizationRequest.request_uri);
   assert.equal(request.response_mode, 'direct_post');
   const did = `did:jwk:${Buffer.from(JSON.stringify({
     kty: f.signer.publicJwk.kty, crv: f.signer.publicJwk.crv,
@@ -228,6 +232,17 @@ test('HTTP handoff exposes QR and request but status and session creation requir
   const html = await page.text();
   assert.equal((html.match(/data:image\/png;base64/g) ?? []).length, 2);
   assert.match(html, /Light SSI and DID key wallets/);
+  const walletLinks = [...html.matchAll(/href="(openid4vp:[^"]+)"/g)]
+    .map(([, link]) => new URL(link.replaceAll('&amp;', '&')));
+  assert.equal(walletLinks.length, 2);
+  for (const link of walletLinks) {
+    assert.equal(link.searchParams.get('response_type'), 'vp_token');
+    const requestUrl = new URL(link.searchParams.get('request_uri'));
+    const response = await fetch(f.local + requestUrl.pathname);
+    const request = decodeJwt(await response.text());
+    assert.equal(link.searchParams.get('client_id'), request.client_id);
+    assert.equal(link.searchParams.get('response_type'), request.response_type);
+  }
   const request = await fetch(f.local + path + '/request');
   assert.equal(request.headers.get('access-control-allow-origin'), '*');
   assert.equal(request.headers.get('content-type'), 'application/oauth-authz-req+jwt');
