@@ -99,6 +99,9 @@ enabled. Optional SLIM modes additionally require the tools and login described
 in [Windows SLIM setup](docs/windows-setup.md). Logs are written under
 `artifacts\demo-logs`; supplier Copilot state is kept outside the repository
 under `%LOCALAPPDATA%\AgentConDemo`.
+Rust build output defaults to `%LOCALAPPDATA%\AgentConDemo\rust\<worktree-hash>`
+to avoid MSBuild long-path failures. Set `CARGO_TARGET_DIR` in the current
+terminal to override it; the launcher runs the supplier from that directory.
 
 ### Compare HTTP with local SLIMRPC
 

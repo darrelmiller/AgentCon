@@ -50,15 +50,20 @@ $env:LIBCLANG_PATH = "$env:LOCALAPPDATA\AgentConDemo\build-tools\libclang\clang\
 The launcher discovers Visual Studio through `vswhere.exe`. On Windows ARM64
 it uses an installed x64 MSVC Rust toolchain, or honors `RUSTUP_TOOLCHAIN`
 when set; no Rust version or Visual Studio installation path is hard-coded.
-Install the matching **MSVC x64/x86 Spectre-mitigated libraries** component
-through Visual Studio Installer as well: SLIM's native dependencies require it.
+It uses Ninja and configures CMake to identify the x64 target correctly on an
+ARM64 host; Ninja must be on `PATH` or installed with Visual Studio's
+CMake/Ninja component. An existing `CMAKE_TOOLCHAIN_FILE` is preserved. Install
+the matching **MSVC x64/x86 Spectre-mitigated libraries** component through
+Visual Studio Installer as well: SLIM's native dependencies require it.
 
 For a manual build in this machine's existing toolchain:
 
 ```powershell
+$env:CMAKE_GENERATOR = 'Ninja'
+$env:CMAKE_TOOLCHAIN_FILE = Join-Path $PWD 'SupplierAgent\windows-x64.cmake'
 # Keep vcvars and cargo in the same cmd.exe process.
-& $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --locked'
-.\SupplierAgent\target\debug\agentcon-supplier.exe
+& $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --target-dir "%LOCALAPPDATA%\AgentConDemo\rust\manual" --locked'
+& "$env:LOCALAPPDATA\AgentConDemo\rust\manual\debug\agentcon-supplier.exe"
 ```
 
 On a normally configured native Rust/MSVC installation, `cargo run

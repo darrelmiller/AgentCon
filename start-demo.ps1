@@ -165,6 +165,13 @@ $slimIdentityValue = Get-Setting $boundParameters 'SlimIdentity' 'SLIM_IDENTITY'
 $verifierUrl = Get-Setting $boundParameters 'SupplierVerifierUrl' 'SUPPLIER_VERIFIER_URL' ''
 $verifierToken = Get-Setting $boundParameters 'SupplierVerifierToken' 'SUPPLIER_VERIFIER_TOKEN' ''
 $stateRoot = Join-Path $env:LOCALAPPDATA 'AgentConDemo'
+$worktreeHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+    [Text.Encoding]::UTF8.GetBytes($repo))).Substring(0, 8).ToLowerInvariant()
+$rustTargetDirectory = if ($env:CARGO_TARGET_DIR) {
+    [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR, $repo)
+} else {
+    Join-Path $stateRoot "rust\$worktreeHash"
+}
 $logDirectory = Join-Path $repo 'artifacts\demo-logs'
 $dashboardImage = 'mcr.microsoft.com/dotnet/aspire-dashboard:9.5'
 $dashboardName = 'agentcon-dashboard'
@@ -240,6 +247,17 @@ try {
         $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvarsall.bat'
         if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw "Visual Studio build environment not found: $vcvars" }
         $vsInstallerDirectory = Split-Path -Parent $vswhere
+        if ($env:CMAKE_GENERATOR -and $env:CMAKE_GENERATOR -ne 'Ninja') {
+            throw 'Windows ARM64 x64 builds require the Ninja CMake generator. Unset CMAKE_GENERATOR or set it to Ninja.'
+        }
+        $ninjaCommand = Get-Command ninja.exe -CommandType Application -ErrorAction SilentlyContinue
+        $ninjaDirectory = if ($ninjaCommand) { Split-Path -Parent $ninjaCommand.Source } else {
+            $ninjaPath = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
+            if (Test-Path -LiteralPath $ninjaPath -PathType Leaf) { Split-Path -Parent $ninjaPath }
+        }
+        if (-not $ninjaDirectory) {
+            throw 'Ninja was not found on PATH or in Visual Studio. Install Ninja or the Visual Studio CMake/Ninja component.'
+        }
     }
     if ($tracesEnabled) { Assert-Command 'podman' 'Install Podman Desktop and initialize a Podman machine.' }
     if ($slimMode) {
@@ -389,20 +407,33 @@ services:
 
     Invoke-Build 'Building Rust suppliers...' {
         $previousLibclangPath = $env:LIBCLANG_PATH
+        $previousCmakeToolchainFile = $env:CMAKE_TOOLCHAIN_FILE
+        $previousCmakeGenerator = $env:CMAKE_GENERATOR
+        $previousPath = $env:PATH
         try {
             $env:LIBCLANG_PATH = $libclangDirectory
+            if ($vcvars) {
+                $env:PATH = "$ninjaDirectory;$env:PATH"
+                if (-not $env:CMAKE_GENERATOR) { $env:CMAKE_GENERATOR = 'Ninja' }
+            }
+            if ($vcvars -and -not $env:CMAKE_TOOLCHAIN_FILE) {
+                $env:CMAKE_TOOLCHAIN_FILE = Join-Path $repo 'SupplierAgent\windows-x64.cmake'
+            }
             $cargoArguments = @()
             if ($rustToolchain) { $cargoArguments += "+$rustToolchain" }
             if ($vcvars) {
                 $buildCommand = 'set "PATH=' + $vsInstallerDirectory + ';%PATH%" && call "' +
                     $vcvars + '" x64 >nul && cargo ' + $cargoArguments[0] +
-                    ' build --manifest-path SupplierAgent\Cargo.toml --locked --quiet'
+                    ' build --manifest-path SupplierAgent\Cargo.toml --target-dir "' + $rustTargetDirectory + '" --locked --quiet'
                 & $env:ComSpec /d /s /c $buildCommand
             } else {
-                & cargo @cargoArguments build --manifest-path SupplierAgent\Cargo.toml --locked --quiet
+                & cargo @cargoArguments build --manifest-path SupplierAgent\Cargo.toml --target-dir $rustTargetDirectory --locked --quiet
             }
         } finally {
             $env:LIBCLANG_PATH = $previousLibclangPath
+            $env:CMAKE_TOOLCHAIN_FILE = $previousCmakeToolchainFile
+            $env:CMAKE_GENERATOR = $previousCmakeGenerator
+            $env:PATH = $previousPath
         }
     }
     Invoke-Build 'Building .NET buyer...' {
@@ -443,7 +474,7 @@ services:
                 Join-Path $slimDirectory "$($supplierApps[$index]).json"
             } else { $slimConfigPath }
         }
-        $process = Start-LoggedProcess (Join-Path $repo 'SupplierAgent\target\debug\agentcon-supplier.exe') `
+        $process = Start-LoggedProcess (Join-Path $rustTargetDirectory 'debug\agentcon-supplier.exe') `
             @() $repo $supplierEnvironment (Join-Path $logDirectory "$($supplierNames[$index]).log")
         $startedProcesses.Add($process)
         $supplierProcesses.Add($process)
