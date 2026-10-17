@@ -416,7 +416,7 @@ impl AgentExecutor for SupplierExecutor {
         let supplier = self.0.clone();
         let span = tracing::info_span!("invoke_agent SupplierAgent", otel.kind = "internal",
             gen_ai.operation.name = "invoke_agent", gen_ai.agent.name = "SupplierAgent",
-            gen_ai.provider.name = "github.copilot", agentcon.a2a.task.id = %ctx.task_id,
+            gen_ai.provider.name = supplier.interpreter.provider(), agentcon.a2a.task.id = %ctx.task_id,
             agentcon.a2a.context.id = %ctx.context_id);
         let _ = span.set_parent(telemetry::executor_parent(&ctx.service_params));
         let execution_span = span.clone();
@@ -471,7 +471,7 @@ impl AgentExecutor for SupplierExecutor {
             }
             let mut outcome = outcome.unwrap_or_else(|error| {
                 telemetry::error(&execution_span, "supplier_request_failed");
-                tracing::warn!(task_id = %ctx.task_id, "supplier request failed");
+                tracing::warn!(task_id = %ctx.task_id, %error, "supplier request failed");
                 Outcome {
                     state: TaskState::Failed,
                     text: error,
