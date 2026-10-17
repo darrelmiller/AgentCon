@@ -5,7 +5,7 @@ test issuance sets `over_21: true`. Do not use this issuer or its credentials to
 grant access to age-restricted services.
 
 Self-contained Node.js 22/24 HTTP service for OID4VCI pre-authorized issuance to
-Sphereon Wallet 0.8.0. It signs a **new credential bound to the wallet's proof
+compatible SD-JWT VC wallets. It signs a **new credential bound to the wallet's proof
 key**, not the software holder used by `tools\credentials`. No LLM, global
 credential package, database, automatic key generation, or remote DID resolution.
 
@@ -13,17 +13,33 @@ credential package, database, automatic key generation, or remote DID resolution
 
 - Configuration ID: `AgentConDemoOver21`.
 - Format and signed JWT `typ`: **`dc+sd-jwt`**, ES256.
-- `vct`: `urn:agentcon:demo:age-over-21`.
+- `vct`: `<ISSUER_BASE_URL>/credential-types/age-over-21`, an HTTPS type-metadata URL.
 - Visible: `demo_only: true`, demo title, issuer, issuance/expiry timestamps,
   `cnf.jwk` (wallet's verified public P-256 key).
 - Selectively disclosable: `over_21: true`; delivered with its disclosure.
 - Expiry: 14 days. No credential status/revocation service is advertised.
 - `iss` is the configured **public HTTPS origin**. Public key discovery is
   `/.well-known/jwt-vc-issuer` → `/jwks`; no private material is returned.
-  The signing-key `kid` is a deterministic **`did:jwk:...#0`**, identical in
-  the credential JWT and published JWKS.
+  New credentials use an RFC 7638 SHA-256 JWK thumbprint as `kid`, selected from
+  that JWKS. The original DID key ID remains published for existing credentials;
+  no signing-key rotation or reissuance is required.
 
-### Why this wire profile
+### Wallet-neutral profile
+
+The issuer no longer depends on Sphereon's SDK/parser or its DID-only
+credential-signature discovery. HTTPS type metadata describes the demo type,
+display text and disclosure policy. Legacy single-proof request shapes and DID
+holder proofs remain accepted as additive protocol support, not vendor branches.
+The signing key, holder binding, replay checks and demo-only semantics are unchanged.
+Older wallets requiring DID-only issuer-key discovery may no longer import new
+credentials. Compatibility with Light SSI Wallet, Lissi ID-Wallet and Hopae EUDI
+Wallet requires real-device validation; trust policies may impose further limits.
+
+### Historical Sphereon profile (superseded)
+
+The following explains the original implementation, not the current key/type
+discovery or presentation profile. The vendor dependency and pinned parser test
+have been removed in favor of vendor-independent protocol tests.
 
 The actual [mobile-wallet 0.8.0 package manifest at
 f3b9fa76fe451fa687d21dafd464307397a9f35d](https://github.com/Sphereon-Opensource/mobile-wallet/blob/f3b9fa76fe451fa687d21dafd464307397a9f35d/package.json)
@@ -55,31 +71,46 @@ final-only examples:
   remote type-metadata loading for non-HTTP `vct` values (such as this demo URN).
 - [Pinned SD-JWT signature verifier](https://github.com/Sphereon-Opensource/SSI-SDK/blob/v0.37.0/packages/sd-jwt/src/action-handler.ts)
   (`verifyCallbackImpl`) resolves a DID in `header.kid`, but has no HTTPS
-  issuer-JWKS discovery branch. Therefore the signed header uses `did:jwk:...#0`
+  issuer-JWKS discovery branch. Therefore the original signed header used `did:jwk:...#0`
   rather than an HTTPS key ID. This is a public, self-describing key ID, **not**
   a different credential issuer. `iss` remains HTTPS and the same key ID/key
   appear in HTTPS JWKS for standards-based issuer discovery. No untrusted
   inline signing-key override is needed.
 
-Thus the issuer advertises one `dc+sd-jwt` configuration, not conflicting format
+The issuer advertises one `dc+sd-jwt` configuration, not conflicting format
 aliases or draft-11 request fields. Although the pinned types also allow
 `vc+sd-jwt`, it is deliberately not advertised: `dc+sd-jwt` has explicit pinned
-client test evidence. The server additionally accepts final-style
+client test evidence in the original profile. The server additionally accepts final-style
 `proofs: {"jwt": ["<compact JWT>"]}` (exactly one JWT) and a public nonce endpoint.
 This is a narrow draft-15/final-compatible subset, **not a claim of full final
 conformance**. Batch issuance, authorization-code flow, client authentication,
 DPoP, attestation, response encryption, deferred issuance and notifications are
 not advertised or implemented.
 
+### Browser wallets and CORS
+
+Public discovery, JWKS, type metadata, raw credential offers, token, nonce,
+credential and presentation request/response endpoints return
+`Access-Control-Allow-Origin: *`, including error responses. OPTIONS preflights
+allow only each endpoint's GET or POST method and `Authorization`, `Content-Type`
+and `Accept` headers. Browser cookies/credentialed CORS are not enabled.
+Issuance still requires a one-use offer, access token and wallet-key proof.
+The `/admin/*` APIs have **no CORS grant** and still require the admin token.
+HTML pages are not cross-origin APIs. CORS does not override wallet trust policy.
+
 Anonymous pre-authorized redemption is supported; a `client_id` is optional.
-Proof `iss` is optional for this flow, but if supplied it must match the
-`client_id` used at token redemption. Proofs require ES256, the correct `typ`,
+Proof `iss` must be omitted for anonymous pre-authorized redemption. With a
+`client_id`, any proof `iss` must match it. Proofs require ES256, the correct `typ`,
 exact issuer audience, `iat` within five minutes (five-second forward skew),
 valid optional `exp`/`nbf`, and a live one-use nonce. Embedded private keys,
 unsupported curves, unsafe JOSE key URLs/certificates, unknown DID methods,
 bad signatures and replay are rejected. Self-describing `did:jwk#0` is imported
 with JOSE/Node key validation; P-256 `did:key` multicodec/point decoding uses
 `@digitalbazaar/ecdsa-multikey`. Neither path makes network requests.
+Proof errors return fixed diagnostic descriptions for malformed JWTs, unsupported
+algorithms/keys, audience, timestamps, nonce shape and client binding. These never
+include submitted JWTs, keys, DIDs, claim values or credentials. Invalid proofs
+still rotate the nonce and cannot issue a credential.
 
 ## Run locally
 
@@ -135,7 +166,7 @@ contains a server-generated, embedded PNG QR and wallet link:
 openid-credential-offer://?credential_offer_uri=<percent-encoded-HTTPS-offer-URL>
 ```
 
-Scan with Sphereon Wallet on the phone, accept issuance, and confirm it is shown
+Scan with a compatible wallet on the phone, accept issuance, and confirm it is shown
 as a DEMO credential. **No phone roundtrip has been verified by the automated
 tests; actual mobile acceptance is only established after a successful scan.**
 Generating a pre-bound software credential and importing its string is not a
@@ -152,19 +183,22 @@ task/context IDs through `POST /admin/presentations` (admin bearer token; JSON
 `{taskId, contextId}`), then receives the experimental A2A authorization request,
 presentation page URL, wallet URI and expiry.
 
-`GET /presentations/<id>` renders a local QR for Sphereon. The QR invokes
+`GET /presentations/<id>` renders a local QR for a compatible wallet. The QR invokes
 `openid4vp://` with `client_id` and an HTTPS `request_uri`.
 `GET /presentations/<id>/request` returns an ES256-signed JWT request object
 (`application/oauth-authz-req+jwt`, `oauth-authz-req+jwt` protected-header type,
-`did:jwk` client identifier and key ID, `direct_post`). The verifier signs with
+`decentralized_identifier:did:jwk:...` client identifier, DID key ID and
+`direct_post`). This is the final OpenID4VP decentralized-identifier prefix,
+not the older unprefixed DID client ID. The verifier signs with
 the existing issuer key; the DID resolves that public key without a network key
 lookup. The signed request includes issuer, wallet audience, issue time and expiry.
-Sphereon 0.8.0 sends fetched request objects through its JWS verifier, so an
-`alg:none` request is not compatible. Its pinned redirect-uri validation also
-compares the prefixed client ID to the response URI; using its supported signed
-DID client path avoids that mismatch without weakening signature verification.
-DCQL requests only the `over_21:true` disclosure from `urn:agentcon:demo:age-over-21`,
-format `dc+sd-jwt`, with ES256 credential and key-binding signatures.
+DCQL requests only the `over_21:true` disclosure from the HTTPS credential type
+or the original `urn:agentcon:demo:age-over-21`, format `dc+sd-jwt`, with ES256
+credential and key-binding signatures. Existing credentials retain their signed
+type and key ID; both exact key IDs and types are accepted against the same
+pinned issuer key. Arbitrary issuers and type URLs are not trusted or fetched.
+Wallets must support this verifier-identification method. Update the supplier
+binary with this change so its challenge validation accepts the final prefix.
 
 The wallet submits form-encoded `state` and DCQL `vp_token` to
 `POST /presentations/<id>/response`. The verifier checks issuer signature and
@@ -189,7 +223,8 @@ claim without age checks: this is not a production age-verification service.
 | `/.well-known/oauth-authorization-server` | GET | OAuth pre-authorized metadata |
 | `/.well-known/openid-configuration` | GET | Same metadata for wallet discovery compatibility; not a full OIDC provider |
 | `/.well-known/jwt-vc-issuer` | GET | HTTPS issuer public signing-key discovery |
-| `/jwks` | GET | Public ES256 JWK |
+| `/jwks` | GET | Public ES256 JWK under current and legacy key IDs |
+| `/credential-types/age-over-21` | GET | SD-JWT VC type metadata |
 | `/admin/offers` | POST | Bearer admin token + JSON `{}` → offer URLs |
 | `/offers/<random-id>` | GET | Capability page and embedded QR |
 | `/credential-offer/<random-id>` | GET | Raw credential offer JSON |
@@ -306,7 +341,8 @@ npm test
 Uses Node's built-in test runner, ephemeral in-memory test keys, real HTTP
 requests and cryptographic proof/credential validation. Tests cover metadata,
 selective disclosure, holder binding, public JWKS, draft-15/final request shapes,
-offline `did:jwk`/`did:key`, bad signatures/audience/nonce/typ/algorithm/keys,
+offline `did:jwk`/`did:key` holder proofs, CORS/preflight and admin isolation,
+HTTPS type/key discovery, legacy credential verification, bad signatures/audience/nonce/typ/algorithm/keys,
 timestamp expiry, nonce/proof/token/code replay, parallel redemption/issuance,
 admin protection, payload bounds, bounded-state cleanup, rate limiting, escaped
 themed UI, and startup validation. Test HTTP runs on loopback; the configured

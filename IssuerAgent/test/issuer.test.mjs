@@ -9,7 +9,7 @@ import { exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, decodeJwt, d
 import * as EcdsaMultikey from '@digitalbazaar/ecdsa-multikey';
 import { SDJwtVcInstance } from '@sd-jwt/sd-jwt-vc';
 import { createIssuer } from '../server.mjs';
-import { CONFIG_ID, GRANT, VCT, random } from '../crypto.mjs';
+import { CONFIG_ID, GRANT, credentialType, random } from '../crypto.mjs';
 import { loadConfig } from '../config.mjs';
 import { escapeHtml } from '../ui.mjs';
 import { createOffer } from '../create-offer.mjs';
@@ -71,7 +71,7 @@ async function fixture(t, overrides = {}) {
   return { config, holder, issuer, local, request, json, offer, redeem, session, proof, issue, advance: seconds => { time += seconds; } };
 }
 
-test('draft15 HTTP lifecycle signs selective demo claim for the phone proof key', async t => {
+test('HTTP lifecycle discovers HTTPS issuer keys and signs selective demo claim for the wallet key', async t => {
   const f = await fixture(t);
   const metadata = await f.request('/.well-known/openid-credential-issuer');
   assert.equal(metadata.body.credential_issuer, ORIGIN);
@@ -101,16 +101,20 @@ test('draft15 HTTP lifecycle signs selective demo claim for the phone proof key'
   assert.equal(header.typ, 'dc+sd-jwt');
   assert.equal(header.alg, 'ES256');
   assert.equal(header.kid, jwks.keys[0].kid);
-  assert.match(header.kid, /^did:jwk:[A-Za-z0-9_-]+#0$/);
-  const didKey = JSON.parse(Buffer.from(header.kid.slice(8).split('#')[0], 'base64url').toString());
-  // This is the public key the pinned SDK's offline DID resolution returns.
-  await jwtVerify(signed, await importJWK(didKey, 'ES256'), {
-    issuer: ORIGIN, currentDate: new Date(f.config.now() * 1000),
-  });
+  assert.match(header.kid, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(jwks.keys.length, 2, 'Keep the original key ID discoverable for existing credentials');
+  assert.match(jwks.keys[1].kid, /^did:jwk:[A-Za-z0-9_-]+#0$/);
+  assert.equal(jwks.keys[1].x, jwks.keys[0].x);
+  assert.equal(jwks.keys[1].y, jwks.keys[0].y);
   const { payload } = await jwtVerify(signed, await importJWK(jwks.keys[0]), {
     issuer: ORIGIN, currentDate: new Date(f.config.now() * 1000),
   });
-  assert.equal(payload.vct, VCT);
+  assert.equal(payload.vct, credentialType(ORIGIN));
+  assert.equal(metadata.body.credential_configurations_supported[CONFIG_ID].vct, payload.vct);
+  const type = await f.request(new URL(payload.vct).pathname);
+  assert.equal(type.status, 200);
+  assert.equal(type.body.vct, payload.vct);
+  assert.deepEqual(type.body.claims.map(claim => claim.path), [['over_21'], ['demo_only']]);
   assert.equal(payload.demo_only, true);
   assert.equal(payload.exp - payload.iat, 14 * 86400);
   assert.equal(payload.over_21, undefined);
@@ -130,12 +134,84 @@ test('draft15 HTTP lifecycle signs selective demo claim for the phone proof key'
     },
   });
   const verified = await sd.verify(credential, {
-    expectedIssuer: ORIGIN, expectedVct: VCT, currentDate: f.config.now(),
+    expectedIssuer: ORIGIN, expectedVct: credentialType(ORIGIN), currentDate: f.config.now(),
   });
   assert.equal(verified.payload.over_21, true);
   assert.equal((await f.issue(s, jwt)).status, 401);
   assert.equal((await f.redeem(s.offer.code)).body.error, 'invalid_grant');
   assert.equal((await f.request(new URL(s.offer.credential_offer_uri).pathname)).status, 404);
+});
+
+test('browser wallet APIs support CORS preflight and authenticated issuance, but not admin access', async t => {
+  const f = await fixture(t);
+  const origin = 'https://wallet.example';
+  const offer = await f.offer();
+  const routes = [
+    ...['/.well-known/openid-credential-issuer', '/.well-known/oauth-authorization-server',
+      '/.well-known/openid-configuration', '/.well-known/jwt-vc-issuer', '/jwks',
+      '/credential-types/age-over-21', new URL(offer.credential_offer_uri).pathname].map(path => [path, 'GET']),
+    ...['/token', '/nonce', '/credential'].map(path => [path, 'POST']),
+  ];
+  for (const [path, method] of routes) {
+    const preflight = await f.request(path, { method: 'OPTIONS', headers: {
+      origin, 'access-control-request-method': method,
+      'access-control-request-headers': 'authorization,content-type',
+    } });
+    assert.equal(preflight.status, 204, path);
+    assert.equal(preflight.headers.get('access-control-allow-origin'), '*', path);
+    assert.equal(preflight.headers.get('access-control-allow-methods'), method);
+    assert.equal(preflight.headers.get('access-control-allow-credentials'), null);
+    assert.match(preflight.headers.get('access-control-allow-headers'), /Authorization/);
+    if (method === 'GET') {
+      const result = await f.request(path, { headers: { origin } });
+      assert.equal(result.status, 200, path);
+      assert.equal(result.headers.get('access-control-allow-origin'), '*');
+    }
+  }
+  const token = await f.request('/token', {
+    method: 'POST', headers: { origin, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: GRANT, 'pre-authorized_code': offer.code }),
+  });
+  assert.equal(token.status, 200);
+  assert.equal(token.headers.get('access-control-allow-origin'), '*');
+  const nonce = await f.request('/nonce', { method: 'POST', headers: { origin } });
+  assert.equal(nonce.status, 200);
+  const credential = await f.request('/credential', {
+    method: 'POST', headers: { origin, 'content-type': 'application/json', authorization: `Bearer ${token.body.access_token}` },
+    body: JSON.stringify({ credential_configuration_id: CONFIG_ID,
+      proofs: { jwt: [await f.proof(nonce.body.c_nonce)] } }),
+  });
+  assert.equal(credential.status, 200);
+  assert.equal(credential.headers.get('access-control-allow-origin'), '*');
+  const unauthorized = await f.request('/credential', { method: 'POST', headers: { origin } });
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get('access-control-allow-origin'), '*');
+  assert.match(unauthorized.headers.get('access-control-expose-headers'), /WWW-Authenticate/);
+  const expired = await f.request(new URL(offer.credential_offer_uri).pathname, { headers: { origin } });
+  assert.equal(expired.status, 404);
+  assert.equal(expired.headers.get('access-control-allow-origin'), '*');
+  for (const path of ['/admin/offers', '/admin/presentations', '/admin/presentations/' + random(), '/unknown']) {
+    const denied = await f.request(path, { method: 'OPTIONS', headers: {
+      origin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization',
+    } });
+    assert.notEqual(denied.status, 204);
+    assert.equal(denied.headers.get('access-control-allow-origin'), null);
+  }
+  for (const headers of [
+    { 'access-control-request-method': 'DELETE' },
+    { 'access-control-request-method': 'POST', 'access-control-request-headers': 'x-admin-token' },
+  ]) {
+    assert.equal((await f.request('/token', { method: 'OPTIONS', headers: { origin, ...headers } })).status, 403);
+  }
+});
+
+test('rate-limit responses remain readable by browser wallets', async t => {
+  const f = await fixture(t, { rateLimit: 1 });
+  await f.request('/jwks');
+  const limited = await f.request('/jwks', { headers: { origin: 'https://wallet.example' } });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get('access-control-allow-origin'), '*');
+  assert.ok(limited.headers.get('retry-after'));
 });
 
 test('final-style proofs and anonymous nonce endpoint work without a token nonce', async t => {
@@ -223,7 +299,33 @@ test('client_id is optional, but proof issuer must match if present', async t =>
   assert.equal((await f.issue(s, await f.proof(failed.body.c_nonce, { claims: { iss: 'wallet-client' } }))).status, 200);
 });
 
-test('pinned Sphereon proof timestamps (iat minus 60 seconds, exp plus 600) are accepted', async t => {
+test('proof diagnostics distinguish unsupported algorithms and anonymous iss without echoing proof data', async t => {
+  const f = await fixture(t);
+  for (const [overrides, message] of [
+    [{ header: { alg: 'unsupported-wallet-algorithm' } }, /supports ES256/],
+    [{ header: { typ: 'JWT' } }, /typ must be openid4vci-proof\+jwt/],
+    [{ claims: { iss: 'did:key:wallet-identity-must-not-be-echoed' } }, /iss must be omitted/],
+    [{ claims: { aud: 'https://wrong-audience.invalid' } }, /aud must exactly match/],
+    [{ claims: { iat: f.config.now() * 1000 } }, /integer seconds/],
+  ]) {
+    const session = await f.session();
+    const valid = await f.proof(session.c_nonce, { claims: overrides.claims });
+    // An unsupported alg must be diagnosed before attempting signature verification.
+    const proof = overrides.header
+      ? [Buffer.from(JSON.stringify({ ...decodeProtectedHeader(valid), ...overrides.header })).toString('base64url'),
+        ...valid.split('.').slice(1)].join('.')
+      : valid;
+    const failed = await f.issue(session, proof, true);
+    assert.equal(failed.status, 400);
+    assert.equal(failed.body.error, 'invalid_proof');
+    assert.match(failed.body.error_description, message);
+    assert.doesNotMatch(failed.body.error_description, /wallet-identity-must-not-be-echoed|wrong-audience/);
+    assert.notEqual(failed.body.c_nonce, session.c_nonce);
+    assert.equal((await f.issue(session, await f.proof(failed.body.c_nonce), true)).status, 200);
+  }
+});
+
+test('proof timestamps inside the advertised validation window are accepted', async t => {
   const f = await fixture(t);
   const s = await f.session();
   const jwt = await f.proof(s.c_nonce, {

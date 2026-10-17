@@ -94,7 +94,7 @@ ${content}
 
 export function rootPage() {
   return page(`<p>This test issuer provides signed, wallet-key-bound demo credentials
-for Sphereon Wallet. The demo claim is selectively disclosable and expires after 14 days.</p>
+for compatible OpenID4VCI wallets. The demo claim is selectively disclosable and expires after 14 days.</p>
 <p>Issuance requires an administrator-created, private, single-use offer.
 Ask the demo operator for an offer QR code. There is no public offer creation on this page.</p>
 <p class="muted">No real identity or age checks are performed. Phone acceptance is
@@ -104,7 +104,7 @@ not verified until an offer is scanned and confirmed in the wallet.</p>`);
 export async function offerPage(link, expiresAt) {
   const qr = await QRCode.toDataURL(link, { width: 320, margin: 4, errorCorrectionLevel: 'M' });
   return page(`
-<p>Scan this QR in Sphereon Wallet, or open the wallet link on your phone.
+<p>Scan this QR in an OpenID4VCI wallet supporting SD-JWT VC, or open the wallet link on your phone.
 The credential will be signed for your wallet's key, not a software test holder.</p>
 <img class="qr" src="${escapeHtml(qr)}" alt="QR code for this single-use demo credential offer">
 <a class="button" href="${escapeHtml(link)}">Open in wallet</a>
@@ -117,7 +117,7 @@ The credential expires after 14 days. Keep this page private: its link grants on
 export async function presentationPage(link, issuer, expiresAt) {
   const qr = await QRCode.toDataURL(link, { width: 320, margin: 4, errorCorrectionLevel: 'M' });
   return page(`
-<p>Scan with Sphereon Wallet, select the credential issued by ${escapeHtml(issuer)},
+<p>Scan with a compatible OpenID4VP wallet, select the credential issued by ${escapeHtml(issuer)},
 and approve disclosure of <code>over_21</code>. No birth date is requested.</p>
 <img class="qr" alt="Wallet presentation QR code" src="${escapeHtml(qr)}">
 <a class="button" href="${escapeHtml(link)}">Open in wallet</a>

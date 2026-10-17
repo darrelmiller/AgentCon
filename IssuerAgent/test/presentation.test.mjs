@@ -8,9 +8,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exportJWK, generateKeyPair, importJWK, jwtVerify, SignJWT, decodeJwt, decodeProtectedHeader } from 'jose';
 import { presentationService } from '../presentation.mjs';
-import { signingService, digest, random } from '../crypto.mjs';
+import { signingService, credentialType, LEGACY_VCT, digest, random } from '../crypto.mjs';
 import { createIssuer } from '../server.mjs';
-import { AuthorizationRequest } from '@sphereon/did-auth-siop';
+import { SDJwtVcInstance } from '@sd-jwt/sd-jwt-vc';
+import { createHash, createPrivateKey, sign } from 'node:crypto';
 
 async function fixture(t) {
   const issuer = await generateKeyPair('ES256', { extractable: true });
@@ -48,11 +49,15 @@ test('OID4VP DCQL request is task-bound, minimal, and verifies issuer plus holde
   const request = decodeJwt(f.verifier.request(challenge.id));
   assert.equal(request.client_id, challenge.authorizationRequest.client_id);
   assert.equal(request.response_mode, 'direct_post');
-  assert.equal(request.client_id, f.signer.publicJwk.kid.split('#')[0]);
+  const did = `did:jwk:${Buffer.from(JSON.stringify({
+    kty: f.signer.publicJwk.kty, crv: f.signer.publicJwk.crv,
+    x: f.signer.publicJwk.x, y: f.signer.publicJwk.y,
+  })).toString('base64url')}`;
+  assert.equal(request.client_id, `decentralized_identifier:${did}`);
   const signedRequest = f.verifier.request(challenge.id);
   assert.ok(signedRequest.split('.')[2], 'Request must have a nonempty signature');
   assert.deepEqual(decodeProtectedHeader(signedRequest), {
-    alg: 'ES256', typ: 'oauth-authz-req+jwt', kid: f.signer.publicJwk.kid,
+    alg: 'ES256', typ: 'oauth-authz-req+jwt', kid: `${did}#0`,
   });
 
   const verifiedRequest = await jwtVerify(signedRequest, await importJWK(f.signer.publicJwk, 'ES256'), {
@@ -69,27 +74,40 @@ test('OID4VP DCQL request is task-bound, minimal, and verifies issuer plus holde
   await assert.rejects(f.verifier.verify(challenge.id, response), /already submitted/);
 });
 
-test('Sphereon 0.8.0 pinned request parser verifies signed DID request and resolves DCQL', async t => {
+test('final OID4VP DID prefix, HTTPS type and signed request resolve without vendor SDKs', async t => {
   const f = await fixture(t);
-  const challenge = f.verifier.create('sphereon-task', 'sphereon-context');
-  const request = await AuthorizationRequest.fromUriOrJwt(f.verifier.request(challenge.id));
-  let checked = false;
-  const result = await request.verify({
-    verification: {}, correlationId: 'sphereon-compat',
-    verifyJwtCallback: async (verifier, jwt) => {
-      assert.equal(verifier.method, 'did');
-      assert.equal(verifier.didUrl, f.signer.publicJwk.kid);
-      await jwtVerify(jwt.raw, await importJWK(f.signer.publicJwk, 'ES256'), {
-        algorithms: ['ES256'], issuer: challenge.authorizationRequest.client_id,
-        audience: 'https://self-issued.me/v2',
-      });
-      checked = true;
-      return true;
-    },
+  const challenge = f.verifier.create('standard-task', 'standard-context');
+  const jwt = f.verifier.request(challenge.id);
+  const header = decodeProtectedHeader(jwt);
+  const did = header.kid.split('#')[0];
+  const publicJwk = JSON.parse(Buffer.from(did.slice('did:jwk:'.length), 'base64url'));
+  const result = await jwtVerify(jwt, await importJWK(publicJwk, 'ES256'), {
+    algorithms: ['ES256'], typ: 'oauth-authz-req+jwt',
+    issuer: challenge.authorizationRequest.client_id, audience: 'https://self-issued.me/v2',
   });
-  assert.equal(checked, true);
-  assert.equal(result.responseURI, `${f.config.origin}/presentations/${challenge.id}/response`);
-  assert.ok(result.dcqlQuery);
+  assert.equal(result.payload.client_id, `decentralized_identifier:${did}`);
+  assert.equal(result.payload.response_uri, `${f.config.origin}/presentations/${challenge.id}/response`);
+  assert.deepEqual(result.payload.dcql_query.credentials[0].meta.vct_values,
+    [credentialType(f.config.origin), LEGACY_VCT]);
+});
+
+test('existing URN credentials with the original key ID remain verifiable', async t => {
+  const f = await fixture(t);
+  const sd = new SDJwtVcInstance({
+    signAlg: 'ES256', hashAlg: 'sha-256',
+    hasher: data => createHash('sha256').update(data).digest(),
+    saltGenerator: () => random(),
+    signer: data => sign('sha256', Buffer.from(data), {
+      key: createPrivateKey({ key: f.config.privateJwk, format: 'jwk' }), dsaEncoding: 'ieee-p1363',
+    }).toString('base64url'),
+  });
+  const credential = await sd.issue({
+    iss: f.config.origin, iat: f.config.now(), exp: f.config.now() + 600,
+    vct: LEGACY_VCT, demo_only: true, cnf: { jwk: f.holderJwk }, over_21: true,
+  }, { _sd: ['over_21'] }, { header: { typ: 'dc+sd-jwt', kid: f.signer.legacyPublicJwk.kid } });
+  const challenge = f.verifier.create('legacy-task', 'context');
+  await f.verifier.verify(challenge.id, await f.presentation(challenge, { credential }));
+  assert.equal(f.verifier.status(challenge.id).verified, true);
 });
 
 test('rejects wrong nonce, audience, state, signing key, disclosure hash and missing proof', async t => {
@@ -134,6 +152,23 @@ test('rejects forged issuer, expired credential, false claim and concurrent repl
   assert.throws(() => f.verifier.status(challenge.id), /expired/);
 });
 
+test('issuer signature alone does not bypass allowed key IDs or credential types', async t => {
+  const f = await fixture(t);
+  for (const options of [
+    { kid: undefined }, { kid: 'unrecognized-key' },
+    { kid: f.signer.publicJwk.kid, vct: 'https://untrusted.example/type' },
+  ]) {
+    const [signed, ...disclosures] = f.credential.split('~');
+    const jwt = await new SignJWT({ ...decodeJwt(signed), ...(options.vct && { vct: options.vct }) })
+      .setProtectedHeader({ alg: 'ES256', typ: 'dc+sd-jwt', ...(options.kid && { kid: options.kid }) })
+      .sign(await importJWK(f.config.privateJwk, 'ES256'));
+    const credential = [jwt, ...disclosures].join('~');
+    const challenge = f.verifier.create('task', 'context');
+    await assert.rejects(f.verifier.verify(challenge.id, await f.presentation(challenge, { credential })));
+    assert.equal(f.verifier.status(challenge.id).verified, false);
+  }
+});
+
 test('HTTP handoff exposes QR and request but status and session creation require supplier authentication', async t => {
   const f = await fixture(t);
   const create = token => fetch(`${f.local}/admin/presentations`, {
@@ -149,6 +184,7 @@ test('HTTP handoff exposes QR and request but status and session creation requir
   assert.equal(page.headers.get('cache-control'), 'no-store');
   assert.match(await page.text(), /data:image\/png;base64/);
   const request = await fetch(f.local + path + '/request');
+  assert.equal(request.headers.get('access-control-allow-origin'), '*');
   assert.equal(request.headers.get('content-type'), 'application/oauth-authz-req+jwt');
   const object = decodeJwt(await request.text());
   assert.equal(object.client_id, challenge.authorizationRequest.client_id);
@@ -161,6 +197,15 @@ test('HTTP handoff exposes QR and request but status and session creation requir
     body: new URLSearchParams({ state: object.state, vp_token: JSON.stringify({ age: [credential + kb] }) }),
   });
   assert.equal(result.status, 200, await result.text());
+  assert.equal(result.headers.get('access-control-allow-origin'), '*');
+  for (const [suffix, method] of [['request', 'GET'], ['response', 'POST']]) {
+    const preflight = await fetch(`${f.local}${path}/${suffix}`, {
+      method: 'OPTIONS', headers: { origin: 'https://wallet.example',
+        'access-control-request-method': method, 'access-control-request-headers': 'content-type' },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get('access-control-allow-origin'), '*');
+  }
   const status = await fetch(`${f.local}/admin/presentations/${challenge.id}`, {
     headers: { authorization: `Bearer ${f.config.adminToken}` },
   });

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { CONFIG_ID, GRANT, VCT, digest, random, signingService, validateProof } from './crypto.mjs';
+import { CONFIG_ID, GRANT, ProofValidationError, credentialType, digest, random, signingService, validateProof } from './crypto.mjs';
 import { isMain, loadConfig } from './config.mjs';
 import { offerPage, rootPage } from './ui.mjs';
 import { presentationService } from './presentation.mjs';
@@ -87,15 +87,17 @@ export async function createIssuer(config) {
     display: [{ name: 'AgentCon DEMO ONLY issuer — no real age verification', locale: 'en-US' }],
     credential_configurations_supported: {
       [CONFIG_ID]: {
-        format: 'dc+sd-jwt', vct: VCT, scope: 'agentcon_demo_over21',
+        format: 'dc+sd-jwt', vct: credentialType(config.origin), scope: 'agentcon_demo_over21',
         cryptographic_binding_methods_supported: ['jwk', 'did:jwk', 'did:key'],
         credential_signing_alg_values_supported: ['ES256'],
         proof_types_supported: { jwt: { proof_signing_alg_values_supported: ['ES256'] } },
-        display: [{ name: 'AgentCon DEMO over 21 — NOT age verification', locale: 'en-US' }],
-        claims: [
-          { path: ['over_21'], mandatory: true, display: [{ name: 'DEMO over 21', locale: 'en-US' }] },
-          { path: ['demo_only'], mandatory: true, display: [{ name: 'DEMO ONLY', locale: 'en-US' }] },
-        ],
+        credential_metadata: {
+          display: [{ name: 'AgentCon DEMO over 21 — NOT age verification', locale: 'en-US' }],
+          claims: [
+            { path: ['over_21'], mandatory: true, display: [{ name: 'DEMO over 21', locale: 'en-US' }] },
+            { path: ['demo_only'], mandatory: true, display: [{ name: 'DEMO ONLY', locale: 'en-US' }] },
+          ],
+        },
       },
     },
   };
@@ -105,6 +107,19 @@ export async function createIssuer(config) {
     grant_types_supported: [GRANT], response_types_supported: [],
     scopes_supported: ['agentcon_demo_over21'],
     'pre-authorized_grant_anonymous_access_supported': true,
+  };
+  const typeMetadata = {
+    vct: credentialType(config.origin),
+    name: 'AgentCon demo over 21',
+    description: 'DEMO ONLY. No identity or age validation. Not for age-restricted services.',
+    display: [{
+      lang: 'en-US', name: 'AgentCon DEMO over 21',
+      description: 'Demonstration credential; not real age verification.',
+    }],
+    claims: [
+      { path: ['over_21'], display: [{ lang: 'en-US', label: 'DEMO over 21' }], sd: 'always' },
+      { path: ['demo_only'], display: [{ lang: 'en-US', label: 'DEMO ONLY' }], sd: 'never' },
+    ],
   };
   const server = createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -122,6 +137,20 @@ export async function createIssuer(config) {
       cleanup();
       const path = new URL(req.url, 'http://internal.invalid').pathname;
       if (req.method === 'GET' && path === '/health') return send(200, { status: 'ok', demo_only: true });
+      const walletMethod = [
+        '/.well-known/openid-credential-issuer', '/.well-known/oauth-authorization-server',
+        '/.well-known/openid-configuration', '/.well-known/jwt-vc-issuer', '/jwks',
+        '/credential-types/age-over-21',
+      ].includes(path) || /^\/credential-offer\/[A-Za-z0-9_-]{43}$/.test(path) ||
+          /^\/presentations\/[A-Za-z0-9_-]{43}\/request$/.test(path) ? 'GET'
+        : ['/token', '/nonce', '/credential'].includes(path) ||
+          /^\/presentations\/[A-Za-z0-9_-]{43}\/response$/.test(path) ? 'POST' : undefined;
+      if (walletMethod) {
+        // Public wallet APIs use explicit bearer/capability authorization, never cookies.
+        // Administrative endpoints deliberately do not participate in cross-origin access.
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate, Retry-After');
+      }
       // Do not trust caller-supplied forwarding headers. App Service must terminate TLS and enforce HTTPS Only.
       const ip = req.socket.remoteAddress ?? 'unknown';
       let rate = rates.get(ip);
@@ -133,6 +162,21 @@ export async function createIssuer(config) {
       if (++rate.count > config.rateLimit) {
         res.setHeader('Retry-After', String(Math.max(1, rate.expiresAt - config.now())));
         fail(429, 'slow_down', 'Request rate exceeded');
+      }
+      if (walletMethod) {
+        if (req.method === 'OPTIONS') {
+          const requestedHeaders = (req.headers['access-control-request-headers'] ?? '')
+            .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+          if (req.headers['access-control-request-method'] !== walletMethod ||
+              requestedHeaders.some(value => !['authorization', 'content-type', 'accept'].includes(value))) {
+            fail(403, 'invalid_request', 'Unsupported CORS method or headers');
+          }
+          res.setHeader('Access-Control-Allow-Methods', walletMethod);
+          res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
+          res.setHeader('Access-Control-Max-Age', '600');
+          res.writeHead(204);
+          return res.end();
+        }
       }
       const presentationMatch = /^\/presentations\/([A-Za-z0-9_-]{43})(?:\/(request|response))?$/.exec(path);
       const statusMatch = /^\/admin\/presentations\/([A-Za-z0-9_-]{43})$/.exec(path);
@@ -174,7 +218,8 @@ export async function createIssuer(config) {
       const methods = {
         '/': 'GET', '/health': 'GET', '/.well-known/openid-credential-issuer': 'GET',
         '/.well-known/oauth-authorization-server': 'GET', '/.well-known/openid-configuration': 'GET',
-        '/.well-known/jwt-vc-issuer': 'GET', '/jwks': 'GET', '/admin/offers': 'POST',
+        '/.well-known/jwt-vc-issuer': 'GET', '/jwks': 'GET',
+        '/credential-types/age-over-21': 'GET', '/admin/offers': 'POST',
         '/token': 'POST', '/nonce': 'POST', '/credential': 'POST',
       };
       const offerMatch = /^\/(offers|credential-offer)\/([A-Za-z0-9_-]{43})$/.exec(path);
@@ -186,11 +231,12 @@ export async function createIssuer(config) {
       }
       if (path === '/') return send(200, rootPage(), true);
       if (path === '/.well-known/openid-credential-issuer') return send(200, issuerMetadata);
+      if (path === '/credential-types/age-over-21') return send(200, typeMetadata);
       if (path === '/.well-known/oauth-authorization-server' || path === '/.well-known/openid-configuration') {
         return send(200, authMetadata);
       }
       if (path === '/.well-known/jwt-vc-issuer') return send(200, { issuer: config.origin, jwks_uri: `${config.origin}/jwks` });
-      if (path === '/jwks') return send(200, { keys: [signer.publicJwk] });
+      if (path === '/jwks') return send(200, { keys: [signer.publicJwk, signer.legacyPublicJwk] });
       if (path === '/admin/offers') {
         const auth = bearer(req);
         if (!auth || !equal(auth, config.adminToken)) fail(401, 'invalid_token', 'Administrator authorization required');
@@ -244,7 +290,7 @@ export async function createIssuer(config) {
         });
       }
       if (path === '/nonce') {
-        // Sphereon sends an empty form; final wallets may send no content type/body.
+        // Accept empty form, JSON, or bodyless nonce requests.
         if (req.headers['content-type']) {
           const type = req.headers['content-type'].split(';')[0].trim().toLowerCase();
           if (!['application/json', 'application/x-www-form-urlencoded'].includes(type)) fail(415, 'invalid_request');
@@ -285,8 +331,9 @@ export async function createIssuer(config) {
           let verified;
           try {
             verified = await validateProof(jwt, config.origin, config.now(), token.clientId);
-          } catch {
-            fail(400, 'invalid_proof', 'Proof signature, key reference or claims invalid');
+          } catch (error) {
+            if (!(error instanceof ProofValidationError)) throw error;
+            fail(400, 'invalid_proof', error.message);
           }
           // Recheck expiration after asynchronous verification and before consuming capabilities.
           if (token.expiresAt <= config.now()) fail(401, 'invalid_token', 'Expired access token');

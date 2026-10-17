@@ -17,8 +17,5 @@
     "@sd-jwt/sd-jwt-vc": "0.21.1",
     "jose": "6.2.12",
     "qrcode": "1.5.4"
-  },
-  "devDependencies": {
-    "@sphereon/did-auth-siop": "0.20.1"
   }
 }

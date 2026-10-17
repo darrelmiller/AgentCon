@@ -1,11 +1,16 @@
 import { createHash, createPrivateKey, sign } from 'node:crypto';
 import { decodeProtectedHeader, importJWK, jwtVerify } from 'jose';
 import { SDJwtVcInstance } from '@sd-jwt/sd-jwt-vc';
-import { digest, random, VCT } from './crypto.mjs';
+import { credentialType, digest, random, LEGACY_VCT } from './crypto.mjs';
 import { publicP256 } from './config.mjs';
 import { presentationPage } from './ui.mjs';
 
 export function presentationService(config, issuerJwk) {
+  const publicKey = publicP256({
+    kty: issuerJwk.kty, crv: issuerJwk.crv, x: issuerJwk.x, y: issuerJwk.y,
+  });
+  const requestKid = `did:jwk:${Buffer.from(JSON.stringify(publicKey)).toString('base64url')}#0`;
+  const trustedKids = [issuerJwk.kid, requestKid];
   const requestKey = createPrivateKey({ key: config.privateJwk, format: 'jwk' });
   const sessions = new Map();
   const ttl = 600;
@@ -28,14 +33,14 @@ export function presentationService(config, issuerJwk) {
       if (sessions.size >= config.maxEntries) throw new Error('Presentation capacity reached');
       const id = random(), nonce = random(), state = random();
       const responseUri = `${config.origin}/presentations/${id}/response`;
-      const clientId = issuerJwk.kid.split('#')[0];
+      const clientId = `decentralized_identifier:${requestKid.split('#')[0]}`;
       const session = { taskId, contextId, nonce, state, clientId, expiresAt: config.now() + ttl, verified: false, busy: false };
       const request = {
         iss: clientId, aud: 'https://self-issued.me/v2', iat: config.now(), exp: session.expiresAt,
         client_id: clientId, response_type: 'vp_token', response_mode: 'direct_post',
         response_uri: responseUri, nonce, state,
         dcql_query: { credentials: [{
-          id: 'age', format: 'dc+sd-jwt', meta: { vct_values: [VCT] },
+          id: 'age', format: 'dc+sd-jwt', meta: { vct_values: [credentialType(config.origin), LEGACY_VCT] },
           claims: [{ path: ['over_21'], values: [true] }],
         }] },
         client_metadata: {
@@ -44,7 +49,7 @@ export function presentationService(config, issuerJwk) {
         },
       };
       sessions.set(id, session);
-      const protectedHeader = { alg: 'ES256', typ: 'oauth-authz-req+jwt', kid: issuerJwk.kid };
+      const protectedHeader = { alg: 'ES256', typ: 'oauth-authz-req+jwt', kid: requestKid };
       const signingInput = [protectedHeader, request]
         .map(value => Buffer.from(JSON.stringify(value)).toString('base64url')).join('.');
       session.request = `${signingInput}.${sign('sha256', Buffer.from(signingInput), {
@@ -84,14 +89,15 @@ export function presentationService(config, issuerJwk) {
         const presentation = tokens.age[0];
         const [credential] = presentation.split('~');
         const header = decodeProtectedHeader(credential);
-        if (header.alg !== 'ES256' || header.typ !== 'dc+sd-jwt' || header.kid !== issuerJwk.kid ||
+        if (header.alg !== 'ES256' || header.typ !== 'dc+sd-jwt' || !trustedKids.includes(header.kid) ||
             header.jwk || header.jku || header.x5u || header.x5c) throw new Error('Untrusted issuer key');
         const { payload } = await jwtVerify(credential, await importJWK(issuerJwk, 'ES256'), {
           algorithms: ['ES256'], issuer: config.origin, currentDate: new Date(config.now() * 1000),
         });
         if (!Number.isSafeInteger(payload.exp) || !Number.isSafeInteger(payload.iat) ||
             payload.iat > config.now() || payload.exp <= config.now() ||
-            payload.vct !== VCT || payload.demo_only !== true) throw new Error('Invalid issuer claims');
+            ![credentialType(config.origin), LEGACY_VCT].includes(payload.vct) ||
+            payload.demo_only !== true) throw new Error('Invalid issuer claims');
         const holder = publicP256(payload.cnf?.jwk);
         const sd = new SDJwtVcInstance({
           hasher,

@@ -29,6 +29,12 @@ pub struct HttpVerifier {
 }
 
 impl HttpVerifier {
+    fn supported_client_id(client: &str) -> bool {
+        (client.starts_with("decentralized_identifier:did:jwk:") || client.starts_with("did:jwk:"))
+            && client.len() <= 2048
+            && !client.contains('#')
+    }
+
     pub fn new(origin: String, token: String) -> Result<Self, String> {
         let url = reqwest::Url::parse(&origin).map_err(|_| "Invalid verifier origin")?;
         let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
@@ -94,13 +100,12 @@ impl Verifier for HttpVerifier {
                 != format!("{}/presentations/{}/request", self.origin, challenge.id)
             || !challenge.authorization_request["client_id"]
                 .as_str()
-                .is_some_and(|client| {
-                    client.starts_with("did:jwk:") && client.len() <= 2048 && !client.contains('#')
-                })
+                .is_some_and(Self::supported_client_id)
             || !challenge.wallet_uri.starts_with("openid4vp://?")
         {
             return Err("Verifier returned an invalid or unbound challenge".into());
         }
+
         Ok(challenge)
     }
 
@@ -134,5 +139,63 @@ impl Verifier for HttpVerifier {
         status["verified"]
             .as_bool()
             .ok_or_else(|| "Invalid verifier status".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Challenge, HttpVerifier, Verifier};
+
+    #[test]
+    fn recognizes_final_and_legacy_did_client_ids() {
+        assert!(HttpVerifier::supported_client_id(
+            "decentralized_identifier:did:jwk:public-key"
+        ));
+        assert!(HttpVerifier::supported_client_id("did:jwk:public-key"));
+        for client in [
+            "https://untrusted.example",
+            "decentralized_identifier:did:web:untrusted.example",
+            "decentralized_identifier:did:jwk:public-key#0",
+        ] {
+            assert!(!HttpVerifier::supported_client_id(client));
+        }
+        assert!(!HttpVerifier::supported_client_id(&format!(
+            "did:jwk:{}",
+            "x".repeat(2048)
+        )));
+    }
+
+    #[tokio::test]
+    async fn accepts_task_bound_final_verifier_challenge_over_http() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let id = "a".repeat(43);
+        let challenge = Challenge {
+            id: id.clone(),
+            task_id: "purchase".into(),
+            context_id: "context".into(),
+            expires_at: chrono::Utc::now().timestamp() + 600,
+            authorization_request: serde_json::json!({
+                "client_id": "decentralized_identifier:did:jwk:public-key",
+                "request_uri": format!("{origin}/presentations/{id}/request")
+            }),
+            presentation_url: format!("{origin}/presentations/{id}"),
+            wallet_uri: "openid4vp://?client_id=decentralized_identifier%3Adid%3Ajwk%3Apublic-key"
+                .into(),
+        };
+        let router = axum::Router::new().route(
+            "/admin/presentations",
+            axum::routing::post(move || {
+                let challenge = challenge.clone();
+                async move { axum::Json(challenge) }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let verifier = HttpVerifier::new(origin, "t".repeat(43)).unwrap();
+        let result = verifier.create("purchase", "context").await;
+        server.abort();
+        assert_eq!(result.unwrap().task_id, "purchase");
     }
 }
