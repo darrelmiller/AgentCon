@@ -21,6 +21,10 @@
 # agntcy/<namespace>/<agent> (default agentcon). Unset SLIM keeps the HTTP-only demo.
 # SLIM_IDENTITY=did-key gives every agent (suppliers, buyer, CLI) its own Ed25519 key (did:key, EdDSA
 # JWT credentials verified against a JWKS of all demo agents) instead of one shared secret.
+# SLIM_IDENTITY=did-web names the agents did:web:agents.slim.outshift.io:agentcon:<agent> instead; peers are
+# verified against the JWKS published there.
+# SELLERS=cloud (with SLIM=public and SLIM_IDENTITY=did-web) starts only the buyer: it uses the sellers running
+# in the SLIM cluster, found through catalog.cloud.json (their Agent Cards are on agents.slim.outshift.io).
 #
 # Ctrl+C stops all agents. Logs go to ./artifacts/demo-logs/.
 set -euo pipefail
@@ -32,6 +36,9 @@ GH_USER="${COPILOT_GH_USER:-lumuscar_cisco}"
 # (gpt-5-mini skipped required steps in testing). Use "auto" to let Copilot pick.
 MODEL="${COPILOT_MODEL:-gpt-6-luna}"
 STATE_ROOT="$HOME/Library/Application Support/AgentConDemo"
+# Optional: AGENTCON_BIN_DIR installs the built supplier and buyer there and runs them from that copy, so the build
+# outputs can live elsewhere (e.g. on an external drive). Unset, the agents run from their build outputs.
+BIN_DIR="${AGENTCON_BIN_DIR:-}"
 LOG_DIR="artifacts/demo-logs"
 INVENTORIES="$PWD/SupplierAgent/inventories"
 # One supplier per row: label | port | inventory JSON | name for its log file and Copilot state | SLIM app.
@@ -42,9 +49,17 @@ SUPPLIERS=(
     "French supplier|6200|${FRANCE_INVENTORY:-$INVENTORIES/france.json}|france|french-supplier"
 )
 BUYER_PORT=5100
+case "${SELLERS:-local}" in
+    local) ;;
+    cloud)
+        [[ "${SLIM:-}" == public && "${SLIM_IDENTITY:-}" == did-web ]] ||
+            { echo "SELLERS=cloud needs SLIM=public and SLIM_IDENTITY=did-web." >&2; exit 1; }
+        SUPPLIERS=() ;;
+    *) echo "SELLERS must be local or cloud." >&2; exit 1 ;;
+esac
 
 ports=("$BUYER_PORT")
-for row in "${SUPPLIERS[@]}"; do
+for row in ${SUPPLIERS[@]+"${SUPPLIERS[@]}"}; do
     IFS='|' read -r _ port inventory _ <<<"$row"
     ports+=("$port")
     [[ -f "$inventory" ]] || { echo "Inventory file not found: $inventory" >&2; exit 1; }
@@ -168,13 +183,34 @@ PY
                 cli barolo-supplier sardinian-supplier french-supplier buyer | sed 's/^/  /'
             (umask 077; cp "$SLIM_DIR/cli.json" "$SLIM_CONFIG")
             ;;
-        *) echo "SLIM_IDENTITY must be shared-secret or did-key." >&2; exit 1 ;;
+        did-web)
+            # Keys and configs in their own directory; the trust list is the JWKS the did:web domain publishes.
+            DIDWEB_DIR="$STATE_ROOT/slim-didweb"
+            echo "SLIM identities (did:web):"
+            python3 -I tools/slim/slim_identities.py --did-web agents.slim.outshift.io/agentcon "$DIDWEB_DIR" "$SLIM_CLIENT" \
+                "$SLIM_ORG_NS" cli buyer barolo-supplier sardinian-supplier french-supplier | sed 's/^/  /'
+            curl -fsS --proto =https --max-time 20 -o "$DIDWEB_DIR/site/.well-known/jwks.json" \
+                https://agents.slim.outshift.io/.well-known/jwks.json ||
+                { echo "Cannot fetch the published JWKS from https://agents.slim.outshift.io." >&2; exit 1; }
+            (umask 077; cp "$DIDWEB_DIR/cli.json" "$SLIM_CONFIG")
+            ;;
+        *) echo "SLIM_IDENTITY must be shared-secret, did-key or did-web." >&2; exit 1 ;;
     esac
 fi
 
 echo "Building suppliers and buyer..."
 cargo build --manifest-path SupplierAgent/Cargo.toml --locked --quiet
-dotnet build BuyerAgent/BuyerAgent.csproj --nologo -v quiet >/dev/null
+if [[ -n "$BIN_DIR" ]]; then
+    mkdir -p "$BIN_DIR"
+    install -m 0755 SupplierAgent/target/debug/agentcon-supplier "$BIN_DIR/agentcon-supplier"
+    dotnet publish BuyerAgent/BuyerAgent.csproj -c Debug --nologo -v quiet -o "$BIN_DIR/buyer" >/dev/null
+    SUPPLIER_BIN="$BIN_DIR/agentcon-supplier"
+    BUYER_CMD=(dotnet "$BIN_DIR/buyer/BuyerAgent.dll")
+else
+    dotnet build BuyerAgent/BuyerAgent.csproj --nologo -v quiet >/dev/null
+    SUPPLIER_BIN=./SupplierAgent/target/debug/agentcon-supplier
+    BUYER_CMD=(dotnet run --no-build --project BuyerAgent/BuyerAgent.csproj --)
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -190,13 +226,15 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-for row in "${SUPPLIERS[@]}"; do
+for row in ${SUPPLIERS[@]+"${SUPPLIERS[@]}"}; do
     IFS='|' read -r _ port inventory name slim_app <<<"$row"
     mkdir -p "$STATE_ROOT/$name-copilot"
     if [[ -n "$SLIM_MODE" ]]; then
         export SUPPLIER_SLIM_NAME="$SLIM_ORG_NS/$slim_app" SLIM_SHARED_SECRET
         if [[ "${SLIM_IDENTITY:-shared-secret}" == did-key ]]; then
             export SUPPLIER_SLIM_CONFIG="$SLIM_DIR/$slim_app.json"   # its own key and the trust list
+        elif [[ "${SLIM_IDENTITY:-}" == did-web ]]; then
+            export SUPPLIER_SLIM_CONFIG="$DIDWEB_DIR/$slim_app.json"
         else
             export SUPPLIER_SLIM_CONFIG="$SLIM_CONFIG"
         fi
@@ -206,7 +244,7 @@ for row in "${SUPPLIERS[@]}"; do
     SUPPLIER_MODEL="$MODEL" \
     SUPPLIER_COPILOT_STATE="$STATE_ROOT/$name-copilot" \
     SUPPLIER_DEMO_CONTROL_TOKEN="$CONTROL_TOKEN" \
-        ./SupplierAgent/target/debug/agentcon-supplier >"$LOG_DIR/$name.log" 2>&1 &
+        "$SUPPLIER_BIN" >"$LOG_DIR/$name.log" 2>&1 &
     pids+=($!)
 done
 
@@ -214,13 +252,19 @@ buyer_slim=()
 if [[ -n "$SLIM_MODE" ]]; then
     if [[ "${SLIM_IDENTITY:-shared-secret}" == did-key ]]; then
         buyer_slim=(--Buyer:SlimConfigPath="$SLIM_DIR/buyer.json" --Buyer:SlimName="$SLIM_ORG_NS/buyer")
+    elif [[ "${SLIM_IDENTITY:-}" == did-web ]]; then
+        buyer_slim=(--Buyer:SlimConfigPath="$DIDWEB_DIR/buyer.json" --Buyer:SlimName="$SLIM_ORG_NS/buyer")
     else
         buyer_slim=(--Buyer:SlimConfigPath="$SLIM_CONFIG" --Buyer:SlimName="$SLIM_ORG_NS/buyer")
     fi
 fi
+# Cloud sellers' HTTPS interfaces sit behind the OIDC gateway: the buyer sends the slimctl login as a bearer token,
+# to that host only.
+[[ "${SELLERS:-local}" == cloud ]] && buyer_slim+=(--Buyer:CatalogUrl="$PWD/catalog.cloud.json"
+    --Buyer:SupplierBearerTokenFile="$SLIM_TOKEN" --Buyer:SupplierBearerTokenOrigins:0=https://agents.slim.outshift.io)
 Buyer__SlimSharedSecret="${SLIM_SHARED_SECRET:-}" \
 Buyer__SupplierControlToken="$CONTROL_TOKEN" \
-    dotnet run --no-build --project BuyerAgent/BuyerAgent.csproj -- \
+    "${BUYER_CMD[@]}" \
     --Buyer:ExchangeCaptureEnabled=true --Buyer:Model="$MODEL" ${buyer_slim[@]+"${buyer_slim[@]}"} "$@" >"$LOG_DIR/buyer.log" 2>&1 &
 pids+=($!)
 [[ -n "${SLIM_NODE_PID:-}" ]] && pids+=("$SLIM_NODE_PID")
@@ -237,7 +281,7 @@ wait_healthy() {
 }
 
 echo "Starting agents..."
-for row in "${SUPPLIERS[@]}"; do
+for row in ${SUPPLIERS[@]+"${SUPPLIERS[@]}"}; do
     IFS='|' read -r label port _ name <<<"$row"
     wait_healthy "$label" "http://localhost:$port/health" "$LOG_DIR/$name.log"
 done
@@ -264,7 +308,7 @@ Try:
 EOF
 if [[ -n "$SLIM_MODE" ]]; then
     cat <<EOF
-SLIMRPC ($SLIM_MODE, identity ${SLIM_IDENTITY:-shared-secret}): agents registered as slim://$SLIM_ORG_NS/{buyer,barolo-supplier,sardinian-supplier,french-supplier}
+SLIMRPC ($SLIM_MODE, identity ${SLIM_IDENTITY:-shared-secret}, sellers ${SELLERS:-local}): agents registered as slim://$SLIM_ORG_NS/{buyer,barolo-supplier,sardinian-supplier,french-supplier}
   export A2A_SLIMRPC_PLUGIN_CONFIG="$SLIM_CONFIG"
 EOF
     echo "  a2a send -e slim://$SLIM_ORG_NS/buyer --transport slimrpc --timeout 150s --context-id slim 'Search the catalog for wine suppliers and quote 12 cases of 2019 Barolo to San Jose, US. Do not purchase.'"

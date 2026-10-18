@@ -154,11 +154,14 @@ answered without one.
   in its own Vault secret: namespace `eticloud/apps/phoenix`, `secret/dev/azure-ai`
   (`remoteRef.key: dev/azure-ai`), latest version, properties `azure-openai-token`
   and `azure-openai-url` (the base endpoint, `https://<resource>.openai.azure.com/`).
-  Agents need only the model name besides those two files. The endpoint serves
-  `gpt-6-luna` (the model the local demo uses through Copilot), its dated
-  version `gpt-6-luna-2026-09-22`, `gpt-4o` and `gpt-4.1`. The sellers pin
-  **`gpt-6-luna-2026-09-22`**, so the model can't change between rehearsal and
-  the talk; laptops keep `gpt-6-luna` through Copilot. No API version.
+  Agents need only the model name besides those two files: a **deployment** name.
+  The sellers use **`gpt-5`**; `gpt-5` and `gpt-4o` are deployed on the resource,
+  while `gpt-6-luna`, `gpt-6-luna-2026-09-22` and `gpt-4.1` return 404 on
+  `/openai/v1/chat/completions`, although `/openai/v1/models` lists them (it lists
+  models the resource can serve, not deployments). Using gpt-6-luna, the model
+  the laptops use through Copilot, needs a deployment of it created first.
+  gpt-5 is a reasoning model, so natural-language quotes take longer than on
+  gpt-4o; the seller's model request times out after 100 s. No API version.
 - **Delivery:** External Secrets Operator through ClusterSecretStore
   `vault-eticloud-apps-phoenix` (KV v2 at mount `secret`, so `remoteRef.key` has
   no `secret/` prefix; no namespace conditions, so `slim-dev` can use it), from

@@ -62,11 +62,30 @@ spec:
             - name: MODEL_NAME
               value: {{ .Values.modelCreds.model | quote }}
             {{- end }}
+            {{- if .Values.verifier.enabled }}
+            - name: SUPPLIER_VERIFIER_URL
+              value: {{ required "verifier.url is required" .Values.verifier.url | quote }}
+            - name: SUPPLIER_VERIFIER_TOKEN_FILE
+              value: /var/run/secrets/verifier/token
+            {{- end }}
+            {{- if .Values.http.enabled }}
+            - name: SUPPLIER_PORT
+              value: {{ .Values.http.port | quote }}
+            - name: SUPPLIER_BIND
+              value: "0.0.0.0"
+            - name: SUPPLIER_PUBLIC_URL
+              value: {{ printf "%s/%s" (.Values.http.publicBaseUrl | trimSuffix "/") .Values.agentName | quote }}
+            {{- end }}
             {{- with .Values.otlpEndpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ . | quote }}
             {{- end }}
-          # The HTTP interface listens on loopback only; the binary probes itself.
+          {{- if .Values.http.enabled }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.http.port }}
+          {{- end }}
+          # The binary probes its own /ready (SLIM connected), so the probes work with or without the Service.
           readinessProbe:
             exec:
               command: ["agentcon-supplier", "ready-probe"]
@@ -103,6 +122,11 @@ spec:
               mountPath: /var/run/secrets/model
               readOnly: true
             {{- end }}
+            {{- if .Values.verifier.enabled }}
+            - name: verifier
+              mountPath: /var/run/secrets/verifier
+              readOnly: true
+            {{- end }}
             - name: spiffe
               mountPath: /spiffe-workload-api
               readOnly: true
@@ -123,6 +147,12 @@ spec:
         - name: model
           secret:
             secretName: {{ include "seller.modelSecret" . }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.verifier.enabled }}
+        - name: verifier
+          secret:
+            secretName: {{ include "seller.verifierSecret" . }}
             defaultMode: 0440
         {{- end }}
         - name: spiffe

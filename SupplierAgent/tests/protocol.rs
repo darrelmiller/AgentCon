@@ -561,6 +561,56 @@ async fn http_json_binding_is_advertised_and_completes_streaming_wallet_approval
     assert_eq!(server.supplier.metrics.inference_attempts.load(Ordering::Relaxed), 0);
 }
 
+/// SLIMRPC calls the request handler directly (no HTTP middleware). Through `BridgedHandler`, a streaming purchase
+/// still gets the supplier's wallet wait, which runs in the server's own execution task: even when the caller's
+/// stream ends at auth-required, approval completes the purchase into the task store.
+#[tokio::test]
+async fn slim_streaming_purchase_completes_after_wallet_approval_even_when_the_stream_is_dropped() {
+    use a2a::{GetTaskRequest, SendMessageConfiguration, SendMessageRequest, SendMessageResponse, StreamResponse, TaskState};
+    use a2a_server::RequestHandler;
+    use futures::StreamExt;
+    let verifier = Arc::new(TestVerifier::default());
+    let supplier = Arc::new(Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()));
+    let handler = agentcon_supplier::BridgedHandler(agentcon_supplier::request_handler(supplier.clone()));
+    let params = Default::default();
+    let request = |parts: Vec<Part>| {
+        let mut message = Message::new(Role::User, parts);
+        message.context_id = Some("slim-context".into());
+        SendMessageRequest { message, metadata: None, tenant: None, configuration: Some(SendMessageConfiguration {
+            accepted_output_modes: Some(vec!["text/plain".into(), QUOTE.into(), RECEIPT.into()]),
+            task_push_notification_config: None, history_length: None, return_immediately: None }) }
+    };
+    let SendMessageResponse::Task(quoted) = handler.send_message(&params,
+        request(vec![Part::data(rfq(1)).with_media_type(RFQ)])).await.unwrap() else { panic!("quote is a task") };
+    let quote = serde_json::to_value(&quoted).unwrap()["artifacts"][0]["parts"][0]["data"]["quoteId"]
+        .as_str().unwrap().to_owned();
+    let mut stream = handler.send_streaming_message(&params,
+        request(vec![Part::data(order(&quote, "slim-po")).with_media_type(PURCHASE)])).await.unwrap();
+    let task_id = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match stream.next().await.unwrap().unwrap() {
+                StreamResponse::Task(task) if task.status.state == TaskState::AuthRequired => break task.id,
+                StreamResponse::StatusUpdate(update) if update.status.state == TaskState::AuthRequired => break update.task_id,
+                _ => {}
+            }
+        }
+    }).await.unwrap();
+    drop(stream);
+    verifier.0.store(true, Ordering::SeqCst);
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let task = handler.get_task(&params, GetTaskRequest { id: task_id.clone(), history_length: None, tenant: None })
+                .await.unwrap();
+            if task.status.state == TaskState::Completed { break task; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }).await.unwrap();
+    let receipt = &serde_json::to_value(&completed).unwrap()["artifacts"][0]["parts"][0]["data"];
+    assert_eq!(receipt["purchaseOrderId"], "slim-po");
+    assert_eq!(receipt["ageVerification"], "verified-demo-over-21");
+    assert_eq!(supplier.metrics.inference_attempts.load(Ordering::Relaxed), 0);
+}
+
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.task.abort();

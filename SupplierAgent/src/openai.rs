@@ -83,6 +83,10 @@ impl OpenAiInterpreter {
 
 #[async_trait]
 impl Interpreter for OpenAiInterpreter {
+    fn provider(&self) -> &'static str {
+        "openai"
+    }
+
     async fn interpret(&self, text: &str, latest_quote: Option<&str>, context: &str) -> Result<Intent, String> {
         let model = &self.provider.model;
         let span = tracing::info_span!("chat", otel.kind = "client", gen_ai.operation.name = "chat",
@@ -108,7 +112,15 @@ impl Interpreter for OpenAiInterpreter {
                 .map_err(|e| format!("Model request failed; no order executed: {}", e.without_url()))?;
             let status = response.status();
             if !status.is_success() {
-                return Err(format!("Model endpoint returned HTTP {status}; no order executed."));
+                // OpenAI and Azure OpenAI describe failures as {"error": {"code", "message"}}; neither echoes the key.
+                let detail = response.json::<Value>().await.ok().and_then(|body| {
+                    let error = body.get("error")?;
+                    let code = error.get("code").and_then(Value::as_str).unwrap_or("");
+                    let message = error.get("message").and_then(Value::as_str).unwrap_or("");
+                    Some(format!(" ({code}{}{})", if code.is_empty() || message.is_empty() { "" } else { ": " },
+                        message.chars().take(200).collect::<String>()))
+                }).unwrap_or_default();
+                return Err(format!("Model endpoint returned HTTP {status}{detail}; no order executed."));
             }
             response.json::<Value>().await.map_err(|e| format!("Model returned an unreadable response; no order executed: {}", e.without_url()))
         }

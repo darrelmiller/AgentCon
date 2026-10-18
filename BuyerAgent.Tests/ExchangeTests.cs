@@ -499,6 +499,27 @@ public sealed class ExchangeTests
         Assert.All(task.Artifacts!.SelectMany(artifact => artifact.Parts), part => Assert.Equal(PartContentCase.Text, part.ContentCase));
     }
 
+    [Fact]
+    public async Task DashboardSwitchesSupplierTransportWithoutRestarting()
+    {
+        await using var app = await App(true);
+        using var http = app.GetTestClient();
+        http.BaseAddress = new("http://localhost:5100");
+        var options = app.Services.GetRequiredService<BuyerOptions>();
+        Assert.Equal(SupplierTransport.Automatic, options.SupplierTransport);
+        Assert.Equal(HttpStatusCode.Forbidden, (await http.PostAsJsonAsync("/demo/transport", new { transport = "Http" })).StatusCode);
+        http.DefaultRequestHeaders.Add("Origin", "http://localhost:5100");
+        foreach (var invalid in new[] { "{}", """{"transport":"Carrier pigeon"}""", """{"transport":"7"}""" })
+            Assert.Equal(HttpStatusCode.BadRequest, (await http.PostAsync("/demo/transport",
+                new StringContent(invalid, Encoding.UTF8, "application/json"))).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await http.PostAsJsonAsync("/demo/transport", new { transport = "Http" })).StatusCode);
+        Assert.Equal(SupplierTransport.Http, options.SupplierTransport);
+        var state = await http.GetFromJsonAsync<JsonElement>("/demo/state");
+        Assert.Equal("Http", state.GetProperty("buyer").GetProperty("supplierTransport").GetString());
+        await http.PostAsJsonAsync("/demo/transport", new { transport = "slim" });
+        Assert.Equal(SupplierTransport.Slim, options.SupplierTransport);
+    }
+
     private static HttpClient Client(ExchangeStore store, Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) =>
         new(new ExchangeCaptureHandler(store) { InnerHandler = new Network(send) });
 

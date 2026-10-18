@@ -7,6 +7,8 @@ namespace BuyerAgent;
 public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supplier, Message sent) : IAsyncDisposable
 {
     private readonly CancellationTokenSource _lifetime = new(TimeSpan.FromMinutes(15));
+    private static readonly TimeSpan AuthorizationPollInterval = TimeSpan.FromSeconds(3);
+    private IA2AClient? _client;
     private IDisposable? _ownedClient;
     private IAsyncEnumerator<StreamResponse>? _reader;
     private AgentTask? _task;
@@ -17,6 +19,7 @@ public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supp
     {
         using var registration = cancellationToken.Register(() => _lifetime.Cancel());
         var (client, owned) = gateway.OpenClient(supplier);
+        _client = client;
         _ownedClient = owned;
         _reader = client.SendStreamingMessageAsync(request, _lifetime.Token).GetAsyncEnumerator(_lifetime.Token);
         while (await _reader.MoveNextAsync())
@@ -43,7 +46,33 @@ public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supp
         {
             throw new SupplierStreamReadException("Seller stream could not be read; its task state is unchanged.", exception);
         }
-        return hasNext ? Apply(_reader.Current) : null;
+        if (hasNext) return Apply(_reader.Current);
+        // A seller may end its stream at auth-required (A2A streams may close on an interrupted state; over SLIMRPC
+        // they do), and with it the seller's own wait for the wallet. Resend the same purchase bound to the seller's
+        // task: the seller checks the verifier and resumes the purchase it stored, never new order data from this
+        // message, and answers auth-required again until the wallet approves.
+        while (_task is { Status.State: TaskState.AuthRequired } waiting)
+        {
+            await Task.Delay(AuthorizationPollInterval, _lifetime.Token);
+            var resume = new Message
+            {
+                MessageId = Guid.NewGuid().ToString("N"), Role = Role.User, Parts = sent.Parts,
+                TaskId = waiting.Id, ContextId = waiting.ContextId, Metadata = sent.Metadata, Extensions = sent.Extensions
+            };
+            SendMessageResponse reply;
+            try
+            {
+                reply = await _client!.SendMessageAsync(new SendMessageRequest { Message = resume }, _lifetime.Token);
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested && !CancellationRequested &&
+                exception is HttpRequestException or IOException or TimeoutException or OperationCanceledException)
+            {
+                throw new SupplierStreamReadException("Seller authorization resume could not be read; its task state is unchanged.", exception);
+            }
+            if (reply.Task is not { } current) return Apply(new StreamResponse { Message = reply.Message });
+            if (current.Status.State != TaskState.AuthRequired) return Apply(new StreamResponse { Task = current });
+        }
+        return null;
     }
 
     private SendMessageResponse Apply(StreamResponse item)

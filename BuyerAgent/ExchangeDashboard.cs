@@ -73,12 +73,23 @@ public sealed class ExchangeDashboard(
             logger.LogInformation("Buyer native support changed to {Enabled}; active turns retain their snapshot.", change.Enabled);
             return Results.Ok(new { nativeStructuredSupport = change.Enabled });
         });
+        app.MapPost("/demo/transport", (HttpContext context, TransportChange change, BuyerOptions options,
+            ILogger<ExchangeDashboard> logger) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            if (!Enum.TryParse<SupplierTransport>(change.Transport, ignoreCase: true, out var transport) || !Enum.IsDefined(transport))
+                return Results.BadRequest(new { error = "Transport must be Automatic, Slim or Http." });
+            options.SupplierTransport = transport;
+            logger.LogInformation("Buyer supplier transport changed to {Transport}; active turns retain their snapshot.", transport);
+            return Results.Ok(new { supplierTransport = transport.ToString() });
+        });
         app.MapPost("/demo/supplier-structures", async (HttpContext context, SupplierChange change, ExchangeDashboard dashboard) =>
             await dashboard.ChangeSupplierAsync(change, context.RequestAborted));
     }
 
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record NativeChange([property: JsonRequired] bool Enabled);
+    public sealed record TransportChange([property: JsonRequired] string Transport);
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record SupplierChange([property: JsonRequired] string Identifier, [property: JsonRequired] bool Enabled);
 
@@ -188,53 +199,22 @@ public sealed class ExchangeDashboard(
             // Discovery is metadata only; the viewer never selects suppliers or runs tasks.
             sellers = await Task.WhenAll(snapshot.AgentEntries.Take(AiCatalogClient.MaxResults).Select(async entry =>
             {
-                var health = new Uri(entry.CardUrl.GetLeftPart(UriPartial.Authority) + "/health");
-                var status = "unavailable";
-                bool? structured = null;
-                string? problem = null;
-                string? slimUrl = null;
                 AgentLlmTotals? llm = null;
-                try
+                var probe = entry.CardUrl.AbsolutePath == "/.well-known/agent-card.json"
+                    ? await ProbeHealthAsync(entry.CardUrl, cancellationToken)
+                    : await ProbePublishedAsync(entry.CardUrl, cancellationToken);
+                if (probe.Llm is { } sample)
                 {
-                    using var response = await http.GetAsync(health, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                    if (response.IsSuccessStatusCode)
-                    {
-                        status = "HTTP ready";
-                        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-                        if (body.RootElement.TryGetProperty("llm", out var counters) &&
-                            counters.ValueKind == JsonValueKind.Object)
-                        {
-                            var sample = counters.Deserialize<AgentLlmTotals>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
-                            if (sample is not null && !string.IsNullOrWhiteSpace(sample.InstanceId) &&
-                                sample.Calls >= 0 && sample.TimedCalls >= 0 &&
-                                double.IsFinite(sample.ResponseTimeMs) && sample.ResponseTimeMs >= 0)
-                            {
-                                llm = store.SupplierLlm(entry.Identifier, sample);
-                                refreshedSuppliers.TryAdd(entry.Identifier, 0);
-                            }
-                            else throw new JsonException("Invalid supplier LLM counters.");
-                        }
-                        if (body.RootElement.TryGetProperty("structuredDataParts", out var enabled) &&
-                            enabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                            structured = enabled.GetBoolean();
-                        // A supplier serving SLIMRPC reports its slim:// name; its SLIM exchanges are recorded under it.
-                        if (body.RootElement.TryGetProperty("slim", out var slim) && slim.ValueKind == JsonValueKind.String &&
-                            BuyerSlim.TargetName(slim.GetString()!) is { } name)
-                            slimUrl = $"slim://{name}";
-                    }
-                    else problem = $"Health endpoint returned HTTP {(int)response.StatusCode}.";
-                }
-                catch (Exception exception) when (exception is HttpRequestException or JsonException ||
-                    exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-                {
-                    problem = exception is OperationCanceledException ? "Health probe timed out." : "Health endpoint unreachable.";
+                    llm = store.SupplierLlm(entry.Identifier, sample);
+                    refreshedSuppliers.TryAdd(entry.Identifier, 0);
                 }
                 return (object)new
                 {
                     identifier = entry.Identifier, name = entry.DisplayName ?? entry.Identifier,
-                    origin = entry.CardUrl.GetLeftPart(UriPartial.Authority),
-                    cardUrl = entry.CardUrl.AbsoluteUri, slimUrl, status, problem, llm, structuredDataParts = structured,
-                    controlsEnabled = entry.CardUrl.IsLoopback && !string.IsNullOrWhiteSpace(options.SupplierControlToken) && structured is not null
+                    origin = probe.Origin, cardUrl = entry.CardUrl.AbsoluteUri, slimUrl = probe.SlimUrl,
+                    slimVerified = probe.SlimVerified, status = probe.Status, problem = probe.Problem,
+                    llm, structuredDataParts = probe.Structured,
+                    controlsEnabled = entry.CardUrl.IsLoopback && !string.IsNullOrWhiteSpace(options.SupplierControlToken) && probe.Structured is not null
                 };
             }));
         }
@@ -251,8 +231,120 @@ public sealed class ExchangeDashboard(
                 // slimUrl once serving on SLIM; slimConfigured without slimUrl means the node is unreachable.
                 slimUrl = slim?.ServingUrl, slimConfigured = slim?.Configured == true,
                 communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport,
-                llm = store.BuyerLlm.Snapshot() },
+                llm = store.BuyerLlm.Snapshot(), supplierTransport = options.SupplierTransport.ToString() },
             sellers, catalogError, warnings, capture = store.Snapshot()
         };
+    }
+
+    private sealed record SellerProbe(string Origin, string Status, string? Problem = null, string? SlimUrl = null,
+        bool SlimVerified = true, bool? Structured = null, AgentLlmTotals? Llm = null);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Uri, (DateTimeOffset At, SellerProbe Probe)> PublishedProbes = new();
+    private static readonly TimeSpan PublishedProbeInterval = TimeSpan.FromSeconds(15);
+
+    /// <summary>A local supplier serves its card at its origin and reports its state on /health.</summary>
+    private async Task<SellerProbe> ProbeHealthAsync(Uri cardUrl, CancellationToken cancellationToken)
+    {
+        var origin = cardUrl.GetLeftPart(UriPartial.Authority);
+        try
+        {
+            using var response = await http.GetAsync(new Uri(origin + "/health"), HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return new(origin, "unavailable", $"Health endpoint returned HTTP {(int)response.StatusCode}.");
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            AgentLlmTotals? llm = null;
+            if (body.RootElement.TryGetProperty("llm", out var counters) &&
+                counters.ValueKind == JsonValueKind.Object)
+            {
+                llm = counters.Deserialize<AgentLlmTotals>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (llm is null || string.IsNullOrWhiteSpace(llm.InstanceId) ||
+                    llm.Calls < 0 || llm.TimedCalls < 0 || !double.IsFinite(llm.ResponseTimeMs) || llm.ResponseTimeMs < 0)
+                    throw new JsonException("Invalid supplier LLM counters.");
+            }
+            bool? structured = body.RootElement.TryGetProperty("structuredDataParts", out var enabled) &&
+                enabled.ValueKind is JsonValueKind.True or JsonValueKind.False ? enabled.GetBoolean() : null;
+            // A supplier serving SLIMRPC reports its slim:// name; its SLIM exchanges are recorded under it.
+            var slimUrl = body.RootElement.TryGetProperty("slim", out var slimName) && slimName.ValueKind == JsonValueKind.String &&
+                BuyerSlim.TargetName(slimName.GetString()!) is { } name ? $"slim://{name}" : null;
+            return new(origin, "HTTP ready", SlimUrl: slimUrl, Structured: structured, Llm: llm);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException ||
+            exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            return new(origin, "unavailable", exception is OperationCanceledException ? "Health probe timed out." : "Health endpoint unreachable.");
+        }
+    }
+
+    /// <summary>
+    /// A published card (for example a cloud seller behind an OIDC gateway) lives under the seller's base URL, which keys
+    /// the seller here, since several sellers share one host. There is no /health: the card gives the interfaces, and a
+    /// GetTask for an unknown task on its JSON-RPC interface (no model call; the buyer's bearer token is attached for
+    /// allowlisted origins) shows the seller is up and accepts the buyer. Results are cached, as the page polls often.
+    /// </summary>
+    private async Task<SellerProbe> ProbePublishedAsync(Uri cardUrl, CancellationToken cancellationToken)
+    {
+        if (PublishedProbes.TryGetValue(cardUrl, out var cached) && DateTimeOffset.UtcNow - cached.At < PublishedProbeInterval)
+            return cached.Probe;
+        var origin = new Uri(cardUrl, ".").AbsoluteUri.TrimEnd('/');
+        SellerProbe probe;
+        try
+        {
+            using var cardResponse = await http.GetAsync(cardUrl, cancellationToken);
+            if (!cardResponse.IsSuccessStatusCode)
+                probe = new(origin, "unavailable", $"Agent Card returned HTTP {(int)cardResponse.StatusCode}.");
+            else
+            {
+                using var card = JsonDocument.Parse(await cardResponse.Content.ReadAsStringAsync(cancellationToken));
+                string? jsonRpc = null, slimUrl = null;
+                if (card.RootElement.TryGetProperty("supportedInterfaces", out var interfaces) && interfaces.ValueKind == JsonValueKind.Array)
+                    foreach (var item in interfaces.EnumerateArray())
+                    {
+                        if (!item.TryGetProperty("protocolBinding", out var binding) || !item.TryGetProperty("url", out var url) ||
+                            url.ValueKind != JsonValueKind.String) continue;
+                        if (binding.GetString() == "SLIMRPC" && BuyerSlim.TargetName(url.GetString()!) is { } name) slimUrl = $"slim://{name}";
+                        // Probe only the seller's own endpoint, under the card's base URL.
+                        if (binding.GetString() == "JSONRPC" && url.GetString()!.StartsWith(origin + "/", StringComparison.Ordinal)) jsonRpc = url.GetString();
+                    }
+                bool? structured = card.RootElement.TryGetProperty("capabilities", out var capabilities) &&
+                    capabilities.TryGetProperty("extensions", out var extensions) && extensions.ValueKind == JsonValueKind.Array
+                    ? extensions.EnumerateArray().Any(extension => extension.TryGetProperty("uri", out var uri) &&
+                        uri.GetString() == "urn:agentcon:extension:structured-schemas:v1")
+                    : null;
+                probe = jsonRpc is null
+                    ? new(origin, slimUrl is null ? "unavailable" : "SLIM only", slimUrl is null ? "Agent Card lists no usable interface." : null,
+                        slimUrl, false, structured)
+                    : await ProbeJsonRpcAsync(origin, new Uri(jsonRpc), slimUrl, structured, cancellationToken);
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidOperationException or IOException ||
+            exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            probe = new(origin, "unavailable", exception is OperationCanceledException ? "Probe timed out." :
+                exception is IOException or InvalidOperationException ? "Bearer token unavailable." : "Agent Card unreachable.");
+        }
+        PublishedProbes[cardUrl] = (DateTimeOffset.UtcNow, probe);
+        return probe;
+    }
+
+    private async Task<SellerProbe> ProbeJsonRpcAsync(string origin, Uri endpoint, string? slimUrl, bool? structured,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        {
+            Content = JsonContent.Create(new { jsonrpc = "2.0", id = "dashboard-probe", method = "GetTask",
+                @params = new { id = "agentcon-dashboard-probe" } })
+        };
+        request.Headers.Add("A2A-Version", "1.0");
+        using var response = await http.SendAsync(request, cancellationToken);
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            return new(origin, "unavailable", $"HTTPS endpoint refused the buyer (HTTP {(int)response.StatusCode}); check the login.",
+                slimUrl, false, structured);
+        if (!response.IsSuccessStatusCode)
+            return new(origin, "unavailable", $"HTTPS endpoint returned HTTP {(int)response.StatusCode}.", slimUrl, false, structured);
+        // Any JSON-RPC answer (here "task not found") means the request reached the seller.
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        return body.RootElement.TryGetProperty("jsonrpc", out _)
+            ? new(origin, "HTTPS ready", null, slimUrl, false, structured)
+            : new(origin, "unavailable", "HTTPS endpoint did not answer JSON-RPC.", slimUrl, false, structured);
     }
 }

@@ -114,10 +114,14 @@ dialog pre { max-height: 60vh; }
 .message.incoming { width: 92%; margin-left: auto; border-right: 4px solid var(--cp-border-strong); }
 .message .preview { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message small { display: block; }
-/* Which wire carried the message: SLIM (slim:// name) or HTTP (JSON-RPC over http://). */
-.transport { display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px; white-space: nowrap; }
-.transport.slim { color: var(--cp-link); border-color: var(--cp-link); }
-.transport.http { color: var(--cp-text-muted); border-color: var(--cp-border-strong); }
+/* Which wire carried the message: SLIM (slim:// name), HTTPS or HTTP (A2A JSON-RPC). Filled, so they read at a glance. */
+.transport { display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 700; line-height: 18px; vertical-align: 1px; white-space: nowrap; color: #fff; }
+.transport.slim { background: var(--cp-link); border-color: var(--cp-link); }
+.transport.https { background: var(--cp-success); border-color: var(--cp-success); }
+.transport.http { background: var(--cp-text-muted); border-color: var(--cp-text-muted); }
+.transport.pending { background: transparent; color: var(--cp-text-muted); border-color: var(--cp-border-strong); }
+.transport-now { font-size: 12px; color: var(--cp-text-muted); }
+.transport-now .transport { font-size: 12px; }
 .lane-heading .transport { margin-left: 4px; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: .625rem; background: var(--cp-surface-soft); border: 1px solid var(--cp-border); }
 .task { padding: 8px 0; border-top: 1px solid var(--cp-border); overflow-wrap: anywhere; } .task code { display: block; font-size: 12px; }
@@ -158,11 +162,12 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
       <div id="buyer-endpoint" class="endpoint"></div><p id="buyer-status"></p>
       <p id="buyer-llm" class="muted"></p>
       <div class="control-row"><label><input id="buyer-native" type="checkbox" aria-describedby="native-tip"> Native structures</label><span class="tip"><button type="button" aria-label="Native structured support details" aria-describedby="native-tip">i</button><span id="native-tip" class="tip-text" role="tooltip">Off: learn advertised supplier schemas. On: installed codecs and deterministic typed inbound requests. Text input still invokes Copilot. Outbound negotiation is automatic. Active turns keep their snapshot.</span></span></div>
+      <div class="control-row" id="buyer-transport-row" hidden><label>Transport <select id="buyer-transport" aria-describedby="transport-tip"><option value="Automatic">Auto</option><option value="Slim">SLIM</option><option value="Http">HTTP</option></select></label><span class="tip"><button type="button" aria-label="Supplier transport details" aria-describedby="transport-tip">i</button><span id="transport-tip" class="tip-text" role="tooltip">Auto: SLIMRPC to sellers that list it (one multicast to poll them all), HTTP otherwise. SLIM: only SLIMRPC. HTTP: only A2A JSON-RPC over HTTP(S). Applies from the next request; active turns keep their snapshot.</span></span></div>
       <h3 id="buyer-task-heading">Buyer tasks</h3><div id="buyer-tasks" class="task-list"></div>
     </section>
     <div class="lanes">
       <section class="card" aria-labelledby="conversation-title">
-        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span><span class="transport slim" title="Sent over SLIMRPC to a slim:// name">SLIM</span><span class="transport http" title="Sent as A2A JSON-RPC or HTTP+JSON over HTTP">HTTP</span></span><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts.         LLM call totals and cumulative model-response time are shown on each agent and reset with Clear. Missing timing is not assumed to be zero.</span></span></div>
+        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span id="transport-now" class="transport-now" title="How the buyer sends its next supplier request (the Transport setting on the buyer card). Each message below is labelled with the transport it actually used."></span><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts. LLM call totals and cumulative model-response time are shown on each agent and reset with Clear. Missing timing is not assumed to be zero.</span></span></div>
         <div id="conversation" class="messages"></div>
       </section>
     </div>
@@ -256,7 +261,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     return parts;
   }
   // The capture records the endpoint actually used: a slim:// name for SLIMRPC, an http(s):// URL for JSON-RPC or HTTP+JSON.
-  const transportOf = entry => entry.endpoint?.startsWith("slim://") ? "SLIM" : "HTTP";
+  const transportOf = entry => entry.endpoint?.startsWith("slim://") ? "SLIM" : entry.endpoint?.startsWith("https://") ? "HTTPS" : "HTTP";
   // A seller's exchanges arrive at its HTTP origin or, over SLIMRPC, at its slim:// name.
   function sellerOwns(endpoint, origin) {
     if (!origin) return true;
@@ -336,14 +341,14 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         const root = roots(entry.request)[0];
         // Only the SLIM multicast request goes to the group; every reply (and every HTTP call) is unicast.
         const method = entry.restOperation ?? root?.method;
-        const viaSlim = transportOf(entry) === "SLIM";
+        const transport = transportOf(entry);
         const delivery = response ? (entry.group ? "unicast reply" : "unicast")
           : slimMulticast ? "multicast" : method === "GetTask" ? "poll" : entry.group ? "fan-out" : "unicast";
         const from = entry.inbound ? (response ? "Buyer Agent → User Agent" : "User Agent → Buyer Agent")
           : response ? "Supplier → Buyer" : slimMulticast ? `Buyer → ${groupSizes.get(entry.group)} suppliers` : "Buyer → Supplier";
         const heading = node("strong", `${from} · #${entry.id}`);
-        const chip = node("span", `${viaSlim ? "SLIM" : "HTTP"} · ${delivery}`, `transport ${viaSlim ? "slim" : "http"}`);
-        chip.title = viaSlim ? `SLIMRPC via ${entry.endpoint}` : `A2A ${entry.restOperation ? "HTTP+JSON" : "JSON-RPC"} over HTTP to ${entry.endpoint}`;
+        const chip = node("span", `${transport} · ${delivery}`, `transport ${transport.toLowerCase()}`);
+        chip.title = transport === "SLIM" ? `SLIMRPC via ${entry.endpoint}` : `A2A ${entry.restOperation ? "HTTP+JSON" : "JSON-RPC"} over ${transport} to ${entry.endpoint}`;
         heading.append(chip);
         button.append(heading);
         button.title = `${method || "A2A request"} · ${new Date(time).toLocaleTimeString()} · ${entry.status}${entry.httpStatus ? ` · HTTP ${entry.httpStatus}` : ""}. Click to inspect all parts and artifacts.`;
@@ -379,7 +384,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     const members = (state?.capture.exchanges || []).filter(other => entry.group && other.group === entry.group);
     const wire = !response && entry.groupLabel?.startsWith("SLIM multicast")
       ? `SLIMRPC multicast to ${members.length} suppliers (${members.map(other => other.endpoint).join(", ")})`
-      : `${transportOf(entry) === "SLIM" ? "SLIMRPC" : entry.restOperation ? `HTTP+JSON ${entry.restOperation}` : "HTTP JSON-RPC"} via ${entry.endpoint}`;
+      : `${transportOf(entry) === "SLIM" ? "SLIMRPC" : entry.restOperation ? `HTTP+JSON ${entry.restOperation}` : `${transportOf(entry)} JSON-RPC`} via ${entry.endpoint}`;
     const route = entry.inbound ? (response ? "Buyer Agent to User Agent" : "User Agent to Buyer Agent")
       : response ? "Seller to buyer" : "Buyer to seller";
     $("inspector-hint").textContent = `Exchange #${entry.id} - ${route} - ${wire} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
@@ -436,6 +441,15 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("buyer-status").className = state.buyer.slimConfigured && !state.buyer.slimUrl ? "error" : buyerActive ? "busy" : "ready";
     renderLlm("buyer-llm", state.buyer.llm);
     if (!$("buyer-native").disabled) $("buyer-native").checked = state.buyer.nativeStructuredSupport;
+    $("buyer-transport-row").hidden = !state.buyer.slimConfigured;
+    // What the next supplier request uses: SLIM when the buyer is on SLIM (Auto or SLIM), otherwise A2A over HTTP(S).
+    const remote = state.sellers.some(seller => seller.cardUrl?.startsWith("https://"));
+    const web = remote ? "HTTPS" : "HTTP";
+    const next = state.buyer.supplierTransport === "Http" || !state.buyer.slimConfigured ? [web, web.toLowerCase()]
+      : state.buyer.slimUrl ? ["SLIM", "slim"] : state.buyer.supplierTransport === "Slim" ? ["SLIM (not connected)", "pending"] : [web, web.toLowerCase()];
+    const label = node("span", next[0], `transport ${next[1]}`);
+    $("transport-now").replaceChildren(node("span", "Next request:"), label);
+    if (!$("buyer-transport").disabled) $("buyer-transport").value = state.buyer.supplierTransport;
     $("limits").textContent = `Last ${state.capture.maxExchanges} exchanges; ${state.capture.maxBodyBytes / 1024} KiB per body. ${state.capture.droppedExchanges} older exchanges evicted.`;
     $("problem").textContent = [state.catalogError, ...state.warnings, controlError].filter(Boolean).join(" ");
     const select = $("seller-select");
@@ -458,10 +472,10 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("seller-endpoint").replaceChildren(...(seller ? [node("div", seller.origin), ...(seller.slimUrl ? [node("div", seller.slimUrl)] : [])] : []));
     const inflight = state.capture.exchanges.filter(entry => !entry.inbound && sellerOwns(entry.endpoint, sellerOrigin) &&
       (entry.status === "sending" || entry.status === "receiving")).length;
-    $("seller-status").textContent = seller ? `${seller.status}${seller.slimUrl ? " · SLIM ready" : ""}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
-    $("seller-status").title = "HTTP availability, not proof of Copilot authentication. Task states are the latest observed responses, not automatic polling.";
-    $("seller-status").className = seller?.status === "HTTP ready" ? (inflight ? "busy" : "ready") : "error";
     renderLlm("seller-llm", seller?.llm);
+    $("seller-status").textContent = seller ? `${seller.status}${seller.slimUrl ? (seller.slimVerified === false ? " · SLIM listed" : " · SLIM ready") : ""}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
+    $("seller-status").title = "HTTP(S) availability: a local seller's /health, or a published card plus a GetTask probe with the buyer's token. Not proof of Copilot authentication. SLIM listed = advertised on the card, not probed. Task states are the latest observed responses, not automatic polling.";
+    $("seller-status").className = ["HTTP ready", "HTTPS ready", "SLIM only"].includes(seller?.status) ? (inflight ? "busy" : "ready") : "error";
     if (!$("seller-structures").dataset.busy) {
       $("seller-structures").checked = seller?.structuredDataParts === true;
       $("seller-structures").disabled = !seller?.controlsEnabled;
@@ -557,6 +571,21 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     } catch (error) {
       controlError = error.message; $("problem").textContent = controlError;
       if (state) control.checked = state.buyer.nativeStructuredSupport;
+    } finally { control.disabled = false; }
+  });
+  $("buyer-transport").addEventListener("change", async () => {
+    const control = $("buyer-transport");
+    control.disabled = true;
+    try {
+      const response = await fetch("/demo/transport", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transport: control.value }) });
+      if (!response.ok) throw new Error(`Transport change failed: HTTP ${response.status}`);
+      const result = await response.json();
+      if (state) { state.buyer.supplierTransport = result.supplierTransport; render(); }
+      controlError = ""; $("problem").textContent = "";
+    } catch (error) {
+      controlError = error.message; $("problem").textContent = controlError;
+      if (state) control.value = state.buyer.supplierTransport;
     } finally { control.disabled = false; }
   });
   $("seller-structures").addEventListener("change", async () => {

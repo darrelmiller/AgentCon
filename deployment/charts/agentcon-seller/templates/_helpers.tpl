@@ -23,6 +23,10 @@ app.kubernetes.io/instance: {{ include "seller.fullname" . }}
 {{- .Values.identity.existingSecret | default (printf "%s-identity" (include "seller.fullname" .)) -}}
 {{- end -}}
 
+{{- define "seller.verifierSecret" -}}
+{{- .Values.verifier.existingSecret | default (printf "%s-verifier" (include "seller.fullname" .)) -}}
+{{- end -}}
+
 {{- define "seller.modelSecret" -}}
 {{- .Values.modelCreds.existingSecret | default (printf "%s-model" (include "seller.fullname" .)) -}}
 {{- end -}}

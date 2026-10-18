@@ -80,7 +80,7 @@ public sealed class SupplierStreamMonitorTests
         while (monitor.IsWatching("buyer")) await Task.Delay(10, timeout.Token);
         var saved = await store.GetTaskAsync("buyer");
         Assert.Equal(expected, saved!.Status.State);
-        Assert.Equal(1, network.RequestCount);
+        Assert.Equal(!disconnect && next is null ? 2 : 1, network.RequestCount);
         if (invalidContext) Assert.Contains("changed the bound task/context", saved.Status.Message!.Parts[0].Text);
         if (next is null)
         {
@@ -101,6 +101,8 @@ public sealed class SupplierStreamMonitorTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestCount++;
+            if (RequestCount > 1)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
             var content = new StreamContent(new SellerStream(Encoding.UTF8.GetBytes(events), disconnect));
             content.Headers.ContentType = new("text/event-stream");
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });

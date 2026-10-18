@@ -41,6 +41,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
 {
     /// <summary>True when the buyer talks SLIM, so a first request that names no supplier polls them all in one multicast.</summary>
     public bool SlimEnabled => slim?.Configured == true;
+    /// <summary>The transport this gateway's turn uses (from its options snapshot).</summary>
+    public SupplierTransport Transport => options.SupplierTransport;
 
     public object AssessPrice(string wine, int vintage, string currency, int cases, int bottlesPerCase,
         decimal casePriceMinor, decimal deliveryMinor, decimal totalMinor, decimal? maxTotalUsd)
@@ -87,7 +89,17 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     /// </summary>
     internal (IA2AClient Client, IDisposable? Owned) OpenClient(SupplierBinding supplier)
     {
-        if (supplier.SlimTarget is { } target && slim?.ClientFor(target) is { } slimClient) return (slimClient, null);
+        var transport = options.SupplierTransport;
+        if (transport != SupplierTransport.Http && supplier.SlimTarget is { } target && slim?.ClientFor(target) is { } slimClient)
+            return (slimClient, null);
+        if (transport == SupplierTransport.Slim)
+            throw new InvalidOperationException(supplier.SlimTarget is null
+                ? "The SLIM transport is selected, but this seller's Agent Card lists no SLIMRPC interface."
+                : "The SLIM transport is selected, but the buyer's SLIM connection is not ready.");
+        if (supplier.Endpoint.Scheme == "slim")
+            throw new InvalidOperationException(transport == SupplierTransport.Http
+                ? "The HTTP transport is selected, but this seller's Agent Card lists no configured HTTP interface."
+                : "This seller is reachable only over SLIM, and the buyer's SLIM connection is not ready.");
         if (supplier.HttpBinding == "HTTP+JSON")
         {
             var rest = new A2AHttpJsonClient(supplier.Endpoint, httpClient);
@@ -112,7 +124,15 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     {
         var entry = await catalog.FindAsync(identifier, version, cancellationToken);
         var card = await ResolveCardAsync(entry.CardUrl, cancellationToken);
-        var endpoint = SelectEndpoint(card, entry.CardUrl);
+        // Prefer the card's SLIMRPC interface when the buyer is configured for SLIM; JSON-RPC stays the fallback.
+        var slimTarget = slim?.Configured == true
+            ? card.SupportedInterfaces.FirstOrDefault(candidate => candidate.ProtocolBinding == "SLIMRPC" &&
+                candidate.ProtocolVersion == "1.0" && BuyerSlim.TargetName(candidate.Url) is not null)?.Url
+            : null;
+        // A seller reachable only over SLIM may publish no configured HTTP interface.
+        var endpoint = slimTarget is not null && !card.SupportedInterfaces.Any(candidate => candidate.ProtocolBinding == options.SupplierHttpBinding)
+            ? new Uri(slimTarget)
+            : SelectEndpoint(card, entry.CardUrl);
         var mode = options.CommunicationMode;
         if (mode == SupplierCommunicationMode.Automatic)
             mode = card.DefaultInputModes.Any(type => type != "application/json" && type.EndsWith("+json", StringComparison.Ordinal))
@@ -130,11 +150,6 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         if (mode != SupplierCommunicationMode.NaturalLanguage &&
             !formats.Any(format => format.Direction == "input"))
             throw new InvalidOperationException("Seller has no input structures understood in the configured communication mode.");
-        // Prefer the card's SLIMRPC interface when the buyer is configured for SLIM; JSON-RPC stays the fallback.
-        var slimTarget = slim?.Configured == true
-            ? card.SupportedInterfaces.FirstOrDefault(candidate => candidate.ProtocolBinding == "SLIMRPC" &&
-                candidate.ProtocolVersion == "1.0" && BuyerSlim.TargetName(candidate.Url) is not null)?.Url
-            : null;
         return new SupplierSelection(
             new SupplierBinding(entry.Identifier, entry.Version, entry.DisplayName ?? card.Name, entry.CardUrl, endpoint, entry.Catalog)
             { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = formats,
@@ -248,7 +263,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             tags: [new("gen_ai.operation.name", "invoke_agent"), new("gen_ai.agent.name", "SupplierAgent"),
                 new("gen_ai.provider.name", "agentcon.supplier"), new("agentcon.a2a.task.id", message.TaskId),
                 new("agentcon.a2a.context.id", message.ContextId)]);
-        activity?.SetTag("agentcon.a2a.transport", supplier.Transport);
+        activity?.SetTag("agentcon.a2a.transport",
+            supplier.SlimTarget is null || options.SupplierTransport == SupplierTransport.Http ? supplier.HttpBinding : "SLIMRPC");
         var (client, owned) = OpenClient(supplier);
         using var ownedClient = owned;
         try
@@ -334,7 +350,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
                 ? ["text/plain"]
                 : supplier.Formats.Where(format => format.Direction == "output").Select(format => format.MediaType))
             .Append("text/plain").Distinct().ToList();
-        var useSlim = slim is not null && suppliers.All(supplier => supplier.SlimTarget is not null) &&
+        var useSlim = slim is not null && options.SupplierTransport != SupplierTransport.Http &&
+            suppliers.All(supplier => supplier.SlimTarget is not null) &&
             slim.CanMulticast(suppliers.Select(supplier => supplier.SlimTarget!));
         var previousGroup = ExchangeStore.CurrentGroup.Value;
         ExchangeStore.CurrentGroup.Value = (Guid.NewGuid().ToString("N"), useSlim
@@ -364,25 +381,44 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
                 Configuration = new SendMessageConfiguration { ReturnImmediately = false, AcceptedOutputModes = accepted }
             };
             var replies = new Dictionary<string, MulticastReply>(StringComparer.Ordinal);
-            await foreach (var (target, response) in slim!.MulticastAsync(byTarget.Keys.ToList(), request, timeout, cancellationToken))
+            Exception? failed = null;
+            try
             {
-                var supplier = byTarget[target];
-                try
+                var multicastTimeout = TimeSpan.FromSeconds(Math.Min(options.MulticastTimeoutSeconds, timeout.TotalSeconds));
+                await foreach (var (target, response) in slim!.MulticastAsync(byTarget.Keys.ToList(), request, multicastTimeout, cancellationToken))
                 {
-                    ValidateOutputs(supplier, (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
-                        .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
-                    replies[target] = new(supplier, response, null);
-                }
-                catch (InvalidOperationException exception)
-                {
-                    replies[target] = new(supplier, null, exception.Message);
+                    var supplier = byTarget[target];
+                    try
+                    {
+                        ValidateOutputs(supplier, (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
+                            .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
+                        replies[target] = new(supplier, response, null);
+                    }
+                    catch (InvalidOperationException exception)
+                    {
+                        replies[target] = new(supplier, null, exception.Message);
+                    }
                 }
             }
-            return ("SLIMRPC multicast: one SendMessage to the group", byTarget
+            catch (Exception exception) when (replies.Count == 0 && !cancellationToken.IsCancellationRequested)
+            {
+                // No supplier has the request (e.g. the group session could not be set up): send it to each one instead.
+                failed = exception;
+            }
+            if (failed is not null)
+            {
+                activity?.SetTag("agentcon.a2a.multicast.error", failed.GetType().Name);
+                // A transport failure may mean the buyer's connection to the node was replaced: give the per-supplier
+                // fallback fresh sessions instead of ones opened on the old connection.
+                if (ReconnectingSlimClient.SessionMayBeDead(failed)) await slim!.ResetIdleClientsAsync(failed);
+                ExchangeStore.CurrentGroup.Value = (Guid.NewGuid().ToString("N"),
+                    $"SLIM multicast failed ({failed.GetType().Name}) · {suppliers.Count} × SendMessage instead");
+            }
+            else return ("SLIMRPC multicast: one SendMessage to the group", byTarget
                 .Select(pair => replies.GetValueOrDefault(pair.Key) ?? new(pair.Value, null, "No multicast reply before the timeout."))
                 .ToList());
         }
-        activity?.SetTag("agentcon.a2a.transport", "HTTP fan-out with polling");
+        activity?.SetTag("agentcon.a2a.transport", useSlim ? "SLIMRPC per supplier after multicast failure" : "HTTP fan-out with polling");
         var fanout = await Task.WhenAll(suppliers.Select(async supplier =>
         {
             try
@@ -648,7 +684,8 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
                 return new
                 {
                     supplier = reply.Supplier.Identifier,
-                    transport = reply.Supplier.Transport,
+                    transport = reply.Supplier.SlimTarget is null || gateway.Transport == SupplierTransport.Http
+                        ? reply.Supplier.HttpBinding : "SLIMRPC",
                     taskId = task?.Id,
                     contextId = task?.ContextId ?? message?.ContextId,
                     state = task?.Status.State.ToString(),
