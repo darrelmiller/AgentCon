@@ -20,6 +20,11 @@ framework.
 The packages are pinned to `A2A` / `A2A.AspNetCore` **1.0.0-preview2** and
 `GitHub.Copilot.SDK` **1.0.19**. The A2A v1 .NET SDK is still a preview.
 
+SLIMRPC uses `Agntcy.SlimA2A` **0.6.1** with `Agntcy.Slim.SlimRpc` and
+`Agntcy.Slim` **3.3.5**. These bindings include the Windows authentication-enum
+compatibility fix; older bindings can throw `StreamUnderflowException` when
+loading an unauthenticated local SLIM client configuration.
+
 ## Distributed tracing
 
 See [the shared OTLP/Aspire setup](../docs/telemetry.md) for exact environment
