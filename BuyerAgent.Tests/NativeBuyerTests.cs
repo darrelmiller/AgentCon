@@ -21,10 +21,11 @@ public sealed class NativeBuyerTests
     [InlineData("none", TaskState.Completed)]
     [InlineData("receipt", TaskState.Failed)]
     [InlineData("ownership", TaskState.Failed)]
+    [InlineData("closed-stream", TaskState.Completed)]
     public async Task StreamingWalletApprovalUpdatesBuyerWithoutAnotherMessageOrInference(string fault, TaskState expected)
     {
         using var network = new WineNetwork { Streaming = true, ReceiptQuoteId = fault == "receipt" ? "wrong" : "q",
-            WrongStreamTask = fault == "ownership" };
+            WrongStreamTask = fault == "ownership", CloseStreamAtAuth = fault == "closed-stream" };
         using var files = new TempCatalogs();
         await using var app = await StartAsync(network, files);
         using var http = app.GetTestClient();
@@ -53,7 +54,14 @@ public sealed class NativeBuyerTests
         await read.WaitAsync(timeout.Token);
         var complete = await buyer.GetTaskAsync(new() { Id = pending.Id }, timeout.Token);
         Assert.Equal(expected, complete.Status.State);
-        Assert.Equal(2, network.Calls.Count);
+        if (fault == "closed-stream")
+            // Resends are bound to the seller's purchase task; nothing new is quoted or ordered.
+            Assert.All(network.Calls.Skip(2), call =>
+            {
+                Assert.Equal("purchase-task", call.TaskId);
+                Assert.Equal(SupplierFormats.Purchase, call.Parts[0].MediaType);
+            });
+        else Assert.Equal(2, network.Calls.Count);
         Assert.Contains(events, item => item.StatusUpdate?.Status.State == expected);
         if (expected == TaskState.Completed)
         {
@@ -476,6 +484,8 @@ public sealed class NativeBuyerTests
     {
         public bool Streaming { get; set; }
         public bool WrongStreamTask { get; set; }
+        /// <summary>End the purchase stream at auth-required (as SLIMRPC does); the buyer must resend on the task.</summary>
+        public bool CloseStreamAtAuth { get; set; }
         public TaskCompletionSource Approve { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly CancellationTokenSource _stop = new();
         public bool Structured { get; set; } = true;
@@ -560,9 +570,22 @@ public sealed class NativeBuyerTests
                 string Frame(StreamResponse item) => "data: " + JsonSerializer.Serialize(new
                 { jsonrpc = "2.0", id = rpc.RootElement.GetProperty("id").Clone(), result = item },
                     A2AJsonUtilities.DefaultOptions) + "\n\n";
-                if (state != TaskState.AuthRequired)
+                if (state != TaskState.AuthRequired || CloseStreamAtAuth)
+                {
+                    if (state == TaskState.AuthRequired)
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                // Like the seller, the outcome is only reachable by sending on the pending task again.
+                                await Approve.Task.WaitAsync(_stop.Token);
+                                Verified = true;
+                            }
+                            catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+                        });
                     return new(HttpStatusCode.OK) { Content = new StringContent(Frame(new() { Task = task }),
                         System.Text.Encoding.UTF8, "text/event-stream") };
+                }
                 var pipe = new System.IO.Pipelines.Pipe();
                 var rpcId = rpc.RootElement.GetProperty("id").Clone();
                 string LaterFrame(StreamResponse item) => "data: " + JsonSerializer.Serialize(new
