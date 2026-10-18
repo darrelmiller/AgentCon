@@ -7,6 +7,15 @@ Builds the Rust suppliers and .NET buyer, starts them on loopback, optionally
 starts the Aspire dashboard with Podman, and opens the buyer dashboard.
 SLIMRPC is opt-in; the default demo uses HTTP JSON-RPC.
 
+Same settings as start-demo.sh (parameters or environment variables):
+SLIM=public|local, SLIM_IDENTITY=shared-secret|did-key|did-web, SLIM_NAMESPACE,
+SELLERS=local|cloud. SELLERS=cloud (with SLIM=public and SLIM_IDENTITY=did-web)
+starts only the buyer and uses the sellers running in the SLIM cluster, found
+through catalog.cloud.json; their HTTPS interfaces get the slimctl login as a
+bearer token. AGENTCON_BIN_DIR, when set, installs the built supplier and buyer
+there and runs them from that copy (build outputs can then live elsewhere);
+unset, the agents run from their build outputs.
+
 .PARAMETER BuyerArgs
 Additional arguments forwarded to the BuyerAgent after its default options.
 
@@ -28,6 +37,9 @@ building or starting services.
 
 .EXAMPLE
 .\start-demo.ps1 -BuyerArgs @('--Buyer:NativeStructuredSupport=true')
+
+.EXAMPLE
+.\start-demo.ps1 -Slim public -SlimIdentity did-web -Sellers cloud
 #>
 [CmdletBinding()]
 param(
@@ -41,6 +53,8 @@ param(
     [string]$Slim,
     [string]$SlimNamespace,
     [string]$SlimIdentity,
+    [string]$Sellers,
+    [string]$BinDir,
     [string[]]$BuyerArgs = @(),
     [switch]$NoTraces,
     [switch]$NoBrowser,
@@ -162,6 +176,9 @@ $tracesEnabled = -not $NoTraces -and $env:TRACES -ne '0'
 $slimMode = Get-Setting $boundParameters 'Slim' 'SLIM' ''
 $slimNamespaceValue = Get-Setting $boundParameters 'SlimNamespace' 'SLIM_NAMESPACE' 'agentcon'
 $slimIdentityValue = Get-Setting $boundParameters 'SlimIdentity' 'SLIM_IDENTITY' 'shared-secret'
+$sellersValue = Get-Setting $boundParameters 'Sellers' 'SELLERS' 'local'
+$binDirectory = Get-Setting $boundParameters 'BinDir' 'AGENTCON_BIN_DIR' ''
+$localSellers = $sellersValue -eq 'local'
 $verifierUrl = Get-Setting $boundParameters 'SupplierVerifierUrl' 'SUPPLIER_VERIFIER_URL' ''
 $verifierToken = Get-Setting $boundParameters 'SupplierVerifierToken' 'SUPPLIER_VERIFIER_TOKEN' ''
 $stateRoot = Join-Path $env:LOCALAPPDATA 'AgentConDemo'
@@ -173,9 +190,15 @@ $startedProcesses = [System.Collections.Generic.List[object]]::new()
 
 try {
     if ($slimMode -notin @('', 'public', 'local')) { throw 'Slim must be empty, public, or local.' }
-    if ($slimIdentityValue -notin @('shared-secret', 'did-key')) {
-        throw 'SlimIdentity must be shared-secret or did-key.'
+    if ($slimIdentityValue -notin @('shared-secret', 'did-key', 'did-web')) {
+        throw 'SlimIdentity must be shared-secret, did-key, or did-web.'
     }
+    if ($sellersValue -notin @('local', 'cloud')) { throw 'Sellers must be local or cloud.' }
+    if (-not $localSellers -and ($slimMode -ne 'public' -or $slimIdentityValue -ne 'did-web')) {
+        throw 'Sellers cloud needs Slim public and SlimIdentity did-web.'
+    }
+    # Cloud sellers run in the SLIM cluster: only the buyer starts here.
+    if (-not $localSellers) { $ports = @(5100) }
     if (($verifierUrl.Length -gt 0) -xor ($verifierToken.Length -gt 0)) {
         if ($verifierUrl.Length -gt 0 -and -not $verifierToken -and [Environment]::UserInteractive) {
             $secureToken = Read-Host "Issuer admin token for $verifierUrl" -AsSecureString
@@ -185,7 +208,7 @@ try {
         }
     }
 
-    foreach ($file in $inventoryFiles) {
+    foreach ($file in $(if ($localSellers) { $inventoryFiles } else { @() })) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Inventory file not found: $file" }
     }
     if ($slimMode -eq 'local') { $ports += 46357 }
@@ -245,14 +268,14 @@ try {
     if ($slimMode) {
         Assert-Command 'slimctl' 'Install slimctl; see docs\windows-setup.md.'
         if ($slimMode -eq 'local') { Assert-Command 'python' 'Install Python 3 for SLIM identity config creation.' }
-        if ($slimIdentityValue -eq 'did-key') {
+        if ($slimIdentityValue -in @('did-key', 'did-web')) {
             Assert-Command 'python' 'Install Python 3 for SLIM identity config creation.'
-            Assert-Command 'openssl' 'Install OpenSSL CLI for per-agent did:key creation.'
+            Assert-Command 'openssl' 'Install OpenSSL CLI for per-agent key creation (Git for Windows includes it).'
         }
     }
 
     if ($CheckOnly) {
-        Write-Host "Configuration is valid. HTTP ports: $($ports -join ', '); traces: $tracesEnabled; SLIM: $(if ($slimMode) { $slimMode } else { 'disabled' })."
+        Write-Host "Configuration is valid. HTTP ports: $($ports -join ', '); traces: $tracesEnabled; SLIM: $(if ($slimMode) { "$slimMode ($slimIdentityValue)" } else { 'disabled' }); sellers: $sellersValue."
         return
     }
 
@@ -321,6 +344,7 @@ try {
         New-Item -ItemType Directory -Force -Path $slimDirectory | Out-Null
         $slimConfigPath = Join-Path $slimDirectory 'slim-client.json'
         $slimOrgNamespace = "agntcy/$slimNamespaceValue"
+        $didWebDirectory = Join-Path $stateRoot 'slim-didweb'
         if ($slimMode -eq 'public') {
             $slimTokenPath = Join-Path $HOME '.slimctl\token'
             if (-not (Test-Path -LiteralPath $slimTokenPath)) {
@@ -377,13 +401,27 @@ services:
             $identity = @{ type = 'shared_secret'; id = "$slimOrgNamespace/cli"; data = $slimSharedSecret }
             @{ client = $slimClient; app = @{ name = "$slimOrgNamespace/cli"; identity_provider = $identity; identity_verifier = $identity } } |
                 ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $slimConfigPath
-        } else {
+        } elseif ($slimIdentityValue -eq 'did-key') {
             $agents = @('cli', 'barolo-supplier', 'sardinian-supplier', 'french-supplier', 'buyer')
             $identityArguments = @('-I', (Join-Path $repo 'tools\slim\slim_identities.py'), $slimDirectory,
                 ($slimClient | ConvertTo-Json -Compress -Depth 10), $slimOrgNamespace) + $agents
             & python @identityArguments | ForEach-Object { Write-Host "  $_" }
             if ($LASTEXITCODE -ne 0) { throw 'SLIM did:key identity generation failed.' }
             Copy-Item -LiteralPath (Join-Path $slimDirectory 'cli.json') -Destination $slimConfigPath -Force
+        } else {
+            # Keys and configs in their own directory; the trust list is the JWKS the did:web domain publishes.
+            $agents = @('cli', 'buyer', 'barolo-supplier', 'sardinian-supplier', 'french-supplier')
+            $identityArguments = @('-I', (Join-Path $repo 'tools\slim\slim_identities.py'), '--did-web',
+                'agents.slim.outshift.io/agentcon', $didWebDirectory, ($slimClient | ConvertTo-Json -Compress -Depth 10),
+                $slimOrgNamespace) + $agents
+            Write-Host 'SLIM identities (did:web):'
+            & python @identityArguments | ForEach-Object { Write-Host "  $_" }
+            if ($LASTEXITCODE -ne 0) { throw 'SLIM did:web identity generation failed.' }
+            try {
+                Invoke-WebRequest -Uri 'https://agents.slim.outshift.io/.well-known/jwks.json' -TimeoutSec 20 `
+                    -MaximumRedirection 0 -OutFile (Join-Path $didWebDirectory 'site\.well-known\jwks.json')
+            } catch { throw 'Cannot fetch the published JWKS from https://agents.slim.outshift.io.' }
+            Copy-Item -LiteralPath (Join-Path $didWebDirectory 'cli.json') -Destination $slimConfigPath -Force
         }
     }
 
@@ -405,15 +443,28 @@ services:
             $env:LIBCLANG_PATH = $previousLibclangPath
         }
     }
-    Invoke-Build 'Building .NET buyer...' {
-        & dotnet build BuyerAgent\BuyerAgent.csproj --nologo -v quiet
+    $supplierExecutable = Join-Path $repo 'SupplierAgent\target\debug\agentcon-supplier.exe'
+    $buyerCommand = @('run', '--no-build', '--project', 'BuyerAgent\BuyerAgent.csproj', '--')
+    if ($binDirectory) {
+        # Run from an installed copy, so the build outputs can live elsewhere (e.g. an external drive).
+        New-Item -ItemType Directory -Force -Path $binDirectory | Out-Null
+        Copy-Item -LiteralPath $supplierExecutable -Destination (Join-Path $binDirectory 'agentcon-supplier.exe') -Force
+        $supplierExecutable = Join-Path $binDirectory 'agentcon-supplier.exe'
+        Invoke-Build 'Publishing .NET buyer...' {
+            & dotnet publish BuyerAgent\BuyerAgent.csproj -c Debug --nologo -v quiet -o (Join-Path $binDirectory 'buyer')
+        }
+        $buyerCommand = @((Join-Path $binDirectory 'buyer\BuyerAgent.dll'))
+    } else {
+        Invoke-Build 'Building .NET buyer...' {
+            & dotnet build BuyerAgent\BuyerAgent.csproj --nologo -v quiet
+        }
     }
 
     New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
     $supplierNames = @('supplier', 'sardinia', 'france')
     $supplierApps = @('barolo-supplier', 'sardinian-supplier', 'french-supplier')
     $supplierProcesses = [System.Collections.Generic.List[object]]::new()
-    for ($index = 0; $index -lt 3; $index++) {
+    for ($index = 0; $index -lt $(if ($localSellers) { 3 } else { 0 }); $index++) {
         $supplierState = Join-Path $stateRoot "$($supplierNames[$index])-copilot"
         New-Item -ItemType Directory -Force -Path $supplierState | Out-Null
         $supplierEnvironment = @{
@@ -439,11 +490,13 @@ services:
         if ($slimMode) {
             $supplierEnvironment.SUPPLIER_SLIM_NAME = "$slimOrgNamespace/$($supplierApps[$index])"
             $supplierEnvironment.SLIM_SHARED_SECRET = $slimSharedSecret
-            $supplierEnvironment.SUPPLIER_SLIM_CONFIG = if ($slimIdentityValue -eq 'did-key') {
-                Join-Path $slimDirectory "$($supplierApps[$index]).json"
-            } else { $slimConfigPath }
+            $supplierEnvironment.SUPPLIER_SLIM_CONFIG = switch ($slimIdentityValue) {
+                'did-key' { Join-Path $slimDirectory "$($supplierApps[$index]).json" }   # its own key and the trust list
+                'did-web' { Join-Path $didWebDirectory "$($supplierApps[$index]).json" }
+                default { $slimConfigPath }
+            }
         }
-        $process = Start-LoggedProcess (Join-Path $repo 'SupplierAgent\target\debug\agentcon-supplier.exe') `
+        $process = Start-LoggedProcess $supplierExecutable `
             @() $repo $supplierEnvironment (Join-Path $logDirectory "$($supplierNames[$index]).log")
         $startedProcesses.Add($process)
         $supplierProcesses.Add($process)
@@ -460,12 +513,25 @@ services:
         OTEL_EXPORTER_OTLP_ENDPOINT = if ($tracesEnabled) { 'http://localhost:4317' } else { $null }
         OTEL_EXPORTER_OTLP_PROTOCOL = if ($tracesEnabled) { 'grpc' } else { $null }
     }
-    $buyerArguments = @('run', '--no-build', '--project', 'BuyerAgent\BuyerAgent.csproj', '--',
+    $buyerArguments = $buyerCommand + @(
         '--Buyer:ExchangeCaptureEnabled=true', "--Buyer:Model=$model",
         "--Buyer:CopilotStateDirectory=$buyerState")
     if ($slimMode) {
-        $buyerArguments += "--Buyer:SlimConfigPath=$slimConfigPath"
-        $buyerArguments += "--Buyer:SlimName=agntcy/agentcon/buyer"
+        # The buyer's own identity (did-key, did-web); with a shared secret every app uses the common file.
+        $buyerSlimConfig = switch ($slimIdentityValue) {
+            'did-key' { Join-Path $slimDirectory 'buyer.json' }
+            'did-web' { Join-Path $didWebDirectory 'buyer.json' }
+            default { $slimConfigPath }
+        }
+        $buyerArguments += "--Buyer:SlimConfigPath=$buyerSlimConfig"
+        $buyerArguments += "--Buyer:SlimName=$slimOrgNamespace/buyer"
+    }
+    if (-not $localSellers) {
+        # Cloud sellers' HTTPS interfaces sit behind the OIDC gateway: the buyer sends the slimctl login as a
+        # bearer token, to that host only.
+        $buyerArguments += "--Buyer:CatalogUrl=$(Join-Path $repo 'catalog.cloud.json')"
+        $buyerArguments += "--Buyer:SupplierBearerTokenFile=$slimTokenPath"
+        $buyerArguments += '--Buyer:SupplierBearerTokenOrigins:0=https://agents.slim.outshift.io'
     }
     $buyerArguments += $BuyerArgs
     $buyerProcess = Start-LoggedProcess 'dotnet' $buyerArguments $repo $buyerEnvironment `
@@ -473,9 +539,11 @@ services:
     $startedProcesses.Add($buyerProcess)
 
     $healthTargets = @(
-        @{ Name = 'Barolo supplier'; Url = 'http://localhost:6000/health'; Log = $supplierProcesses[0] },
-        @{ Name = 'Sardinian supplier'; Url = 'http://localhost:6100/health'; Log = $supplierProcesses[1] },
-        @{ Name = 'French supplier'; Url = 'http://localhost:6200/health'; Log = $supplierProcesses[2] },
+        if ($localSellers) {
+            @{ Name = 'Barolo supplier'; Url = 'http://localhost:6000/health'; Log = $supplierProcesses[0] }
+            @{ Name = 'Sardinian supplier'; Url = 'http://localhost:6100/health'; Log = $supplierProcesses[1] }
+            @{ Name = 'French supplier'; Url = 'http://localhost:6200/health'; Log = $supplierProcesses[2] }
+        }
         @{ Name = 'Buyer'; Url = 'http://localhost:5100/health'; Log = $buyerProcess }
     )
     foreach ($target in $healthTargets) {
@@ -509,7 +577,8 @@ services:
     }
 
     Write-Host "`nModel: $model"
-    Write-Host 'Transport: HTTP JSON-RPC (SLIMRPC is opt-in).'
+    Write-Host $(if ($slimMode) { "Transport: SLIMRPC ($slimMode, identity $slimIdentityValue, sellers $sellersValue), HTTP JSON-RPC as fallback." }
+        else { 'Transport: HTTP JSON-RPC (SLIMRPC is opt-in).' })
     Write-Host 'Buyer dashboard: http://localhost:5100/demo'
     if ($tracesEnabled) { Write-Host "Aspire: $dashboardLogin`nOTLP: http://localhost:4317 (gRPC)" }
     else { Write-Host 'Traces: disabled' }
@@ -517,8 +586,8 @@ services:
     Write-Host "`nTry:"
     if ($slimMode) {
         Write-Host "  `$env:A2A_SLIMRPC_PLUGIN_CONFIG = '$slimConfigPath'"
-        Write-Host "  a2a send -e slim://agntcy/agentcon/buyer --transport slimrpc --timeout 150s --context-id dinner 'Search the catalog for wine suppliers and ask for a demo quote for 12 cases of 2019 Barolo delivered to San Jose. Do not purchase.'"
-        Write-Host "  a2a send -e slim://agntcy/agentcon/buyer --transport slimrpc --timeout 150s --context-id dinner 'Buy the quoted wine as a simulated demo order only.'"
+        Write-Host "  a2a send -e slim://$slimOrgNamespace/buyer --transport slimrpc --timeout 150s --context-id dinner 'Search the catalog for wine suppliers and ask for a demo quote for 12 cases of 2019 Barolo delivered to San Jose. Do not purchase.'"
+        Write-Host "  a2a send -e slim://$slimOrgNamespace/buyer --transport slimrpc --timeout 150s --context-id dinner 'Buy the quoted wine as a simulated demo order only.'"
     } else {
         Write-Host "  a2a send -a http://localhost:5100 --timeout 150s --context-id dinner 'Search the catalog for wine suppliers, select urn:agentcon:agent:demo-wine-supplier, and ask for a demo quote for 12 cases of 2019 Barolo delivered to San Jose. Do not purchase.'"
         Write-Host "  a2a send -a http://localhost:5100 --timeout 150s --context-id dinner 'Buy the quoted wine as a simulated demo order only.'"
