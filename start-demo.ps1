@@ -163,7 +163,9 @@ $slimMode = Get-Setting $boundParameters 'Slim' 'SLIM' ''
 $slimNamespaceValue = Get-Setting $boundParameters 'SlimNamespace' 'SLIM_NAMESPACE' 'agentcon'
 $slimIdentityValue = Get-Setting $boundParameters 'SlimIdentity' 'SLIM_IDENTITY' 'shared-secret'
 $verifierUrl = Get-Setting $boundParameters 'SupplierVerifierUrl' 'SUPPLIER_VERIFIER_URL' ''
-$verifierToken = Get-Setting $boundParameters 'SupplierVerifierToken' 'SUPPLIER_VERIFIER_TOKEN' ''
+$verifierToken = Get-Setting $boundParameters 'SupplierVerifierToken' 'SUPPLIER_VERIFIER_TOKEN' $(
+    if ([string]::IsNullOrWhiteSpace($env:ISSUER_ADMIN_TOKEN)) { '' } else { $env:ISSUER_ADMIN_TOKEN }
+)
 $stateRoot = Join-Path $env:LOCALAPPDATA 'AgentConDemo'
 $worktreeHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
     [Text.Encoding]::UTF8.GetBytes($repo))).Substring(0, 8).ToLowerInvariant()
@@ -184,12 +186,7 @@ try {
         throw 'SlimIdentity must be shared-secret or did-key.'
     }
     if (($verifierUrl.Length -gt 0) -xor ($verifierToken.Length -gt 0)) {
-        if ($verifierUrl.Length -gt 0 -and -not $verifierToken -and [Environment]::UserInteractive) {
-            $secureToken = Read-Host "Issuer admin token for $verifierUrl" -AsSecureString
-            $verifierToken = [Net.NetworkCredential]::new('', $secureToken).Password
-        } else {
-            throw 'Set both SupplierVerifierUrl and SupplierVerifierToken, or neither.'
-        }
+        throw 'Set both SupplierVerifierUrl and its token (SUPPLIER_VERIFIER_TOKEN or ISSUER_ADMIN_TOKEN), or neither.'
     }
 
     foreach ($file in $inventoryFiles) {

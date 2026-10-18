@@ -78,7 +78,7 @@ Equivalent environment variables from `start-demo.sh` and PowerShell options:
 | `SARDINIA_INVENTORY` | `-SardiniaInventory` | `SupplierAgent\inventories\sardinia.json` |
 | `FRANCE_INVENTORY` | `-FranceInventory` | `SupplierAgent\inventories\france.json` |
 | `SUPPLIER_VERIFIER_URL` | `-SupplierVerifierUrl` | unset |
-| `SUPPLIER_VERIFIER_TOKEN` | `-SupplierVerifierToken` | unset; prompted if a verifier URL is set |
+| `SUPPLIER_VERIFIER_TOKEN` | `-SupplierVerifierToken` | unset; PowerShell also accepts `ISSUER_ADMIN_TOKEN` as a fallback |
 | `TRACES=0` | `-NoTraces` | Aspire traces enabled |
 | `SLIM` | `-Slim` | unset; `public` or `local` opts into SLIMRPC |
 | `SLIM_NAMESPACE` | `-SlimNamespace` | `agentcon` |
@@ -88,9 +88,11 @@ Other script options: `-BuyerArgs` passes additional arguments through to the
 buyer, for example
 `.\start-demo.ps1 -BuyerArgs @('--Buyer:NativeStructuredSupport=true')`.
 The positional arguments accepted by the Bash script are likewise additional
-buyer command-line arguments. For secrets, prefer entering the verifier token
-at the prompt or setting it in the current process environment rather than
-putting it on the command line.
+buyer command-line arguments. For secrets, set the verifier token in the current
+process environment rather than putting it on the command line. PowerShell
+reads `SUPPLIER_VERIFIER_TOKEN`, falling back to `ISSUER_ADMIN_TOKEN`; an explicit
+`-SupplierVerifierToken` takes precedence. It does not prompt, and fails if a
+verifier URL is supplied without a token.
 
 The launcher requires .NET 10, Rust/MSVC build tools and matching-host libclang
 (see [supplier Windows setup](SupplierAgent/README.md#run-on-this-windows-arm64-machine)), `gh` authenticated as the
