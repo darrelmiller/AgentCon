@@ -16,7 +16,7 @@ use std::{
 };
 
 use a2a::*;
-use a2a_server::{AgentExecutor, DefaultRequestHandler, ExecutorContext, InMemoryTaskStore};
+use a2a_server::{AgentExecutor, DefaultRequestHandler, ExecutorContext, InMemoryTaskStore, ServiceParams};
 use axum::{
     Json, Router,
     extract::Request as HttpRequest,
@@ -795,6 +795,76 @@ async fn preserve_output_modes(request: HttpRequest, next: Next) -> Response {
         .headers_mut()
         .remove(axum::http::header::CONTENT_LENGTH);
     next.run(request).await
+}
+
+/// Request metadata the supplier derives itself, the same way for every binding: whether the caller streams (so the
+/// executor keeps waiting for wallet authorization and streams the result) and its accepted output modes (the
+/// pinned SDK omits configuration from ExecutorContext). Values a caller sends under these keys are replaced.
+fn bridge_request_metadata(req: &mut SendMessageRequest, streaming: bool) {
+    let metadata = req.metadata.get_or_insert_with(Default::default);
+    metadata.insert("agentcon.internal.watchAuthorization".into(), json!(streaming));
+    metadata.remove("agentcon.internal.acceptedOutputModes");
+    if let Some(modes) = req.configuration.as_ref().and_then(|config| config.accepted_output_modes.clone()) {
+        metadata.insert("agentcon.internal.acceptedOutputModes".into(), json!(modes));
+    }
+}
+
+/// The request handler for bindings that reach it directly rather than through the HTTP middleware (SLIMRPC):
+/// applies [`bridge_request_metadata`] and delegates everything else unchanged.
+pub struct BridgedHandler(pub Arc<DefaultRequestHandler>);
+
+#[async_trait::async_trait]
+impl a2a_server::RequestHandler for BridgedHandler {
+    async fn send_message(&self, params: &ServiceParams, mut req: SendMessageRequest) -> Result<SendMessageResponse, A2AError> {
+        if req.configuration.as_ref().and_then(|config| config.accepted_output_modes.as_ref())
+            .is_some_and(|modes| modes.len() > 16 || modes.iter().any(|mode| mode.is_empty() || mode.len() > 256)) {
+            return Err(A2AError::invalid_params("Invalid acceptedOutputModes."));
+        }
+        bridge_request_metadata(&mut req, false);
+        self.0.send_message(params, req).await
+    }
+    async fn send_streaming_message(&self, params: &ServiceParams, mut req: SendMessageRequest)
+        -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        if req.configuration.as_ref().and_then(|config| config.accepted_output_modes.as_ref())
+            .is_some_and(|modes| modes.len() > 16 || modes.iter().any(|mode| mode.is_empty() || mode.len() > 256)) {
+            return Err(A2AError::invalid_params("Invalid acceptedOutputModes."));
+        }
+        bridge_request_metadata(&mut req, true);
+        self.0.send_streaming_message(params, req).await
+    }
+    async fn get_task(&self, params: &ServiceParams, req: GetTaskRequest) -> Result<Task, A2AError> {
+        self.0.get_task(params, req).await
+    }
+    async fn list_tasks(&self, params: &ServiceParams, req: ListTasksRequest) -> Result<ListTasksResponse, A2AError> {
+        self.0.list_tasks(params, req).await
+    }
+    async fn cancel_task(&self, params: &ServiceParams, req: CancelTaskRequest) -> Result<Task, A2AError> {
+        self.0.cancel_task(params, req).await
+    }
+    async fn subscribe_to_task(&self, params: &ServiceParams, req: SubscribeToTaskRequest)
+        -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
+        self.0.subscribe_to_task(params, req).await
+    }
+    async fn create_push_config(&self, params: &ServiceParams, req: TaskPushNotificationConfig)
+        -> Result<TaskPushNotificationConfig, A2AError> {
+        self.0.create_push_config(params, req).await
+    }
+    async fn get_push_config(&self, params: &ServiceParams, req: GetTaskPushNotificationConfigRequest)
+        -> Result<TaskPushNotificationConfig, A2AError> {
+        self.0.get_push_config(params, req).await
+    }
+    async fn list_push_configs(&self, params: &ServiceParams, req: ListTaskPushNotificationConfigsRequest)
+        -> Result<ListTaskPushNotificationConfigsResponse, A2AError> {
+        self.0.list_push_configs(params, req).await
+    }
+    async fn delete_push_config(&self, params: &ServiceParams, req: DeleteTaskPushNotificationConfigRequest)
+        -> Result<(), A2AError> {
+        self.0.delete_push_config(params, req).await
+    }
+    async fn get_extended_agent_card(&self, params: &ServiceParams, req: GetExtendedAgentCardRequest)
+        -> Result<AgentCard, A2AError> {
+        self.0.get_extended_agent_card(params, req).await
+    }
 }
 
 /// The supplier's A2A request handler. Share one instance across bindings (HTTP JSON-RPC and

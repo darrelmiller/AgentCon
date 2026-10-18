@@ -124,7 +124,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let supplier = Arc::new(supplier);
     let handler = request_handler(supplier.clone());
     if let Some(settings) = slim_settings {
-        let slim_handler = handler.clone();
+        // SLIMRPC reaches the handler directly, so it derives the request metadata the HTTP middleware adds.
+        let slim_handler = Arc::new(agentcon_supplier::BridgedHandler(handler.clone()));
         let ready_supplier = supplier.clone();
         tokio::spawn(async move {
             if let Err(error) = slim::serve(slim_handler, settings, move |ready| ready_supplier.set_slim_ready(ready)).await {
