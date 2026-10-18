@@ -399,6 +399,9 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             if (failed is not null)
             {
                 activity?.SetTag("agentcon.a2a.multicast.error", failed.GetType().Name);
+                // A transport failure may mean the buyer's connection to the node was replaced: give the per-supplier
+                // fallback fresh sessions instead of ones opened on the old connection.
+                if (ReconnectingSlimClient.SessionMayBeDead(failed)) await slim!.ResetIdleClientsAsync(failed);
                 ExchangeStore.CurrentGroup.Value = (Guid.NewGuid().ToString("N"),
                     $"SLIM multicast failed ({failed.GetType().Name}) · {suppliers.Count} × SendMessage instead");
             }
