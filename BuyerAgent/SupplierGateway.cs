@@ -360,25 +360,40 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
                 Configuration = new SendMessageConfiguration { ReturnImmediately = false, AcceptedOutputModes = accepted }
             };
             var replies = new Dictionary<string, MulticastReply>(StringComparer.Ordinal);
-            await foreach (var (target, response) in slim!.MulticastAsync(byTarget.Keys.ToList(), request, timeout, cancellationToken))
+            Exception? failed = null;
+            try
             {
-                var supplier = byTarget[target];
-                try
+                await foreach (var (target, response) in slim!.MulticastAsync(byTarget.Keys.ToList(), request, timeout, cancellationToken))
                 {
-                    ValidateOutputs(supplier, (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
-                        .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
-                    replies[target] = new(supplier, response, null);
-                }
-                catch (InvalidOperationException exception)
-                {
-                    replies[target] = new(supplier, null, exception.Message);
+                    var supplier = byTarget[target];
+                    try
+                    {
+                        ValidateOutputs(supplier, (response.Task?.Artifacts ?? []).SelectMany(artifact => artifact.Parts)
+                            .Concat(response.Task?.Status.Message?.Parts ?? []).Concat(response.Message?.Parts ?? []));
+                        replies[target] = new(supplier, response, null);
+                    }
+                    catch (InvalidOperationException exception)
+                    {
+                        replies[target] = new(supplier, null, exception.Message);
+                    }
                 }
             }
-            return ("SLIMRPC multicast: one SendMessage to the group", byTarget
+            catch (Exception exception) when (replies.Count == 0 && !cancellationToken.IsCancellationRequested)
+            {
+                // No supplier has the request (e.g. the group session could not be set up): send it to each one instead.
+                failed = exception;
+            }
+            if (failed is not null)
+            {
+                activity?.SetTag("agentcon.a2a.multicast.error", failed.GetType().Name);
+                ExchangeStore.CurrentGroup.Value = (Guid.NewGuid().ToString("N"),
+                    $"SLIM multicast failed ({failed.GetType().Name}) · {suppliers.Count} × SendMessage instead");
+            }
+            else return ("SLIMRPC multicast: one SendMessage to the group", byTarget
                 .Select(pair => replies.GetValueOrDefault(pair.Key) ?? new(pair.Value, null, "No multicast reply before the timeout."))
                 .ToList());
         }
-        activity?.SetTag("agentcon.a2a.transport", "HTTP fan-out with polling");
+        activity?.SetTag("agentcon.a2a.transport", useSlim ? "SLIMRPC per supplier after multicast failure" : "HTTP fan-out with polling");
         var fanout = await Task.WhenAll(suppliers.Select(async supplier =>
         {
             try

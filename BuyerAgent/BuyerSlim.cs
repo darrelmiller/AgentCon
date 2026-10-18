@@ -198,11 +198,25 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
         return root["client"]?.DeepClone() ?? throw new InvalidOperationException("SLIM config file has no client section.");
     }
 
-    /// <summary>A SLIMRPC client to <paramref name="target"/> when connected, recorded in the dashboard; otherwise null.</summary>
+    /// <summary>How long a stream may stay silent before its session is treated as dead (agents answer at once).</summary>
+    internal static readonly TimeSpan FirstEventTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// A SLIMRPC client to <paramref name="target"/> when connected, recorded in the dashboard; otherwise null. It opens
+    /// a new session after a failure, so a restarted supplier is reached again (see <see cref="ReconnectingSlimClient"/>).
+    /// </summary>
     public IA2AClient? ClientFor(string target)
     {
-        if (Volatile.Read(ref _connection) is not { } connection || TargetName(target) is not { } remote) return null;
-        var client = _clients.GetOrAdd(remote, name => new Lazy<SlimA2AClient>(() => connection.CreateClient(new SlimA2AClientOptions
+        if (Volatile.Read(ref _connection) is null || TargetName(target) is not { } remote) return null;
+        IA2AClient client = new ReconnectingSlimClient(remote, () => CurrentClient(remote),
+            (stale, reason) => ResetClientAsync(remote, stale, reason), FirstEventTimeout, logger);
+        return exchanges.Enabled ? new CapturingClient(client, exchanges, new Uri($"slim://{remote}")) : client;
+    }
+
+    private SlimA2AClient CurrentClient(string remote)
+    {
+        var connection = Volatile.Read(ref _connection) ?? throw new InvalidOperationException("SLIM is not connected.");
+        return _clients.GetOrAdd(remote, name => new Lazy<SlimA2AClient>(() => connection.CreateClient(new SlimA2AClientOptions
         {
             // One SLIM app per supplier; the server identity stays free for inbound calls.
             Identity = $"{options.SlimName}-to-{name.Split('/')[^1]}",
@@ -211,7 +225,27 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
             IdentityVerifier = Identity?.Verifier,
             Remote = name,
         }))).Value;
-        return exchanges.Enabled ? new CapturingClient(client, exchanges, new Uri($"slim://{remote}")) : client;
+    }
+
+    /// <summary>
+    /// Drops <paramref name="stale"/> if it is still the client for <paramref name="remote"/>, and disposes it before
+    /// the next call creates a replacement under the same SLIM app name.
+    /// </summary>
+    private async Task ResetClientAsync(string remote, IA2AClient stale, Exception reason)
+    {
+        if (!_clients.TryGetValue(remote, out var entry) || !entry.IsValueCreated || !ReferenceEquals(entry.Value, stale) ||
+            !_clients.TryRemove(new KeyValuePair<string, Lazy<SlimA2AClient>>(remote, entry)))
+            return;
+        logger.LogWarning("SLIM call to {Remote} failed ({ErrorType}); the next call opens a new session",
+            remote, reason.GetType().Name);
+        try
+        {
+            await entry.Value.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogDebug(exception, "Closing the previous SLIM client to {Remote} failed", remote);
+        }
     }
 
     /// <summary>True when every target can be reached in one SLIM multicast.</summary>
