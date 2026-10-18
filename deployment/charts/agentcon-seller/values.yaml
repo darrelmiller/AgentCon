@@ -55,6 +55,20 @@ modelCreds:
   # Use an existing Secret (keys "api-key" and "base-url") instead of the ExternalSecret.
   existingSecret: ""
 
+# OID4VP wallet verification for purchases (the AgentCon demo issuer, which also hosts the verifier). Without it,
+# purchases stay auth-required. The seller only calls out to the verifier: it creates a presentation request per
+# purchase and polls for the result.
+verifier:
+  enabled: false
+  url: https://agentcon-issuer.azurewebsites.net
+  secretStore: vault-eticloud-apps-phoenix
+  vaultPath: dev/agntcy/slim/agentcon-sellers
+  # The issuer's ISSUER_ADMIN_TOKEN, shared by all sellers.
+  tokenProperty: issuer-admin-token
+  refreshInterval: 1h
+  # Use an existing Secret (key "token") instead of the ExternalSecret.
+  existingSecret: ""
+
 externalSecrets:
   apiVersion: external-secrets.io/v1beta1
 

@@ -62,6 +62,12 @@ spec:
             - name: MODEL_NAME
               value: {{ .Values.modelCreds.model | quote }}
             {{- end }}
+            {{- if .Values.verifier.enabled }}
+            - name: SUPPLIER_VERIFIER_URL
+              value: {{ required "verifier.url is required" .Values.verifier.url | quote }}
+            - name: SUPPLIER_VERIFIER_TOKEN_FILE
+              value: /var/run/secrets/verifier/token
+            {{- end }}
             {{- if .Values.http.enabled }}
             - name: SUPPLIER_PORT
               value: {{ .Values.http.port | quote }}
@@ -116,6 +122,11 @@ spec:
               mountPath: /var/run/secrets/model
               readOnly: true
             {{- end }}
+            {{- if .Values.verifier.enabled }}
+            - name: verifier
+              mountPath: /var/run/secrets/verifier
+              readOnly: true
+            {{- end }}
             - name: spiffe
               mountPath: /spiffe-workload-api
               readOnly: true
@@ -136,6 +147,12 @@ spec:
         - name: model
           secret:
             secretName: {{ include "seller.modelSecret" . }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.verifier.enabled }}
+        - name: verifier
+          secret:
+            secretName: {{ include "seller.verifierSecret" . }}
             defaultMode: 0440
         {{- end }}
         - name: spiffe
