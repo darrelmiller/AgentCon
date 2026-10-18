@@ -181,6 +181,19 @@ machine. The launcher builds and runs the buyer and suppliers and starts the
 Aspire dashboard with Podman. Use `.\start-demo.ps1 -NoTraces` to skip Podman
 and Aspire.
 
+The launcher takes the same settings as `start-demo.sh`, as parameters or
+environment variables. For example, to use the sellers running in the cloud,
+over SLIM and HTTPS, after `slimctl login`:
+
+```powershell
+.\start-demo.ps1 -Slim public -SlimIdentity did-web -Sellers cloud
+```
+
+`-SlimIdentity did-key` and `did-web` need Python 3 and the OpenSSL CLI on
+`PATH` (Git for Windows includes OpenSSL). `-BinDir <folder>` (or
+`AGENTCON_BIN_DIR`) installs the built agents in that folder and runs them from
+there; without it, they run from their build outputs.
+
 To run `start-demo.sh` itself, use WSL 2 and follow the Linux setup steps,
 including Docker. The optional Windows SLIMRPC setup above is separate from the
 default HTTP demo.
