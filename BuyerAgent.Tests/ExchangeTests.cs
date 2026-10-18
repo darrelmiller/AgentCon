@@ -403,7 +403,7 @@ public sealed class ExchangeTests
         Assert.Equal("no-store", page.Headers.CacheControl!.ToString());
         Assert.Contains("frame-ancestors 'none'", page.Headers.GetValues("Content-Security-Policy").Single());
         var html = await page.Content.ReadAsStringAsync();
-        Assert.Contains("Message inspector", html);
+        Assert.Contains("Stream Inspector", html);
         Assert.DoesNotContain("Demo content capture is ON.", html);
         Assert.DoesNotContain("class=\"notice\"", html);
         Assert.Contains("aria-describedby=\"capture-tip\"", html);

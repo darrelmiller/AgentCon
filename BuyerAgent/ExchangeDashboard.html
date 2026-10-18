@@ -224,6 +224,45 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     if (cls) element.className = cls;
     return element;
   }
+  function renderReplyText(element, text) {
+    element.replaceChildren();
+    // Recognize links, not HTML or full Markdown; code and images stay literal.
+    const tokens = /```[\s\S]*?(?:```|$)|(`+)[^\r\n]*?\1|!?\[([^\]\r\n]+)\]\(\s*(<[^<>\r\n]*>|(?:[^()\s<>]|\([^()\s<>]*\))*)(?:\s+["'][^"'\r\n]*["'])?\s*\)|https?:\/\/[^\s<>"'`]+/gi;
+    let offset = 0;
+    for (const match of text.matchAll(tokens)) {
+      element.append(document.createTextNode(text.slice(offset, match.index)));
+      const token = match[0];
+      let href = match[3], caption = match[2], suffix = "";
+      if (/^https?:\/\//i.test(token)) {
+        href = token.replace(/[.,;:!?]+$/, "");
+        const counts = { "(": 0, ")": 0, "[": 0, "]": 0, "{": 0, "}": 0 };
+        for (const character of href) if (Object.hasOwn(counts, character)) counts[character]++;
+        while (/[)\]}]$/.test(href)) {
+          const close = href.at(-1), open = { ")": "(", "]": "[", "}": "{" }[close];
+          if (counts[close] <= counts[open]) break;
+          counts[close]--;
+          href = href.slice(0, -1).replace(/[.,;:!?]+$/, "");
+        }
+        suffix = token.slice(href.length);
+        caption = href;
+      } else if (href?.startsWith("<")) href = href.slice(1, -1);
+      let safe = false;
+      if (href && !token.startsWith("!") && !/[\u0000-\u0020\u007f]/.test(href) && /^https?:\/\/[^\s]+$/i.test(href)) {
+        try {
+          const url = new URL(href);
+          safe = url.protocol === "http:" || url.protocol === "https:";
+        } catch { /* Invalid URLs remain visible as literal text. */ }
+      }
+      if (safe) {
+        const link = node("a", caption);
+        link.href = href;
+        link.target = "_blank"; link.rel = "noopener noreferrer";
+        element.append(link, document.createTextNode(suffix));
+      } else element.append(document.createTextNode(token));
+      offset = match.index + token.length;
+    }
+    element.append(document.createTextNode(text.slice(offset)));
+  }
   function roots(body) {
     try { return [JSON.parse(body)]; } catch {
       const frames = body.replaceAll("\r\n", "\n").split("\n\n").slice(0, -1);
@@ -242,7 +281,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         if (!part || typeof part !== "object") return;
         const type = part.text !== undefined ? "Text" : part.data !== undefined ? "Data" : "File / other";
         parts.push({ key: `${prefix}/${index}`, label: `${prefix}: ${type}${part.mediaType ? ` (${part.mediaType})` : ""}`,
-          value: part.text ?? part.data ?? part });
+          value: part.text ?? part.data ?? part, isText: typeof part.text === "string" });
       });
     }
     const events = roots(body);
@@ -414,7 +453,8 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     if (raw) {
       try { rendered = JSON.stringify(JSON.parse(body), null, 2); } catch { rendered = body || "No response body received."; }
     } else rendered = part ? pretty(part.value) : body || "No message content received. Inspect the raw response for errors or task-only status.";
-    $("payload").textContent = rendered;
+    if (!raw && response && part?.isText) renderReplyText($("payload"), rendered);
+    else $("payload").textContent = rendered;
   }
   function renderLlm(id, metrics) {
     const target = $(id);

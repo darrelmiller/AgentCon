@@ -57,7 +57,13 @@ when requests overlap. **Click a message** to inspect its
 text or JSON data in the bottom panel; artifact buttons select individual
 quote/order/receipt parts. **Wire** shows the HTTP JSON-RPC or HTTP+JSON body
 (JSON pretty-printed) or SSE frames. Trace links open the matching Aspire
-trace in an external browser. Selecting a seller in this viewer only filters
+trace in an external browser. In incoming text replies and text artifacts,
+absolute HTTP/HTTPS URLs and inline Markdown links are clickable and open a
+new tab/window with `noopener noreferrer`. Whitespace is preserved; code spans,
+fenced code, images, unsupported link schemes and HTML remain literal text
+(this is not a full Markdown renderer). **Copy** retains the original text,
+including Markdown syntax. Wire bodies, JSON data parts and outgoing messages
+remain plain text. Selecting a seller in this viewer only filters
 the view; it does not change any buyer conversation's supplier selection.
 Task lists run earliest-to-latest by first observation, retain that order when
 statuses change, and show the text parts of each task's latest status message.
@@ -133,7 +139,7 @@ agents' tasks, quotes, orders or Copilot sessions. Late responses to cleared
 exchanges do not restore their payloads. **Pause view** pauses refresh only;
 capture continues. Restarting the buyer also clears the store. The view is
 loopback-only, rejects cross-origin access, uses no-store responses and renders
-untrusted payloads as text, never HTML. It has no production authentication
+untrusted payloads as text and safe HTTP/HTTPS anchors, never injected HTML. It has no production authentication
 and must not be exposed through a proxy.
 
 ## Prerequisites
