@@ -34,7 +34,16 @@ public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supp
     {
         if (_reader is null) throw new InvalidOperationException("Seller stream has not started.");
         using var registration = cancellationToken.Register(() => _lifetime.Cancel());
-        return await _reader.MoveNextAsync() ? Apply(_reader.Current) : null;
+        bool hasNext;
+        try
+        {
+            hasNext = await _reader.MoveNextAsync();
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested && !CancellationRequested)
+        {
+            throw new SupplierStreamReadException("Seller stream could not be read; its task state is unchanged.", exception);
+        }
+        return hasNext ? Apply(_reader.Current) : null;
     }
 
     private SendMessageResponse Apply(StreamResponse item)
@@ -74,3 +83,6 @@ public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supp
         _lifetime.Dispose();
     }
 }
+
+public sealed class SupplierStreamReadException(string message, Exception innerException)
+    : Exception(message, innerException);

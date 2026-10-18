@@ -276,6 +276,12 @@ instructions immediately. No second dashboard/seller subscription is opened.
 The listener survives the foreground request's timeout and has a 15-minute
 maximum lifetime; service shutdown or buyer cancellation closes it.
 
+Stream closure or a transport error does not imply a terminal task state. The
+buyer retains its last observed state and authorization metadata, logs the loss
+of observation, and releases the listener. Inspect or explicitly resume the
+original task; the buyer does not automatically resend a purchase. Seller
+terminal events and invalid task/context or receipt data are handled separately.
+
 The demo seller checks the task-bound verifier once per second while a streaming
 purchase is waiting. Approval executes only its saved immutable PO, without
 Copilot, and emits receipt/artifact and completed-status events. The buyer

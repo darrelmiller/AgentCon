@@ -135,12 +135,15 @@ public sealed class SupplierStreamMonitor(
                 }
                 finally { turn.Conversation.Gate.Release(); }
             }
-            if (turn.SupplierResponses.LastOrDefault()?.Task?.Status.State == TaskState.AuthRequired &&
-                turn.SupplierResponses.Last().Task!.Status.Message?.Metadata?.ContainsKey(BuyerCard.AuthorizationExtensionUri) == true)
-                throw new InvalidOperationException("Seller stream closed before authorization completed.");
-            // Input-required executions may end normally; retain the handoff for an explicit answer.
+            logger.LogInformation("Seller stream for buyer task {TaskId} closed; retaining the last task state. " +
+                "Inspect or resume the original seller task; no purchase was resent.", taskId);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested || stream.CancellationRequested) { }
+        catch (SupplierStreamReadException exception)
+        {
+            logger.LogWarning(exception, "Seller stream for buyer task {TaskId} disconnected; retaining the last task state. " +
+                "Inspect or resume the original seller task; no purchase was resent.", taskId);
+        }
         catch (Exception exception)
         {
             logger.LogError(exception, "Seller stream for buyer task {TaskId} stopped", taskId);
