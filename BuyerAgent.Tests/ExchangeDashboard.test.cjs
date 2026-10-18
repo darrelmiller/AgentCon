@@ -12,7 +12,9 @@ class Element {
   dataset = {};
   listeners = {};
   attributes = {};
-  textContent = "";
+  ownText = "";
+  set textContent(value) { this.ownText = value; this.children = []; }
+  get textContent() { return this.ownText + this.children.map(child => child.textContent).join(""); }
   scrollTop = 0;
   scrollHeight = 0;
   clientHeight = 0;
@@ -20,7 +22,7 @@ class Element {
   classes = new Set();
   classList = { add: value => this.classes.add(value), remove: value => this.classes.delete(value) };
   append(...elements) { this.children.push(...elements); }
-  replaceChildren(...elements) { this.children = elements; }
+  replaceChildren(...elements) { this.ownText = ""; this.children = elements; }
   setAttribute(key, value) { this.attributes[key] = value; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
   showModal() { this.open = true; }
@@ -37,7 +39,8 @@ async function dashboard() {
       assert.ok(elements.has(id), `Missing dashboard element: ${id}`);
       return elements.get(id);
     },
-    createElement: () => new Element(),
+    createElement: tag => Object.assign(new Element(), { tagName: tag }),
+    createTextNode: value => ({ textContent: value, children: [] }),
     addEventListener(name, handler) { this.listeners[name] = handler; }
   };
   const body = JSON.stringify({ result: { task: {
@@ -62,7 +65,7 @@ async function dashboard() {
   };
   let refresh;
   vm.runInNewContext(script, {
-    document, URLSearchParams, AbortController, location: { origin: "http://localhost:5100" },
+    document, URL, URLSearchParams, AbortController, location: { origin: "http://localhost:5100" },
     navigator: { clipboard: { writeText: async value => { copied = value; } } },
     fetch: async url => await intercept?.(url) ?? ({ ok: true, json: async () => url === "/demo/catalog" ?
       { specVersion: "1.0", entries: [{ identifier: "urn:test:buyer" }] } : state }),
@@ -259,4 +262,107 @@ test("right-aligned header AI Catalog button opens current JSON in a closable po
   assert.equal(elements.get("agent-card-copy-link").textContent, "Copied");
   elements.get("agent-card-close").listeners.click();
   assert.equal(elements.get("agent-card-dialog").open, false);
+});
+
+const reply = value => ({ task: { status: { message: { parts: [{ text: value }] } } } });
+const anchors = element => element.children.filter(child => child.tagName === "a");
+
+async function inspectReply(value, rest = false) {
+  const ui = await dashboard();
+  Object.assign(ui.state.capture.exchanges[0], {
+    restOperation: rest ? "SendMessage" : null,
+    response: JSON.stringify(rest ? value : { result: value })
+  });
+  await ui.refresh();
+  ui.elements.get("conversation").children[1].listeners.click();
+  return ui;
+}
+
+test("reply URLs and Markdown links preserve whitespace, punctuation, safe targets and copy source", async () => {
+  const source = 'Receipt:\n  https://example.com/receipt?id=1&view=full.\n[Order](https://example.com/order_(demo) "View order")';
+  const ui = await inspectReply(reply(source));
+  const payload = ui.elements.get("payload");
+  assert.equal(payload.textContent, "Receipt:\n  https://example.com/receipt?id=1&view=full.\nOrder");
+  assert.deepEqual(anchors(payload).map(a => a.href), [
+    "https://example.com/receipt?id=1&view=full", "https://example.com/order_(demo)"
+  ]);
+  for (const a of anchors(payload)) {
+    assert.equal(a.target, "_blank");
+    assert.equal(a.rel, "noopener noreferrer");
+  }
+  await ui.elements.get("copy").listeners.click();
+  assert.equal(ui.clipboard(), source);
+});
+
+test("unsafe schemes, malformed URLs, HTML, images and code remain literal", async () => {
+  const source = '<img src=x onerror=alert(1)> [Run](javascript:alert(1)) [Data](data:text/html,bad) ' +
+    '[File](file:///tmp/x) [Relative](/demo) [Protocol](//example.com) [Mail](mailto:x@example.com) ' +
+    '[Bad](https://) ![Image](https://example.com/image) `https://example.com/code`\n' +
+    '```html\nhttps://example.com/fenced\n```\n[Control](https://example.com/\u0000x)';
+  const ui = await inspectReply(reply(source));
+  const payload = ui.elements.get("payload");
+  assert.equal(payload.textContent, source);
+  assert.equal(anchors(payload).length, 0);
+  assert.ok(payload.children.every(child => !child.tagName));
+});
+
+test("URL boundaries preserve balanced parentheses and trailing prose punctuation", async () => {
+  const ui = await inspectReply(reply("See (HTTPS://example.com/a_(b)), http://localhost:6000/receipt! " +
+    "[Receipt](<https://example.com/receipt?q=1&x=2>)"));
+  assert.deepEqual(anchors(ui.elements.get("payload")).map(a => a.href), [
+    "HTTPS://example.com/a_(b)", "http://localhost:6000/receipt", "https://example.com/receipt?q=1&x=2"
+  ]);
+  assert.equal(ui.elements.get("payload").textContent,
+    "See (HTTPS://example.com/a_(b)), http://localhost:6000/receipt! Receipt");
+});
+
+test("JSON-RPC and HTTP+JSON replies, SSE status and artifacts linkify only text content", async () => {
+  for (const rest of [false, true]) {
+    const ui = await inspectReply({ message: { parts: [{ text: "https://example.com/message" }] } }, rest);
+    assert.equal(anchors(ui.elements.get("payload"))[0].href, "https://example.com/message");
+    const events = [
+      { statusUpdate: { status: { message: { parts: [{ text: "https://example.com/status" }] } } } },
+      { artifactUpdate: { artifact: { name: "Receipt", parts: [
+        { text: "[Receipt](https://example.com/artifact)" }, { data: { url: "https://example.com/data" } }
+      ] } } }
+    ];
+    const body = events.map(event => `data: ${JSON.stringify(rest ? event : { result: event })}\n\n`).join("");
+    ui.state.capture.exchanges[0].response = body;
+    await ui.refresh();
+    const { elements } = ui;
+    assert.equal(anchors(elements.get("payload"))[0].href, "https://example.com/status");
+    elements.get("parts").children[1].listeners.click();
+    assert.equal(anchors(elements.get("payload"))[0].href, "https://example.com/artifact");
+    elements.get("parts").children[2].listeners.click();
+    assert.equal(anchors(elements.get("payload")).length, 0);
+    assert.equal(elements.get("payload").textContent, JSON.stringify({ url: "https://example.com/data" }, null, 2));
+    elements.get("raw-tab").listeners.click();
+    assert.equal(anchors(elements.get("payload")).length, 0);
+    assert.equal(elements.get("payload").textContent, body);
+    elements.get("content-tab").listeners.click();
+    elements.get("parts").children[0].listeners.click();
+    assert.equal(anchors(elements.get("payload")).length, 1);
+    ui.state.capture.exchanges[0].request = JSON.stringify(rest
+      ? { message: { parts: [{ text: "https://outgoing.example" }] } }
+      : { params: { message: { parts: [{ text: "https://outgoing.example" }] } } });
+    await ui.refresh();
+    elements.get("conversation").children[0].listeners.click();
+    assert.equal(anchors(elements.get("payload")).length, 0);
+    assert.equal(elements.get("payload").textContent, "https://outgoing.example");
+  }
+});
+
+test("raw JSON and cleared selections remove reply anchors", async () => {
+  const ui = await inspectReply(reply("https://example.com/reply"));
+  const { elements } = ui;
+  elements.get("raw-tab").listeners.click();
+  assert.equal(elements.get("payload").textContent,
+    JSON.stringify(JSON.parse(ui.state.capture.exchanges[0].response), null, 2));
+  assert.equal(anchors(elements.get("payload")).length, 0);
+  elements.get("content-tab").listeners.click();
+  assert.equal(anchors(elements.get("payload")).length, 1);
+  await elements.get("clear").listeners.click();
+  assert.equal(elements.get("payload").textContent, "No message selected.");
+  assert.equal(anchors(elements.get("payload")).length, 0);
+  assert.equal(elements.get("copy").disabled, true);
 });
