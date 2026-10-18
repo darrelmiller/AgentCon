@@ -95,10 +95,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(token) = std::env::var("SUPPLIER_DEMO_CONTROL_TOKEN") {
         supplier = supplier.with_control_token(token)?;
     }
-    match (
-        std::env::var("SUPPLIER_VERIFIER_URL"),
-        std::env::var("SUPPLIER_VERIFIER_TOKEN"),
-    ) {
+    // The verifier's admin token comes from SUPPLIER_VERIFIER_TOKEN or, in a cluster, a mounted secret file.
+    let verifier_token = match std::env::var("SUPPLIER_VERIFIER_TOKEN_FILE") {
+        Ok(path) => Ok(std::fs::read_to_string(&path)
+            .map_err(|e| format!("Cannot read SUPPLIER_VERIFIER_TOKEN_FILE {path}: {e}"))?
+            .trim()
+            .to_owned()),
+        Err(_) => std::env::var("SUPPLIER_VERIFIER_TOKEN"),
+    };
+    match (std::env::var("SUPPLIER_VERIFIER_URL"), verifier_token) {
         (Ok(origin), Ok(token)) => {
             supplier = supplier.with_verifier(Arc::new(
                 agentcon_supplier::authorization::HttpVerifier::new(origin, token)?,
@@ -109,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Purchase requests will remain auth-required: presentation verifier not configured"
             );
         }
-        _ => return Err("Set both SUPPLIER_VERIFIER_URL and SUPPLIER_VERIFIER_TOKEN.".into()),
+        _ => return Err("Set both SUPPLIER_VERIFIER_URL and SUPPLIER_VERIFIER_TOKEN (or SUPPLIER_VERIFIER_TOKEN_FILE).".into()),
     }
     // Optional A2A over SLIMRPC (SUPPLIER_SLIM_ENDPOINT, SUPPLIER_SLIM_NAME, SLIM_SHARED_SECRET).
     let slim_settings = slim::SlimSettings::from_env()?;
