@@ -36,6 +36,9 @@ GH_USER="${COPILOT_GH_USER:-lumuscar_cisco}"
 # (gpt-5-mini skipped required steps in testing). Use "auto" to let Copilot pick.
 MODEL="${COPILOT_MODEL:-gpt-6-luna}"
 STATE_ROOT="$HOME/Library/Application Support/AgentConDemo"
+# Optional: AGENTCON_BIN_DIR installs the built supplier and buyer there and runs them from that copy, so the build
+# outputs can live elsewhere (e.g. on an external drive). Unset, the agents run from their build outputs.
+BIN_DIR="${AGENTCON_BIN_DIR:-}"
 LOG_DIR="artifacts/demo-logs"
 INVENTORIES="$PWD/SupplierAgent/inventories"
 # One supplier per row: label | port | inventory JSON | name for its log file and Copilot state | SLIM app.
@@ -197,7 +200,17 @@ fi
 
 echo "Building suppliers and buyer..."
 cargo build --manifest-path SupplierAgent/Cargo.toml --locked --quiet
-dotnet build BuyerAgent/BuyerAgent.csproj --nologo -v quiet >/dev/null
+if [[ -n "$BIN_DIR" ]]; then
+    mkdir -p "$BIN_DIR"
+    install -m 0755 SupplierAgent/target/debug/agentcon-supplier "$BIN_DIR/agentcon-supplier"
+    dotnet publish BuyerAgent/BuyerAgent.csproj -c Debug --nologo -v quiet -o "$BIN_DIR/buyer" >/dev/null
+    SUPPLIER_BIN="$BIN_DIR/agentcon-supplier"
+    BUYER_CMD=(dotnet "$BIN_DIR/buyer/BuyerAgent.dll")
+else
+    dotnet build BuyerAgent/BuyerAgent.csproj --nologo -v quiet >/dev/null
+    SUPPLIER_BIN=./SupplierAgent/target/debug/agentcon-supplier
+    BUYER_CMD=(dotnet run --no-build --project BuyerAgent/BuyerAgent.csproj --)
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -231,7 +244,7 @@ for row in ${SUPPLIERS[@]+"${SUPPLIERS[@]}"}; do
     SUPPLIER_MODEL="$MODEL" \
     SUPPLIER_COPILOT_STATE="$STATE_ROOT/$name-copilot" \
     SUPPLIER_DEMO_CONTROL_TOKEN="$CONTROL_TOKEN" \
-        ./SupplierAgent/target/debug/agentcon-supplier >"$LOG_DIR/$name.log" 2>&1 &
+        "$SUPPLIER_BIN" >"$LOG_DIR/$name.log" 2>&1 &
     pids+=($!)
 done
 
@@ -251,7 +264,7 @@ fi
     --Buyer:SupplierBearerTokenFile="$SLIM_TOKEN" --Buyer:SupplierBearerTokenOrigins:0=https://agents.slim.outshift.io)
 Buyer__SlimSharedSecret="${SLIM_SHARED_SECRET:-}" \
 Buyer__SupplierControlToken="$CONTROL_TOKEN" \
-    dotnet run --no-build --project BuyerAgent/BuyerAgent.csproj -- \
+    "${BUYER_CMD[@]}" \
     --Buyer:ExchangeCaptureEnabled=true --Buyer:Model="$MODEL" ${buyer_slim[@]+"${buyer_slim[@]}"} "$@" >"$LOG_DIR/buyer.log" 2>&1 &
 pids+=($!)
 [[ -n "${SLIM_NODE_PID:-}" ]] && pids+=("$SLIM_NODE_PID")
