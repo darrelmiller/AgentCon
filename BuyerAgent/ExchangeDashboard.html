@@ -147,7 +147,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
 <main>
   <header>
     <h1>AgentCon 2026 - Extensible A2A Demo</h1>
-    <div class="row"><span id="connection" role="status">Connecting...</span><button id="catalog-link" type="button" aria-haspopup="dialog" title="View the agents' configured AI Catalog">AI Catalog</button><button id="pause" title="Pause display updates. Content capture continues.">Pause</button>    <button id="clear" title="Clear captured messages, observed task listings and agent LLM totals, not the agents' tasks.">Clear</button><span class="tip"><button type="button" aria-label="About this view and content capture" aria-describedby="capture-tip">i</button><span id="capture-tip" class="tip-text" role="tooltip">Actual A2A supplier exchanges, not model-generated summaries. Content capture is enabled and may contain sensitive information. Local, in-memory only; no headers, internal Copilot prompts, or content export to OTEL. <span id="limits"></span></span></span></div>
+    <div class="row"><span id="connection" role="status">Connecting...</span><button id="catalog-link" type="button" aria-haspopup="dialog" title="View the agents' configured AI Catalog">AI Catalog</button><button id="pause" title="Pause display updates. Content capture continues.">Pause</button>    <button id="clear" title="Clear captured messages, observed task listings and agent LLM totals, not the agents' tasks.">Clear</button><span class="tip"><button type="button" aria-label="About this view and content capture" aria-describedby="capture-tip">i</button><span id="capture-tip" class="tip-text" role="tooltip">Actual A2A seller exchanges, not model-generated summaries. Content capture is enabled and may contain sensitive information. Local, in-memory only; no headers, internal Copilot prompts, or content export to OTEL. <span id="limits"></span></span></span></div>
   </header>
   <div id="problem" class="error" role="alert"></div>
   <div class="layout">
@@ -161,18 +161,18 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
       </span><strong>Buyer Agent</strong></button></h2>
       <div id="buyer-endpoint" class="endpoint"></div><p id="buyer-status"></p>
       <p id="buyer-llm" class="muted"></p>
-      <div class="control-row"><label><input id="buyer-native" type="checkbox" aria-describedby="native-tip"> Native structures</label><span class="tip"><button type="button" aria-label="Native structured support details" aria-describedby="native-tip">i</button><span id="native-tip" class="tip-text" role="tooltip">Off: learn advertised supplier schemas. On: installed codecs and deterministic typed inbound requests. Text input still invokes Copilot. Outbound negotiation is automatic. Active turns keep their snapshot.</span></span></div>
-      <div class="control-row" id="buyer-transport-row" hidden><label>Transport <select id="buyer-transport" aria-describedby="transport-tip"><option value="Automatic">Auto</option><option value="Slim">SLIM</option><option value="Http">HTTP</option></select></label><span class="tip"><button type="button" aria-label="Supplier transport details" aria-describedby="transport-tip">i</button><span id="transport-tip" class="tip-text" role="tooltip">Auto: SLIMRPC to sellers that list it (one multicast to poll them all), HTTP otherwise. SLIM: only SLIMRPC. HTTP: only A2A JSON-RPC over HTTP(S). Applies from the next request; active turns keep their snapshot.</span></span></div>
+      <div class="control-row"><label><input id="buyer-native" type="checkbox" aria-describedby="native-tip"> Native structures</label><span class="tip"><button type="button" aria-label="Native structured support details" aria-describedby="native-tip">i</button><span id="native-tip" class="tip-text" role="tooltip">Off: learn advertised seller schemas. On: installed codecs and deterministic typed inbound requests. Text input still invokes Copilot. Outbound negotiation is automatic. Active turns keep their snapshot.</span></span></div>
+      <div class="control-row" id="buyer-transport-row" hidden><label>Transport <select id="buyer-transport" aria-describedby="transport-tip"><option value="Automatic">Auto</option><option value="Slim">SLIM</option><option value="Http">HTTP</option></select></label><span class="tip"><button type="button" aria-label="Seller transport details" aria-describedby="transport-tip">i</button><span id="transport-tip" class="tip-text" role="tooltip">Auto: SLIMRPC to sellers that list it (one multicast to poll them all), HTTP otherwise. SLIM: only SLIMRPC. HTTP: only A2A JSON-RPC over HTTP(S). Applies from the next request; active turns keep their snapshot.</span></span></div>
       <h3 id="buyer-task-heading">Buyer tasks</h3><div id="buyer-tasks" class="task-list"></div>
     </section>
     <div class="lanes">
       <section class="card" aria-labelledby="conversation-title">
-        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span id="transport-now" class="transport-now" title="How the buyer sends its next supplier request (the Transport setting on the buyer card). Each message below is labelled with the transport it actually used."></span><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts. LLM call totals and cumulative model-response time are shown on each agent and reset with Clear. Missing timing is not assumed to be zero.</span></span></div>
+        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span id="transport-now" class="transport-now" title="How the buyer sends its next seller request (the Transport setting on the buyer card). Each message below is labelled with the transport it actually used."></span><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts. LLM call totals and cumulative model-response time are shown on each agent and reset with Clear. Missing timing is not assumed to be zero.</span></span></div>
         <div id="conversation" class="messages"></div>
       </section>
     </div>
     <section class="card" aria-labelledby="seller-title">
-      <h2 id="seller-title"><button id="seller-card" class="agent-card-button" aria-haspopup="dialog" title="View the selected supplier's live Agent Card" disabled><span class="agent-icon" aria-hidden="true">
+      <h2 id="seller-title"><button id="seller-card" class="agent-card-button" aria-haspopup="dialog" title="View the selected seller's live Agent Card" disabled><span class="agent-icon" aria-hidden="true">
         <svg viewBox="0 0 32 32" focusable="false" data-logo="wine-crate">
           <path class="logo-wine" d="M7 4h4v5l2 3v9H5v-9l2-3ZM14 2h4v7l2 3v9h-8v-9l2-3ZM21 4h4v5l2 3v9h-8v-9l2-3Z"/>
           <path class="logo-outline" d="M7 4h4m3-2h4m3 2h4"/>
@@ -181,15 +181,15 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
           <path class="logo-wine" d="M13 19h6v6h-6Z"/>
         </svg>
       </span><strong>Seller Agent</strong></button></h2>
-      <select id="seller-select" aria-label="Catalog supplier to view" title="Filters this view only; does not select a supplier for buyer conversations."></select>
+      <select id="seller-select" aria-label="Catalog seller to view" title="Filters this view only; does not select a seller for buyer conversations."></select>
       <div id="seller-endpoint" class="endpoint"></div><p id="seller-status"></p>
       <p id="seller-llm" class="muted"></p>
-      <div class="control-row"><label><input id="seller-structures" type="checkbox" aria-describedby="structures-tip" disabled> Advertise structures</label><span class="tip"><button type="button" aria-label="Supplier structured advertisement details" aria-describedby="structures-tip">i</button><span id="structures-tip" class="tip-text" role="tooltip">On: advertise and accept typed data parts. Off: accept and return text only. New supplier executions use the live capability. Requires configured local supplier controls.</span></span></div>
+      <div class="control-row"><label><input id="seller-structures" type="checkbox" aria-describedby="structures-tip" disabled> Advertise structures</label><span class="tip"><button type="button" aria-label="Seller structured advertisement details" aria-describedby="structures-tip">i</button><span id="structures-tip" class="tip-text" role="tooltip">On: advertise and accept typed data parts. Off: accept and return text only. New seller executions use the live capability. Requires configured local seller controls.</span></span></div>
       <h3 id="seller-task-heading">Seller tasks</h3><div id="seller-tasks" class="task-list"></div>
     </section>
   </div>
   <section class="card inspector" aria-labelledby="inspector-title">
-    <div class="row"><h2 id="inspector-title">Message inspector</h2><div class="inspector-toolbar"><button id="content-tab" aria-pressed="true" title="Inspect individual message and artifact parts">Content</button><button id="raw-tab" aria-pressed="false" title="Full HTTP body (JSON-RPC or HTTP+JSON) or SSE frames">Wire</button><button id="copy" title="Copy the displayed content" disabled>Copy</button></div></div>
+    <div class="row"><h2 id="inspector-title">Stream Inspector</h2><div class="inspector-toolbar"><button id="content-tab" aria-pressed="true" title="Inspect individual message and artifact parts">Content</button><button id="raw-tab" aria-pressed="false" title="Full HTTP body (JSON-RPC or HTTP+JSON) or SSE frames">Wire</button><button id="copy" title="Copy the displayed content" disabled>Copy</button></div></div>
     <p id="inspector-hint" class="muted">Select a message.</p>
     <div id="metadata" class="metadata"></div><div id="parts" class="parts"></div>
     <pre id="payload" tabindex="0" aria-label="Selected message or artifact content">No message selected.</pre>
@@ -287,7 +287,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
       if (task.presentationUrl) {
         const qr = node("a", "Show QR", "qr-link");
         qr.href = task.presentationUrl; qr.target = "_blank"; qr.rel = "noopener noreferrer";
-        qr.title = "Open the supplier's wallet presentation page (QR code) for this purchase";
+        qr.title = "Open the seller's wallet presentation page (QR code) for this purchase";
         qr.addEventListener("click", event => event.stopPropagation());
         summary.append(qr);
       }
@@ -328,10 +328,10 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
           if (shownMulticast.has(entry.group)) return;
           shownMulticast.add(entry.group);
         }
-        // One banner per "send to all suppliers" multicast, above its first message.
+        // One banner per "send to all sellers" multicast, above its first message.
         if (entry.group && !bannered.has(entry.group)) {
           bannered.add(entry.group);
-          area.append(node("div", `Buyer → all suppliers · ${entry.groupLabel}`, "group-banner"));
+          area.append(node("div", `Buyer → all sellers · ${entry.groupLabel}`, "group-banner"));
         }
         const button = node("button", undefined, `message ${entry.inbound ? (response ? "outgoing" : "incoming") : direction}`);
         button.dataset.exchange = entry.id;
@@ -345,7 +345,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         const delivery = response ? (entry.group ? "unicast reply" : "unicast")
           : slimMulticast ? "multicast" : method === "GetTask" ? "poll" : entry.group ? "fan-out" : "unicast";
         const from = entry.inbound ? (response ? "Buyer Agent → User Agent" : "User Agent → Buyer Agent")
-          : response ? "Supplier → Buyer" : slimMulticast ? `Buyer → ${groupSizes.get(entry.group)} suppliers` : "Buyer → Supplier";
+          : response ? "Seller → Buyer" : slimMulticast ? `Buyer → ${groupSizes.get(entry.group)} sellers` : "Buyer → Seller";
         const heading = node("strong", `${from} · #${entry.id}`);
         const chip = node("span", `${transport} · ${delivery}`, `transport ${transport.toLowerCase()}`);
         chip.title = transport === "SLIM" ? `SLIMRPC via ${entry.endpoint}` : `A2A ${entry.restOperation ? "HTTP+JSON" : "JSON-RPC"} over ${transport} to ${entry.endpoint}`;
@@ -383,7 +383,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     const truncated = response ? entry.responseTruncated : entry.requestTruncated;
     const members = (state?.capture.exchanges || []).filter(other => entry.group && other.group === entry.group);
     const wire = !response && entry.groupLabel?.startsWith("SLIM multicast")
-      ? `SLIMRPC multicast to ${members.length} suppliers (${members.map(other => other.endpoint).join(", ")})`
+      ? `SLIMRPC multicast to ${members.length} sellers (${members.map(other => other.endpoint).join(", ")})`
       : `${transportOf(entry) === "SLIM" ? "SLIMRPC" : entry.restOperation ? `HTTP+JSON ${entry.restOperation}` : `${transportOf(entry)} JSON-RPC`} via ${entry.endpoint}`;
     const route = entry.inbound ? (response ? "Buyer Agent to User Agent" : "User Agent to Buyer Agent")
       : response ? "Seller to buyer" : "Buyer to seller";
@@ -437,12 +437,12 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     const buyerActive = state.capture.tasks.filter(task => task.agent === "buyer" && active(task.state)).length;
     const buyerSlim = state.buyer.slimUrl ? " · SLIM ready" : state.buyer.slimConfigured ? " · SLIM unavailable" : "";
     $("buyer-status").textContent = `${state.buyer.status}${buyerSlim}`;
-    $("buyer-status").title = `HTTP and SLIM availability, not proof of Copilot authentication. Supplier calls use SLIMRPC when both sides are on SLIM. Automatic negotiation; ${buyerActive} active tasks.`;
+    $("buyer-status").title = `HTTP and SLIM availability, not proof of Copilot authentication. Seller calls use SLIMRPC when both sides are on SLIM. Automatic negotiation; ${buyerActive} active tasks.`;
     $("buyer-status").className = state.buyer.slimConfigured && !state.buyer.slimUrl ? "error" : buyerActive ? "busy" : "ready";
     renderLlm("buyer-llm", state.buyer.llm);
     if (!$("buyer-native").disabled) $("buyer-native").checked = state.buyer.nativeStructuredSupport;
     $("buyer-transport-row").hidden = !state.buyer.slimConfigured;
-    // What the next supplier request uses: SLIM when the buyer is on SLIM (Auto or SLIM), otherwise A2A over HTTP(S).
+    // What the next seller request uses: SLIM when the buyer is on SLIM (Auto or SLIM), otherwise A2A over HTTP(S).
     const remote = state.sellers.some(seller => seller.cardUrl?.startsWith("https://"));
     const web = remote ? "HTTPS" : "HTTP";
     const next = state.buyer.supplierTransport === "Http" || !state.buyer.slimConfigured ? [web, web.toLowerCase()]
@@ -468,7 +468,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     select.value = sellerOrigin;
     const seller = sellers.find(item => item.origin === sellerOrigin);
     $("seller-card").disabled = !seller;
-    $("seller-card").title = seller ? `${seller.name} (${seller.identifier}) — view live Agent Card` : "Choose a catalog supplier to view its Agent Card.";
+    $("seller-card").title = seller ? `${seller.name} (${seller.identifier}) — view live Agent Card` : "Choose a catalog seller to view its Agent Card.";
     $("seller-endpoint").replaceChildren(...(seller ? [node("div", seller.origin), ...(seller.slimUrl ? [node("div", seller.slimUrl)] : [])] : []));
     const inflight = state.capture.exchanges.filter(entry => !entry.inbound && sellerOwns(entry.endpoint, sellerOrigin) &&
       (entry.status === "sending" || entry.status === "receiving")).length;
@@ -598,7 +598,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         body: JSON.stringify({ identifier: seller.identifier, enabled: control.checked }) });
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || `Supplier change failed: HTTP ${response.status}`);
+        throw new Error(error.error || `Seller change failed: HTTP ${response.status}`);
       }
       seller.structuredDataParts = (await response.json()).structuredDataParts;
       controlError = ""; $("problem").textContent = "";
