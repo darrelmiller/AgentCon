@@ -158,8 +158,10 @@ public sealed class BuyerHandler(
             }
             else
             {
-                if (!forwardedArtifacts)
+                // The reply is the task's output: keep it in artifacts and leave the status message as a short summary.
+                if (!forwardedArtifacts || !typed && textAccepted)
                     await updater.AddArtifactAsync([Part.FromText(reply)], name: "buyer-response", cancellationToken: deadline.Token);
+                message.Parts = [Part.FromText("Completed; results are in the task artifacts.")];
                 await updater.CompleteAsync(textAccepted ? message : null, cancellationToken: deadline.Token);
                 Observe("TASK_STATE_COMPLETED", textAccepted ? message : null);
             }

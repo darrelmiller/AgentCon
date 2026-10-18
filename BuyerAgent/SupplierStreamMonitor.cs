@@ -87,7 +87,8 @@ public sealed class SupplierStreamMonitor(
                             {
                                 var parts = artifact.Parts;
                                 if (accepted is not null && parts.Any(part => !accepted.Contains(part.MediaType ?? "text/plain")))
-                                    parts = [Part.FromText(seller.Status.Message?.Parts.FirstOrDefault()?.Text ?? "Seller task completed.")];
+                                    parts = [.. parts.Select(part => part.Text is not null ? Part.FromText(part.Text)
+                                        : part.Data is { } data ? Part.FromText(data.GetRawText()) : Part.FromText("Seller artifact omitted."))];
                                 var update = new StreamResponse { ArtifactUpdate = new()
                                 {
                                     TaskId = taskId, ContextId = contextId, LastChunk = true,

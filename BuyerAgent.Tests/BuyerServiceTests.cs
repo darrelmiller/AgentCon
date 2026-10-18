@@ -108,12 +108,14 @@ public sealed class BuyerServiceTests
         var task = Assert.IsType<AgentTask>(response.Task);
         Assert.Equal(TaskState.Completed, task.Status.State);
         Assert.Equal("Request a quote", Assert.Single(received!.Parts).Text);
-        Assert.Contains(task.Artifacts!, artifact => artifact.Name == "buyer-response");
+        Assert.Contains(task.Artifacts!, artifact => artifact.Name == "buyer-response" &&
+            artifact.Parts.Single().Text == "The requested quote is ready.");
+        Assert.Equal("Completed; results are in the task artifacts.", task.Status.Message!.Parts.Single().Text);
         var saved = await client.GetTaskAsync(new GetTaskRequest { Id = task.Id });
         Assert.Equal(TaskState.Completed, saved.Status.State);
         var observed = JsonSerializer.SerializeToElement(app.Services.GetRequiredService<ExchangeStore>().Snapshot(),
             new JsonSerializerOptions(JsonSerializerDefaults.Web)).GetProperty("tasks");
-        Assert.Equal("The requested quote is ready.", Assert.Single(observed.EnumerateArray()).GetProperty("statusMessage").GetString());
+        Assert.Equal("Completed; results are in the task artifacts.", Assert.Single(observed.EnumerateArray()).GetProperty("statusMessage").GetString());
     }
 
     [Theory]

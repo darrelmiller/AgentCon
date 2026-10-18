@@ -488,7 +488,13 @@ impl AgentExecutor for SupplierExecutor {
             execution.completed = true;
             tracing::info!(task_id = %ctx.task_id, state = ?outcome.state, elapsed_ms = started.elapsed().as_millis(), "supplier execution");
             let result_text = outcome.text.clone();
-            let mut response = Message::new(Role::Agent, vec![Part::text(outcome.text)]);
+            // Results live in the artifact; keep the status message a short pointer rather than a duplicate.
+            let status_text = match &outcome.data {
+                Some((QUOTE, _)) => "Quote ready; see the quote artifact.".to_owned(),
+                Some(_) => "Order recorded; see the order-receipt artifact.".to_owned(),
+                None => outcome.text,
+            };
+            let mut response = Message::new(Role::Agent, vec![Part::text(status_text)]);
             response.metadata = Some(std::collections::HashMap::from([
                 ("agentcon.llmCalls".into(), json!(llm_calls)),
                 ("agentcon.llmCallsComplete".into(), json!(count_complete))
@@ -563,6 +569,9 @@ impl AgentExecutor for SupplierExecutor {
                     ("agentcon.llmCallsComplete".into(), json!(true))
                 ]);
                 let mut events = Vec::new();
+                let status_text = if outcome.data.is_some() {
+                    "Order recorded; see the order-receipt artifact.".to_owned()
+                } else { outcome.text.clone() };
                 if let Some((media_type, data)) = outcome.data {
                     let typed = watch_structured &&
                         accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == media_type));
@@ -578,7 +587,7 @@ impl AgentExecutor for SupplierExecutor {
                         append: Some(false), last_chunk: Some(true), metadata: None,
                     })));
                 }
-                let mut message = Message::new(Role::Agent, vec![Part::text(outcome.text)]);
+                let mut message = Message::new(Role::Agent, vec![Part::text(status_text)]);
                 message.task_id = Some(task_id.clone());
                 message.context_id = Some(context_id.clone());
                 message.metadata = Some(metadata);

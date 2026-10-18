@@ -853,11 +853,12 @@ async fn output_negotiation_and_per_message_zero_inference_counts() {
             assert_eq!(task["artifacts"][0]["parts"][0]["mediaType"], "text/plain");
             assert!(task["artifacts"][0]["parts"][0].get("data").is_none());
             assert!(
-                task["status"]["message"]["parts"][0]["text"]
+                task["artifacts"][0]["parts"][0]["text"]
                     .as_str()
                     .unwrap()
                     .contains("1753.00")
             );
+            assert_eq!(task["status"]["message"]["parts"][0]["text"], "Quote ready; see the quote artifact.");
         } else {
             assert_eq!(task["artifacts"][0]["parts"][0]["mediaType"], QUOTE);
             if index == 2 {
