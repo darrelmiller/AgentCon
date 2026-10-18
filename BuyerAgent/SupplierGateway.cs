@@ -39,6 +39,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
 {
     /// <summary>True when the buyer talks SLIM, so a first request that names no supplier polls them all in one multicast.</summary>
     public bool SlimEnabled => slim?.Configured == true;
+    /// <summary>The transport this gateway's turn uses (from its options snapshot).</summary>
+    public SupplierTransport Transport => options.SupplierTransport;
 
     public object AssessPrice(string wine, int vintage, string currency, int cases, int bottlesPerCase,
         decimal casePriceMinor, decimal deliveryMinor, decimal totalMinor, decimal? maxTotalUsd)
@@ -85,9 +87,17 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     /// </summary>
     internal (IA2AClient Client, IDisposable? Owned) OpenClient(SupplierBinding supplier)
     {
-        if (supplier.SlimTarget is { } target && slim?.ClientFor(target) is { } slimClient) return (slimClient, null);
+        var transport = options.SupplierTransport;
+        if (transport != SupplierTransport.Http && supplier.SlimTarget is { } target && slim?.ClientFor(target) is { } slimClient)
+            return (slimClient, null);
+        if (transport == SupplierTransport.Slim)
+            throw new InvalidOperationException(supplier.SlimTarget is null
+                ? "The SLIM transport is selected, but this seller's Agent Card lists no SLIMRPC interface."
+                : "The SLIM transport is selected, but the buyer's SLIM connection is not ready.");
         if (supplier.Endpoint.Scheme == "slim")
-            throw new InvalidOperationException("This seller is reachable only over SLIM, and the buyer's SLIM connection is not ready.");
+            throw new InvalidOperationException(transport == SupplierTransport.Http
+                ? "The HTTP transport is selected, but this seller's Agent Card lists no JSON-RPC interface."
+                : "This seller is reachable only over SLIM, and the buyer's SLIM connection is not ready.");
         var http = new A2AClient(supplier.Endpoint, httpClient);
         return (http, http);
     }
@@ -244,7 +254,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             tags: [new("gen_ai.operation.name", "invoke_agent"), new("gen_ai.agent.name", "SupplierAgent"),
                 new("gen_ai.provider.name", "agentcon.supplier"), new("agentcon.a2a.task.id", message.TaskId),
                 new("agentcon.a2a.context.id", message.ContextId)]);
-        activity?.SetTag("agentcon.a2a.transport", supplier.SlimTarget is null ? "JSONRPC" : "SLIMRPC");
+        activity?.SetTag("agentcon.a2a.transport",
+            supplier.SlimTarget is null || options.SupplierTransport == SupplierTransport.Http ? "JSONRPC" : "SLIMRPC");
         var (client, owned) = OpenClient(supplier);
         using var ownedClient = owned;
         try
@@ -330,7 +341,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
                 ? ["text/plain"]
                 : supplier.Formats.Where(format => format.Direction == "output").Select(format => format.MediaType))
             .Append("text/plain").Distinct().ToList();
-        var useSlim = slim is not null && suppliers.All(supplier => supplier.SlimTarget is not null) &&
+        var useSlim = slim is not null && options.SupplierTransport != SupplierTransport.Http &&
+            suppliers.All(supplier => supplier.SlimTarget is not null) &&
             slim.CanMulticast(suppliers.Select(supplier => supplier.SlimTarget!));
         var previousGroup = ExchangeStore.CurrentGroup.Value;
         ExchangeStore.CurrentGroup.Value = (Guid.NewGuid().ToString("N"), useSlim
@@ -363,7 +375,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             Exception? failed = null;
             try
             {
-                await foreach (var (target, response) in slim!.MulticastAsync(byTarget.Keys.ToList(), request, timeout, cancellationToken))
+                var multicastTimeout = TimeSpan.FromSeconds(Math.Min(options.MulticastTimeoutSeconds, timeout.TotalSeconds));
+                await foreach (var (target, response) in slim!.MulticastAsync(byTarget.Keys.ToList(), request, multicastTimeout, cancellationToken))
                 {
                     var supplier = byTarget[target];
                     try
@@ -658,7 +671,8 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
                 return new
                 {
                     supplier = reply.Supplier.Identifier,
-                    transport = reply.Supplier.SlimTarget is null ? "JSONRPC" : "SLIMRPC",
+                    transport = reply.Supplier.SlimTarget is null || gateway.Transport == SupplierTransport.Http
+                        ? "JSONRPC" : "SLIMRPC",
                     taskId = task?.Id,
                     contextId = task?.ContextId ?? message?.ContextId,
                     state = task?.Status.State.ToString(),

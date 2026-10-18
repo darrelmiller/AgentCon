@@ -252,6 +252,7 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
     public bool CanMulticast(IEnumerable<string> targets) =>
         Volatile.Read(ref _connection) is not null && _groupApp is not null && targets.All(target => TargetName(target) is not null);
 
+    private static readonly TimeSpan MulticastCloseTimeout = TimeSpan.FromSeconds(5);
     private static readonly JsonParser ProtoJson = new(JsonParser.Settings.Default.WithIgnoreUnknownFields(true));
 
     /// <summary>
@@ -305,6 +306,15 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
         {
             foreach (var name in names.Where(name => !answered.Contains(name) && exchanges.Enabled))
                 exchanges.Status(keys[name], "no multicast reply", errorType: "Timeout", durationMs: clock.Elapsed.TotalMilliseconds);
+            // Close the group session: disposing the channel alone leaves it, and its traffic, open on every member.
+            try
+            {
+                await channel.CloseAsync(MulticastCloseTimeout).ConfigureAwait(false);
+            }
+            catch (uniffi.slim_rpc.RpcException exception)
+            {
+                logger.LogDebug(exception, "Closing the SLIM multicast session failed");
+            }
         }
     }
 

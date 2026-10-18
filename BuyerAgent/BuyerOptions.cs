@@ -4,6 +4,9 @@ namespace BuyerAgent;
 
 public enum SupplierCommunicationMode { NaturalLanguage, LearnStructures, Native, Automatic }
 
+/// <summary>How the buyer reaches suppliers: SLIMRPC when both sides can (falling back to HTTP), only SLIMRPC, or only HTTP.</summary>
+public enum SupplierTransport { Automatic, Slim, Http }
+
 public sealed class BuyerOptions
 {
     public const string SectionName = "Buyer";
@@ -15,6 +18,13 @@ public sealed class BuyerOptions
     public bool AllowInsecureSupplierHttp { get; set; }
     public bool ExchangeCaptureEnabled { get; set; }
     private int _communicationMode = (int)SupplierCommunicationMode.Automatic;
+    private int _supplierTransport = (int)SupplierTransport.Automatic;
+    /// <summary>Switchable at runtime from the dashboard; a turn keeps the value it started with.</summary>
+    public SupplierTransport SupplierTransport
+    {
+        get => (SupplierTransport)Volatile.Read(ref _supplierTransport);
+        set => Volatile.Write(ref _supplierTransport, (int)value);
+    }
     private int _nativeStructuredSupport;
     public bool NativeStructuredSupport
     {
@@ -51,6 +61,11 @@ public sealed class BuyerOptions
         return snapshot;
     }
     public int RequestTimeoutSeconds { get; set; } = 120;
+    /// <summary>
+    /// How long a SLIM multicast waits for replies before the buyer asks each supplier separately. Working multicasts
+    /// answer in a few seconds; a group session that never forms (agntcy/slim#2325) only ends at this deadline.
+    /// </summary>
+    public int MulticastTimeoutSeconds { get; set; } = 20;
     public int MaxConversations { get; set; } = 32;
     public decimal DemoMinBottlePriceUsd { get; set; } = 8;
     public decimal DemoMaxBottlePriceUsd { get; set; } = 30;
@@ -68,6 +83,8 @@ public sealed class BuyerOptions
             throw new InvalidOperationException("Supplier control token must contain 32-256 base64url characters.");
         if (!Enum.IsDefined(CommunicationMode))
             throw new InvalidOperationException("Buyer:CommunicationMode is invalid.");
+        if (!Enum.IsDefined(SupplierTransport))
+            throw new InvalidOperationException("Buyer:SupplierTransport must be Automatic, Slim or Http.");
         if (DemoMinBottlePriceUsd <= 0 || DemoMaxBottlePriceUsd < DemoMinBottlePriceUsd ||
             DemoMaxBottlePriceUsd > 10000)
             throw new InvalidOperationException("Configure a positive, ordered demo bottle-price range of at most USD 10000.");
@@ -77,6 +94,8 @@ public sealed class BuyerOptions
         {
             throw new InvalidOperationException("Buyer:ListenUrl must be an HTTP loopback origin, e.g. http://localhost:5100.");
         }
+        if (MulticastTimeoutSeconds is < 1 or > 600)
+            throw new InvalidOperationException("Buyer:MulticastTimeoutSeconds must be 1-600.");
         if (string.IsNullOrWhiteSpace(Model) || RequestTimeoutSeconds is < 1 or > 600 ||
             MaxConversations is < 1 or > 128 || !Path.IsPathFullyQualified(CopilotStateDirectory))
         {
