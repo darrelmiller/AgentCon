@@ -158,7 +158,7 @@ holder key signature, nonce, audience, state, and presentation expiry. It accept
 only the issuer's demo credential type and `demo_only:true`. This proves possession
 of a signed demo assertion, **not independently verified age**.
 
-With `SendStreamingMessage`, the seller keeps the execution alive after
+With `SendStreamingMessage` over HTTP JSON-RPC or SLIMRPC, the seller keeps the execution alive after
 `auth_required` and checks authenticated task-bound verifier status once per
 second until approval, expiry or cancellation. Approval executes the immutable
 saved PO without inference, then emits `TaskArtifactUpdateEvent` and
