@@ -66,7 +66,9 @@ automatically when traces are enabled. Use `-NoTraces` to skip Podman/Aspire,
 `-NoBrowser` to suppress browser tabs, or `-CheckOnly -NoTraces` to validate
 the configuration and ports without building or starting services. Ctrl+C
 stops the agent processes; the Aspire container remains running, matching the
-Bash launcher.
+Bash launcher. Add `-HttpBinding http-json` (or set `HTTP_BINDING=http-json`)
+to make the buyer call suppliers over the A2A **HTTP+JSON** (REST) binding at
+`/a2a/rest` instead; suppliers advertise and serve both HTTP bindings.
 
 Equivalent environment variables from `start-demo.sh` and PowerShell options:
 

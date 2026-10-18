@@ -270,6 +270,29 @@ public sealed class SupplierTests : IDisposable
     }
 
     [Fact]
+    public void SelectsTheConfiguredHttpBindingWithoutFallingBack()
+    {
+        using var http = new HttpClient();
+        var card = BuyerCard.Create(new BuyerOptions());
+        card.SupportedInterfaces =
+        [
+            new AgentInterface { Url = "http://localhost:6000/a2a", ProtocolBinding = "JSONRPC", ProtocolVersion = "1.0" },
+            new AgentInterface { Url = "http://localhost:6000/a2a/rest", ProtocolBinding = "HTTP+JSON", ProtocolVersion = "1.0" }
+        ];
+        var cardUrl = new Uri("http://localhost:6000/.well-known/agent-card.json");
+        var rest = new BuyerOptions { SupplierHttpBinding = "HTTP+JSON" };
+        Assert.Equal("http://localhost:6000/a2a/rest", new SupplierGateway(http, rest, new AiCatalogClient(http, rest))
+            .SelectEndpoint(card, cardUrl).AbsoluteUri);
+        var jsonRpc = new BuyerOptions();
+        Assert.Equal("http://localhost:6000/a2a", new SupplierGateway(http, jsonRpc, new AiCatalogClient(http, jsonRpc))
+            .SelectEndpoint(card, cardUrl).AbsoluteUri);
+        card.SupportedInterfaces = [card.SupportedInterfaces[0]];
+        Assert.Throws<InvalidOperationException>(() =>
+            new SupplierGateway(http, rest, new AiCatalogClient(http, rest)).SelectEndpoint(card, cardUrl));
+        Assert.Throws<InvalidOperationException>(() => new BuyerOptions { SupplierHttpBinding = "GRPC" }.Validate());
+    }
+
+    [Fact]
     public async Task CardWhoseInterfaceLeavesTheCatalogOriginCannotBeSelected()
     {
         var card = BuyerCard.Create(new BuyerOptions { ListenUrl = "http://localhost:6002" });

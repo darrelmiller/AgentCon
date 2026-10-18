@@ -46,7 +46,7 @@ chronological conversation in the center. Entries are labelled **Buyer -> Seller
 or **Supplier -> Buyer** and ordered by request send / response arrival time, even
 when requests overlap. **Click a message** to inspect its
 text or JSON data in the bottom panel; artifact buttons select individual
-quote/order/receipt parts. **Wire** shows the HTTP JSON-RPC body
+quote/order/receipt parts. **Wire** shows the HTTP JSON-RPC or HTTP+JSON body
 (JSON pretty-printed) or SSE frames. Trace links open the matching Aspire
 trace in an external browser. Selecting a seller in this viewer only filters
 the view; it does not change any buyer conversation's supplier selection.
@@ -204,8 +204,10 @@ Destination rules:
 - Catalog, card and interface URLs must be HTTPS, or HTTP on loopback, without
   credentials or fragments. `Buyer:AllowInsecureSupplierHttp` is the explicit
   opt-in for plaintext HTTP to a trusted LAN catalog or supplier.
-- The card's A2A 1.0 `JSONRPC` interface must be on the same origin as the
-  catalog's card URL. Redirects and cookies are disabled.
+- The card's A2A 1.0 interface for `Buyer:SupplierHttpBinding` (`JSONRPC`, the
+  default, or `HTTP+JSON`) must be on the same origin as the catalog's card URL;
+  the buyer does not fall back to the other binding. Redirects and cookies are
+  disabled. The launcher sets this with `-HttpBinding jsonrpc|http-json`.
 - Nested catalogs (`application/ai-catalog+json`) are followed up to depth 4,
   16 catalogs and 500 entries, with cycle detection. A remote catalog cannot
   reference local files, UNC paths are rejected, and documents are capped at

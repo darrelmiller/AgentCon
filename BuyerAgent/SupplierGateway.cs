@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace BuyerAgent;
 
 /// <summary>
-/// A supplier selected from an AI Catalog entry, with its validated A2A JSON-RPC endpoint and, when both sides
+/// A supplier selected from an AI Catalog entry, with its validated A2A HTTP endpoint (JSON-RPC or HTTP+JSON) and, when both sides
 /// support it, the SLIMRPC target (slim://org/namespace/app) its calls use instead.
 /// </summary>
 public sealed record SupplierBinding(
@@ -16,6 +16,8 @@ public sealed record SupplierBinding(
     public SupplierCommunicationMode Mode { get; init; }
     public bool Streaming { get; init; }
     public string? SlimTarget { get; init; }
+    public string HttpBinding { get; init; } = "JSONRPC";
+    public string Transport => SlimTarget is null ? HttpBinding : "SLIMRPC";
     public object Describe() => new
     {
         identifier = Identifier,
@@ -23,7 +25,7 @@ public sealed record SupplierBinding(
         displayName = DisplayName,
         cardUrl = CardUrl.AbsoluteUri,
         endpoint = Endpoint.AbsoluteUri,
-        transport = SlimTarget is null ? "JSONRPC" : "SLIMRPC",
+        transport = Transport,
         slimTarget = SlimTarget,
         catalog = Catalog,
         inputModes = InputModes,
@@ -80,12 +82,17 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
 
     /// <summary>
     /// The client for a supplier call: SLIMRPC when the binding has a SLIM target and the buyer is connected to the node,
-    /// otherwise HTTP JSON-RPC. Dispose <c>Owned</c> (the per-call HTTP client); SLIM clients are shared and owned by
+    /// otherwise the configured HTTP binding (JSON-RPC or HTTP+JSON). Dispose <c>Owned</c> (the per-call HTTP client); SLIM clients are shared and owned by
     /// <see cref="BuyerSlim"/>.
     /// </summary>
     internal (IA2AClient Client, IDisposable? Owned) OpenClient(SupplierBinding supplier)
     {
         if (supplier.SlimTarget is { } target && slim?.ClientFor(target) is { } slimClient) return (slimClient, null);
+        if (supplier.HttpBinding == "HTTP+JSON")
+        {
+            var rest = new A2AHttpJsonClient(supplier.Endpoint, httpClient);
+            return (rest, rest);
+        }
         var http = new A2AClient(supplier.Endpoint, httpClient);
         return (http, http);
     }
@@ -129,7 +136,7 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
         return new SupplierSelection(
             new SupplierBinding(entry.Identifier, entry.Version, entry.DisplayName ?? card.Name, entry.CardUrl, endpoint, entry.Catalog)
             { InputModes = card.DefaultInputModes, OutputModes = card.DefaultOutputModes, Formats = formats,
-                Mode = mode, Streaming = card.Capabilities.Streaming == true, SlimTarget = slimTarget },
+                Mode = mode, Streaming = card.Capabilities.Streaming == true, SlimTarget = slimTarget, HttpBinding = options.SupplierHttpBinding },
             card);
     }
 
@@ -239,7 +246,7 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
             tags: [new("gen_ai.operation.name", "invoke_agent"), new("gen_ai.agent.name", "SupplierAgent"),
                 new("gen_ai.provider.name", "agentcon.supplier"), new("agentcon.a2a.task.id", message.TaskId),
                 new("agentcon.a2a.context.id", message.ContextId)]);
-        activity?.SetTag("agentcon.a2a.transport", supplier.SlimTarget is null ? "JSONRPC" : "SLIMRPC");
+        activity?.SetTag("agentcon.a2a.transport", supplier.Transport);
         var (client, owned) = OpenClient(supplier);
         using var ownedClient = owned;
         try
@@ -416,19 +423,20 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
 
     public Uri SelectEndpoint(AgentCard card, Uri cardUrl)
     {
+        var binding = options.SupplierHttpBinding;
         var agentInterface = card.SupportedInterfaces.FirstOrDefault(
-            candidate => candidate.ProtocolBinding == "JSONRPC" && candidate.ProtocolVersion == "1.0")
-            ?? throw new InvalidOperationException("Supplier must advertise an A2A 1.0 JSONRPC interface. Other bindings are not implemented yet.");
+            candidate => candidate.ProtocolBinding == binding && candidate.ProtocolVersion == "1.0")
+            ?? throw new InvalidOperationException($"Supplier must advertise an A2A 1.0 {binding} interface (Buyer:SupplierHttpBinding).");
         if (!Uri.TryCreate(agentInterface.Url, UriKind.Absolute, out var endpoint))
         {
-            throw new InvalidOperationException("Supplier card JSONRPC interface URL must be absolute.");
+            throw new InvalidOperationException($"Supplier card {binding} interface URL must be absolute.");
         }
         options.ValidateRemoteUri(endpoint, "Supplier interface");
         if (endpoint.Scheme != cardUrl.Scheme ||
             !string.Equals(endpoint.Host, cardUrl.Host, StringComparison.OrdinalIgnoreCase) ||
             endpoint.Port != cardUrl.Port)
         {
-            throw new InvalidOperationException("Supplier card JSONRPC interface must have the same origin as the catalog's Agent Card URL.");
+            throw new InvalidOperationException($"Supplier card {binding} interface must have the same origin as the catalog's Agent Card URL.");
         }
         if (options.IsSelf(endpoint))
         {
@@ -638,7 +646,7 @@ public sealed class SupplierTurnTools(SupplierGateway gateway, BuyerTurn turn, C
                 return new
                 {
                     supplier = reply.Supplier.Identifier,
-                    transport = reply.Supplier.SlimTarget is null ? "JSONRPC" : "SLIMRPC",
+                    transport = reply.Supplier.Transport,
                     taskId = task?.Id,
                     contextId = task?.ContextId ?? message?.ContextId,
                     state = task?.Status.State.ToString(),

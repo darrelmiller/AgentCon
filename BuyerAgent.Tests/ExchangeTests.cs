@@ -70,6 +70,43 @@ public sealed class ExchangeTests
     }
 
     [Fact]
+    public async Task HttpJsonSdkCallsAreCapturedIncludingBodylessTaskReadsAndObservedPerInterface()
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        var task = new AgentTask
+        {
+            Id = "seller-task", ContextId = "seller-context",
+            Status = new A2A.TaskStatus { State = TaskState.InputRequired, Message = new Message
+            {
+                Role = Role.Agent, MessageId = "reply", TaskId = "seller-task", Parts = [Part.FromText("How many cases?")]
+            } }
+        };
+        using var client = Client(store, (request, _) =>
+        {
+            object body = request.Method == HttpMethod.Get
+                ? new AgentTask { Id = "seller-task", ContextId = "seller-context", Status = new A2A.TaskStatus { State = TaskState.Completed } }
+                : new SendMessageResponse { Task = task };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(body, A2AJsonUtilities.DefaultOptions), Encoding.UTF8, "application/json")
+            });
+        });
+        using var sdk = new A2AHttpJsonClient(new Uri("http://localhost:6000/a2a/rest"), client);
+        await sdk.SendMessageAsync(BuyerServiceTests.Request("Quote wine", "buyer-context", """{"kind":"rfq"}"""));
+        await sdk.GetTaskAsync(new GetTaskRequest { Id = "seller-task" });
+        var snapshot = Snapshot(store);
+        var exchanges = snapshot.GetProperty("exchanges").EnumerateArray().ToArray();
+        Assert.Equal(["SendMessage", "GetTask"], exchanges.Select(entry => entry.GetProperty("restOperation").GetString()));
+        Assert.StartsWith("GET /a2a/rest/tasks/seller-task", exchanges[1].GetProperty("request").GetString());
+        var observed = Assert.Single(snapshot.GetProperty("tasks").EnumerateArray());
+        Assert.Equal("http://localhost:6000/a2a/rest", observed.GetProperty("endpoint").GetString());
+        Assert.Equal("TASK_STATE_COMPLETED", observed.GetProperty("state").GetString());
+        Assert.Null(ExchangeStore.RestOperation(HttpMethod.Get, new Uri("http://localhost:6000/.well-known/agent-card.json")));
+        Assert.Null(ExchangeStore.RestOperation(HttpMethod.Post, new Uri("http://localhost:6000/a2a")));
+        Assert.Equal("CancelTask", ExchangeStore.RestOperation(HttpMethod.Post, new Uri("http://localhost:6000/a2a/rest/tasks/t:cancel")));
+    }
+
+    [Fact]
     public async Task CaptureIsOptInAndDiscoveryIsNotCaptured()
     {
         foreach (var enabled in new[] { false, true })

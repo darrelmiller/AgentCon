@@ -3,6 +3,7 @@ pub mod authorization;
 mod copilot;
 pub mod domain;
 pub mod inference;
+mod negotiation;
 mod openai;
 pub mod slim;
 pub mod telemetry;
@@ -659,7 +660,10 @@ pub fn card(origin: &str, inventory: &Inventory, slim_url: Option<&str>) -> Agen
         ],
         default_input_modes: vec!["text/plain".into(), RFQ.into(), PURCHASE.into()],
         default_output_modes: vec!["text/plain".into(), QUOTE.into(), RECEIPT.into()],
-        supported_interfaces: std::iter::once(AgentInterface::new(format!("{origin}/a2a"), TRANSPORT_PROTOCOL_JSONRPC))
+        supported_interfaces: [
+                AgentInterface::new(format!("{origin}/a2a"), TRANSPORT_PROTOCOL_JSONRPC),
+                AgentInterface::new(format!("{origin}/a2a/rest"), TRANSPORT_PROTOCOL_HTTP_JSON),
+            ].into_iter()
             .chain(slim_url.map(|url| AgentInterface::new(url.to_owned(), a2a::TRANSPORT_PROTOCOL_SLIMRPC)))
             .collect(),
         security_schemes: None, security_requirements: None,
@@ -840,8 +844,12 @@ pub fn app_with_handler(
         }))
         .nest(
             "/a2a",
-            a2a_server::jsonrpc::jsonrpc_router(handler)
+            a2a_server::jsonrpc::jsonrpc_router(handler.clone())
                 .layer(middleware::from_fn(preserve_output_modes)),
+        )
+        .nest(
+            "/a2a/rest",
+            a2a_server::rest::rest_router(Arc::new(negotiation::NegotiatingHandler(handler))),
         )
         .route("/.well-known/agent-card.json", axum::routing::get(move || {
             let supplier = card_supplier.clone();

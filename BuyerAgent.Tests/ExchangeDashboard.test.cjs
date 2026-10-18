@@ -107,6 +107,26 @@ test("minimal dashboard preserves states, counts, artifacts, task details and in
   assert.match(elements.get("payload").textContent, /quoteId/);
 });
 
+test("HTTP+JSON exchanges show unwrapped parts, the operation and the binding", async () => {
+  const { elements, state, refresh } = await dashboard();
+  Object.assign(state.capture.exchanges[0], {
+    endpoint: "http://localhost:6000/a2a/rest/message:send", restOperation: "SendMessage",
+    request: JSON.stringify({ message: { parts: [{ text: "Quote wine." }] } }),
+    response: JSON.stringify({ task: { status: { message: { parts: [{ text: "Quote ready." }] } },
+      artifacts: [{ name: "quote", parts: [{ data: { quoteId: "q" } }] }] } })
+  });
+  state.capture.exchanges.push({ id: 2, endpoint: "http://localhost:6000/a2a/rest/tasks/t", restOperation: "GetTask",
+    startedAt: "2026-10-11T18:00:02Z", status: "sending", request: "GET /a2a/rest/tasks/t", response: "" });
+  await refresh();
+  const conversation = elements.get("conversation");
+  assert.match(conversation.children[0].title, /SendMessage/);
+  assert.match(conversation.children[0].children[0].children[0].title, /HTTP\+JSON/);
+  assert.match(text(conversation), /1 artifact/);
+  assert.match(text(conversation), /HTTP · poll.*GET \/a2a\/rest\/tasks\/t/);
+  conversation.children[1].listeners.click();
+  assert.equal(elements.get("payload").textContent, "Quote ready.");
+});
+
 test("tips are focus-accessible and dismissible; failures remain visible", async () => {
   const { elements, document, state, refresh } = await dashboard();
   assert.ok(!html.includes("Demo content capture is ON."));

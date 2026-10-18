@@ -12,6 +12,8 @@ public sealed record ExchangeEntry(
     /// <summary>Set when the exchange is part of one "send to all suppliers" multicast, shared by its exchanges.</summary>
     public string? Group { get; init; }
     public string? GroupLabel { get; init; }
+    /// <summary>The A2A operation of an HTTP+JSON call, derived from its method and path; null for JSON-RPC and SLIMRPC.</summary>
+    public string? RestOperation { get; init; }
 }
 
 public sealed record ObservedTask(
@@ -71,7 +73,34 @@ public sealed class ExchangeStore(BuyerOptions options)
     /// <summary>The multicast in progress on this async flow; exchanges begun under it are grouped in the dashboard.</summary>
     public static readonly AsyncLocal<(string Id, string Label)?> CurrentGroup = new();
 
-    public (long Id, long Generation) Begin(Uri endpoint)
+    /// <summary>Maps an A2A HTTP+JSON request to its operation name, or null when it is not one.</summary>
+    public static string? RestOperation(HttpMethod method, Uri uri)
+    {
+        var path = uri.AbsolutePath;
+        if (method == HttpMethod.Post && (path.EndsWith("/message:send", StringComparison.Ordinal) || path.EndsWith("/message/send", StringComparison.Ordinal)))
+            return "SendMessage";
+        if (method == HttpMethod.Post && (path.EndsWith("/message:stream", StringComparison.Ordinal) || path.EndsWith("/message/stream", StringComparison.Ordinal)))
+            return "SendStreamingMessage";
+        var tasks = path.LastIndexOf("/tasks", StringComparison.Ordinal);
+        if (tasks < 0) return null;
+        var rest = path[(tasks + "/tasks".Length)..];
+        if (rest.Length == 0) return method == HttpMethod.Get ? "ListTasks" : null;
+        if (rest[0] != '/' || rest.IndexOf('/', 1) >= 0) return null;
+        if (method == HttpMethod.Post && rest.EndsWith(":cancel", StringComparison.Ordinal)) return "CancelTask";
+        if (rest.EndsWith(":subscribe", StringComparison.Ordinal) && (method == HttpMethod.Post || method == HttpMethod.Get)) return "SubscribeToTask";
+        return method == HttpMethod.Get ? "GetTask" : null;
+    }
+
+    // HTTP+JSON paths carry the operation; tasks are owned by the interface base URL so observations dedupe across calls.
+    private static string TaskEndpoint(ExchangeEntry entry)
+    {
+        if (entry.RestOperation is null) return entry.Endpoint;
+        var cut = Math.Max(entry.Endpoint.LastIndexOf("/message", StringComparison.Ordinal),
+            entry.Endpoint.LastIndexOf("/tasks", StringComparison.Ordinal));
+        return cut > 0 ? entry.Endpoint[..cut] : entry.Endpoint;
+    }
+
+    public (long Id, long Generation) Begin(Uri endpoint, string? restOperation = null)
     {
         lock (_gate)
         {
@@ -79,7 +108,7 @@ public sealed class ExchangeStore(BuyerOptions options)
             _exchanges.Add(new(id, DateTimeOffset.UtcNow, endpoint.GetLeftPart(UriPartial.Path),
                 Activity.Current?.TraceId.ToHexString(), Activity.Current?.SpanId.ToHexString(),
                 "", "", false, false, null, "sending", null, null)
-                { Group = CurrentGroup.Value?.Id, GroupLabel = CurrentGroup.Value?.Label });
+                { Group = CurrentGroup.Value?.Id, GroupLabel = CurrentGroup.Value?.Label, RestOperation = restOperation });
             if (_exchanges.Count > MaxExchanges)
             {
                 _exchanges.RemoveAt(0);
@@ -105,12 +134,12 @@ public sealed class ExchangeStore(BuyerOptions options)
                 {
                     var data = string.Join("\n", frame.Split('\n').Where(line => line.StartsWith("data:", StringComparison.Ordinal))
                         .Select(line => line[5..].TrimStart(' ')));
-                    ObserveJson(data, entry.Endpoint);
+                    ObserveJson(data, TaskEndpoint(entry), entry.RestOperation is not null, response);
                 }
             }
             else if (!truncated)
             {
-                ObserveJson(body, entry.Endpoint);
+                ObserveJson(body, TaskEndpoint(entry), entry.RestOperation is not null, response);
             }
         }
     }
@@ -174,21 +203,24 @@ public sealed class ExchangeStore(BuyerOptions options)
     private int Find((long Id, long Generation) key) =>
         key.Generation == _generation ? _exchanges.FindIndex(entry => entry.Id == key.Id) : -1;
 
-    private void ObserveJson(string body, string endpoint)
+    // JSON-RPC wraps requests in params and responses in result; HTTP+JSON sends both at the top level.
+    private void ObserveJson(string body, string endpoint, bool rest, bool response)
     {
         try
         {
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return;
-            if (root.TryGetProperty("params", out var parameters) &&
+            var parameters = root;
+            if (!response && (rest || root.TryGetProperty("params", out parameters)) &&
                 parameters.ValueKind == JsonValueKind.Object &&
                 parameters.TryGetProperty("message", out var message) &&
                 message.ValueKind == JsonValueKind.Object &&
                 message.TryGetProperty("taskId", out var continuation) &&
                 continuation.ValueKind == JsonValueKind.String)
                 Task("seller", endpoint, continuation.GetString()!, Text(message, "contextId"), "continuation sent");
-            if (root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object)
+            var result = root;
+            if (response && (rest || root.TryGetProperty("result", out result)) && result.ValueKind == JsonValueKind.Object)
             {
                 if (result.TryGetProperty("task", out var task)) result = task;
                 else if (result.TryGetProperty("statusUpdate", out var update)) result = update;

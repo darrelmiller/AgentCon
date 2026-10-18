@@ -7,6 +7,10 @@ Builds the Rust suppliers and .NET buyer, starts them on loopback, optionally
 starts the Aspire dashboard with Podman, and opens the buyer dashboard.
 SLIMRPC is opt-in; the default demo uses HTTP JSON-RPC.
 
+.PARAMETER HttpBinding
+A2A HTTP binding for buyer-to-supplier calls: jsonrpc (default) or http-json
+(A2A HTTP+JSON/REST). Same as HTTP_BINDING. With SLIM, this is the HTTP fallback.
+
 .PARAMETER BuyerArgs
 Additional arguments forwarded to the BuyerAgent after its default options.
 
@@ -27,6 +31,9 @@ building or starting services.
 .\start-demo.ps1 -SupplierVerifierUrl https://agentcon-issuer.azurewebsites.net
 
 .EXAMPLE
+.\start-demo.ps1 -HttpBinding http-json
+
+.EXAMPLE
 .\start-demo.ps1 -BuyerArgs @('--Buyer:NativeStructuredSupport=true')
 #>
 [CmdletBinding()]
@@ -41,6 +48,7 @@ param(
     [string]$Slim,
     [string]$SlimNamespace,
     [string]$SlimIdentity,
+    [string]$HttpBinding,
     [string[]]$BuyerArgs = @(),
     [switch]$NoTraces,
     [switch]$NoBrowser,
@@ -162,6 +170,7 @@ $tracesEnabled = -not $NoTraces -and $env:TRACES -ne '0'
 $slimMode = Get-Setting $boundParameters 'Slim' 'SLIM' ''
 $slimNamespaceValue = Get-Setting $boundParameters 'SlimNamespace' 'SLIM_NAMESPACE' 'agentcon'
 $slimIdentityValue = Get-Setting $boundParameters 'SlimIdentity' 'SLIM_IDENTITY' 'shared-secret'
+$httpBindingValue = (Get-Setting $boundParameters 'HttpBinding' 'HTTP_BINDING' 'jsonrpc').ToLowerInvariant()
 $verifierUrl = Get-Setting $boundParameters 'SupplierVerifierUrl' 'SUPPLIER_VERIFIER_URL' ''
 $verifierToken = Get-Setting $boundParameters 'SupplierVerifierToken' 'SUPPLIER_VERIFIER_TOKEN' $(
     if ([string]::IsNullOrWhiteSpace($env:ISSUER_ADMIN_TOKEN)) { '' } else { $env:ISSUER_ADMIN_TOKEN }
@@ -185,6 +194,12 @@ try {
     if ($slimIdentityValue -notin @('shared-secret', 'did-key')) {
         throw 'SlimIdentity must be shared-secret or did-key.'
     }
+    $supplierHttpBinding = switch ($httpBindingValue) {
+        'jsonrpc' { 'JSONRPC' }
+        'http-json' { 'HTTP+JSON' }
+        default { throw 'HttpBinding must be jsonrpc or http-json.' }
+    }
+    $httpTransport = if ($supplierHttpBinding -eq 'JSONRPC') { 'HTTP JSON-RPC' } else { 'HTTP+JSON' }
     if (($verifierUrl.Length -gt 0) -xor ($verifierToken.Length -gt 0)) {
         throw 'Set both SupplierVerifierUrl and its token (SUPPLIER_VERIFIER_TOKEN or ISSUER_ADMIN_TOKEN), or neither.'
     }
@@ -267,7 +282,7 @@ try {
     }
 
     if ($CheckOnly) {
-        Write-Host "Configuration is valid. HTTP ports: $($ports -join ', '); traces: $tracesEnabled; SLIM: $(if ($slimMode) { $slimMode } else { 'disabled' })."
+        Write-Host "Configuration is valid. HTTP ports: $($ports -join ', '); transport: $httpTransport; traces: $tracesEnabled; SLIM: $(if ($slimMode) { $slimMode } else { 'disabled' })."
         return
     }
 
@@ -490,7 +505,7 @@ services:
     }
     $buyerArguments = @('run', '--no-build', '--project', 'BuyerAgent\BuyerAgent.csproj', '--',
         '--Buyer:ExchangeCaptureEnabled=true', "--Buyer:Model=$model",
-        "--Buyer:CopilotStateDirectory=$buyerState")
+        "--Buyer:CopilotStateDirectory=$buyerState", "--Buyer:SupplierHttpBinding=$supplierHttpBinding")
     if ($slimMode) {
         $buyerArguments += "--Buyer:SlimConfigPath=$slimConfigPath"
         $buyerArguments += "--Buyer:SlimName=agntcy/agentcon/buyer"
@@ -537,7 +552,7 @@ services:
     }
 
     Write-Host "`nModel: $model"
-    Write-Host 'Transport: HTTP JSON-RPC (SLIMRPC is opt-in).'
+    Write-Host "Transport: $(if ($slimMode) { "SLIMRPC when available, else $httpTransport" } else { "$httpTransport (SLIMRPC is opt-in)" })."
     Write-Host 'Buyer dashboard: http://localhost:5100/demo'
     if ($tracesEnabled) { Write-Host "Aspire: $dashboardLogin`nOTLP: http://localhost:4317 (gRPC)" }
     else { Write-Host 'Traces: disabled' }

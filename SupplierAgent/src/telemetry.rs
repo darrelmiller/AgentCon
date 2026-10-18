@@ -114,6 +114,7 @@ pub async fn http(mut request: Request, next: Next) -> Response {
     let parent = global::get_text_map_propagator(|p| p.extract(&Headers(request.headers())));
     let route = match request.uri().path() {
         "/a2a" | "/a2a/" => "/a2a",
+        path if path.starts_with("/a2a/rest/") => "/a2a/rest/{operation}",
         "/health" => "/health",
         "/.well-known/agent-card.json" => "/.well-known/agent-card.json",
         _ => "unmatched",

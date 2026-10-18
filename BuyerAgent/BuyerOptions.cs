@@ -32,6 +32,8 @@ public sealed class BuyerOptions
     /// <summary>Shared secret all demo SLIM apps use for their identity; process-scoped, never in tracked configuration.</summary>
     public string? SlimSharedSecret { get; set; }
     public bool AllowLoopbackPresentationHttp { get; set; }
+    /// <summary>A2A binding for HTTP supplier calls: JSONRPC (default) or HTTP+JSON. SLIMRPC is selected separately.</summary>
+    public string SupplierHttpBinding { get; set; } = "JSONRPC";
     public SupplierCommunicationMode CommunicationMode
     {
         get => (SupplierCommunicationMode)Volatile.Read(ref _communicationMode);
@@ -61,6 +63,8 @@ public sealed class BuyerOptions
             throw new InvalidOperationException("Supplier control token must contain 32-256 base64url characters.");
         if (!Enum.IsDefined(CommunicationMode))
             throw new InvalidOperationException("Buyer:CommunicationMode is invalid.");
+        if (SupplierHttpBinding is not ("JSONRPC" or "HTTP+JSON"))
+            throw new InvalidOperationException("Buyer:SupplierHttpBinding must be JSONRPC or HTTP+JSON.");
         if (DemoMinBottlePriceUsd <= 0 || DemoMaxBottlePriceUsd < DemoMinBottlePriceUsd ||
             DemoMaxBottlePriceUsd > 10000)
             throw new InvalidOperationException("Configure a positive, ordered demo bottle-price range of at most USD 10000.");

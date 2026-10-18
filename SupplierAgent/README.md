@@ -75,6 +75,7 @@ and structured requests need **no Copilot login or inference**.
 | `http://localhost:6000/health` | Readiness, structured requests, inference **attempts** and cumulative agent LLM metrics |
 | `http://localhost:6000/.well-known/agent-card.json` | SDK-served live A2A 1.0 Agent Card |
 | `http://localhost:6000/a2a` | SDK JSON-RPC, including task get/list/cancel and SSE |
+| `http://localhost:6000/a2a/rest` | SDK HTTP+JSON (REST), e.g. `/message:send`, `/message:stream`, `/tasks/{id}` |
 
 Health's `llm` object reports a process `instanceId`, actual model `calls`,
 `responseTimeMs`, `timedCalls` and event-stream `complete` status. Copilot time is
@@ -158,7 +159,7 @@ holder key signature, nonce, audience, state, and presentation expiry. It accept
 only the issuer's demo credential type and `demo_only:true`. This proves possession
 of a signed demo assertion, **not independently verified age**.
 
-With `SendStreamingMessage` over HTTP JSON-RPC or SLIMRPC, the seller keeps the execution alive after
+With `SendStreamingMessage` over HTTP JSON-RPC, HTTP+JSON or SLIMRPC, the seller keeps the execution alive after
 `auth_required` and checks authenticated task-bound verifier status once per
 second until approval, expiry or cancellation. Approval executes the immutable
 saved PO without inference, then emits `TaskArtifactUpdateEvent` and

@@ -512,6 +512,52 @@ async fn streaming_wallet_approval_emits_receipt_and_completed_without_resending
     assert_eq!(server.supplier.metrics.inference_attempts.load(Ordering::Relaxed), 0);
 }
 
+#[tokio::test]
+async fn http_json_binding_is_advertised_and_completes_streaming_wallet_approval() {
+    let verifier = Arc::new(TestVerifier::default());
+    let server = TestServer::with_supplier(
+        Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()),
+    ).await;
+    let card: Value = reqwest::get(format!("{}/.well-known/agent-card.json", server.url))
+        .await.unwrap().json().await.unwrap();
+    assert!(card["supportedInterfaces"].as_array().unwrap().iter().any(|interface|
+        interface["protocolBinding"] == "HTTP+JSON" && interface["url"] == format!("{}/a2a/rest", server.url)));
+    let client = reqwest::Client::new();
+    let mut rfq_message = Message::new(Role::User, vec![Part::data(rfq(1)).with_media_type(RFQ)]);
+    rfq_message.context_id = Some("rest-context".into());
+    let quoted: Value = client.post(format!("{}/a2a/rest/message:send", server.url))
+        .header("A2A-Version", "1.0")
+        .json(&json!({"message":rfq_message,"configuration":{"acceptedOutputModes":["text/plain",QUOTE]}}))
+        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    let quote = quoted["task"]["artifacts"][0]["parts"][0]["data"]["quoteId"].as_str().unwrap();
+    let mut message = Message::new(Role::User, vec![Part::data(order(quote, "rest-po")).with_media_type(PURCHASE)]);
+    message.context_id = Some("rest-context".into());
+    let mut response = client.post(format!("{}/a2a/rest/message:stream", server.url))
+        .header("A2A-Version", "1.0")
+        .json(&json!({"message":message,"configuration":{"acceptedOutputModes":["text/plain",RECEIPT]}}))
+        .send().await.unwrap().error_for_status().unwrap();
+    let mut wire = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            wire.push_str(&String::from_utf8(response.chunk().await.unwrap().unwrap().to_vec()).unwrap());
+            if wire.contains("TASK_STATE_AUTH_REQUIRED") { break; }
+        }
+        assert!(wire.contains("complete automatically"));
+        verifier.0.store(true, Ordering::SeqCst);
+        while let Some(chunk) = response.chunk().await.unwrap() {
+            wire.push_str(&String::from_utf8(chunk.to_vec()).unwrap());
+        }
+    }).await.unwrap();
+    let events: Vec<Value> = wire.split("\n\n").filter_map(|frame|
+        frame.lines().find_map(|line| line.strip_prefix("data:"))
+            .and_then(|data| serde_json::from_str(data.trim()).ok())).collect();
+    assert!(events.iter().any(|event| event["statusUpdate"]["status"]["state"] == "TASK_STATE_COMPLETED"));
+    let receipt = events.iter().find_map(|event| event["artifactUpdate"]["artifact"]["parts"][0]["data"].as_object()).unwrap();
+    assert_eq!(receipt["purchaseOrderId"], "rest-po");
+    assert_eq!(receipt["ageVerification"], "verified-demo-over-21");
+    assert_eq!(server.supplier.metrics.inference_attempts.load(Ordering::Relaxed), 0);
+}
+
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.task.abort();

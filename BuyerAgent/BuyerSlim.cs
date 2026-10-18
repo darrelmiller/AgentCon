@@ -54,7 +54,7 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        // Connect in the background: an unreachable node must not delay HTTP startup; suppliers fall back to JSON-RPC.
+        // Connect in the background: an unreachable node must not delay HTTP startup; suppliers fall back to HTTP.
         if (Configured) _startup = Task.Run(ConnectAndServeAsync, CancellationToken.None);
         return Task.CompletedTask;
     }
@@ -87,7 +87,7 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Buyer SLIMRPC unavailable; suppliers are called over HTTP JSON-RPC");
+            logger.LogError(exception, "Buyer SLIMRPC unavailable; suppliers are called over HTTP");
         }
     }
 

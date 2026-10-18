@@ -8,10 +8,11 @@ public sealed class ExchangeCaptureHandler(ExchangeStore store) : DelegatingHand
 {
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        if (!store.Enabled || request.Method != HttpMethod.Post || request.RequestUri is null)
+        var operation = request.RequestUri is null ? null : ExchangeStore.RestOperation(request.Method, request.RequestUri);
+        if (!store.Enabled || request.RequestUri is null || request.Method != HttpMethod.Post && operation is null)
             return await base.SendAsync(request, cancellationToken);
 
-        var key = store.Begin(request.RequestUri);
+        var key = store.Begin(request.RequestUri, operation);
         var started = Stopwatch.GetTimestamp();
         void Complete(string state, Exception? error = null) => store.Status(key, state,
             errorType: error?.GetType().Name, durationMs: Stopwatch.GetElapsedTime(started).TotalMilliseconds);
@@ -19,6 +20,9 @@ public sealed class ExchangeCaptureHandler(ExchangeStore store) : DelegatingHand
             request.Content = new CapturedContent(content, false,
                 (body, truncated) => store.Body(key, false, body, truncated, false),
                 _ => { }, error => Complete("request failed", error));
+        else
+            // HTTP+JSON task reads and actions carry no body; record the request line so the call stays visible.
+            store.Body(key, false, $"{request.Method} {request.RequestUri.PathAndQuery}", false, false);
         try
         {
             var response = await base.SendAsync(request, cancellationToken);

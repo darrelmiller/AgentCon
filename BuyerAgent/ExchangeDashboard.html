@@ -161,7 +161,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     </section>
     <div class="lanes">
       <section class="card" aria-labelledby="conversation-title">
-        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span><span class="transport slim" title="Sent over SLIMRPC to a slim:// name">SLIM</span><span class="transport http" title="Sent as A2A JSON-RPC over HTTP">HTTP</span></span><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts.         LLM call totals and cumulative model-response time are shown on each agent and reset with Clear. Missing timing is not assumed to be zero.</span></span></div>
+        <div class="lane-heading"><h2 id="conversation-title">Conversation</h2><span><span class="transport slim" title="Sent over SLIMRPC to a slim:// name">SLIM</span><span class="transport http" title="Sent as A2A JSON-RPC or HTTP+JSON over HTTP">HTTP</span></span><span class="tip"><button type="button" aria-label="Conversation ordering and inference counts" aria-describedby="conversation-tip">i</button><span id="conversation-tip" class="tip-text" role="tooltip">Oldest to newest, by send and response arrival time. Click a message to inspect all parts and artifacts.         LLM call totals and cumulative model-response time are shown on each agent and reset with Clear. Missing timing is not assumed to be zero.</span></span></div>
         <div id="conversation" class="messages"></div>
       </section>
     </div>
@@ -183,7 +183,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     </section>
   </div>
   <section class="card inspector" aria-labelledby="inspector-title">
-    <div class="row"><h2 id="inspector-title">Message inspector</h2><div class="inspector-toolbar"><button id="content-tab" aria-pressed="true" title="Inspect individual message and artifact parts">Content</button><button id="raw-tab" aria-pressed="false" title="Full HTTP JSON-RPC body or SSE frames">Wire</button><button id="copy" title="Copy the displayed content" disabled>Copy</button></div></div>
+    <div class="row"><h2 id="inspector-title">Message inspector</h2><div class="inspector-toolbar"><button id="content-tab" aria-pressed="true" title="Inspect individual message and artifact parts">Content</button><button id="raw-tab" aria-pressed="false" title="Full HTTP body (JSON-RPC or HTTP+JSON) or SSE frames">Wire</button><button id="copy" title="Copy the displayed content" disabled>Copy</button></div></div>
     <p id="inspector-hint" class="muted">Select a message.</p>
     <div id="metadata" class="metadata"></div><div id="parts" class="parts"></div>
     <pre id="payload" tabindex="0" aria-label="Selected message or artifact content">No message selected.</pre>
@@ -227,7 +227,8 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
       });
     }
   }
-  function contents(body) {
+  // HTTP+JSON bodies are unwrapped: the request is the params object and each response or SSE frame is the result.
+  function contents(body, rest) {
     const parts = [];
     function message(value, prefix) {
       if (!Array.isArray(value?.parts)) return;
@@ -242,18 +243,18 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     events.forEach((root, index) => {
       if (!root || typeof root !== "object") return;
       const prefix = events.length > 1 ? `Event ${index + 1} ` : "";
-      message(root.params?.message, `${prefix}Message`);
-      const result = root.result;
+      message(rest ? root.message : root.params?.message, `${prefix}Message`);
+      const result = rest ? root : root.result;
       const task = result?.task ?? (result?.status ? result : null);
       message(result?.message, `${prefix}Message`);
       message(task?.status?.message ?? result?.statusUpdate?.status?.message, `${prefix}Reply`);
       const artifacts = task?.artifacts ?? (result?.artifactUpdate?.artifact ? [result.artifactUpdate.artifact] : []);
       if (Array.isArray(artifacts)) artifacts.forEach((artifact, i) => message(artifact, `${prefix}Artifact ${i + 1}${artifact?.name ? ` - ${artifact.name}` : ""}`));
-      if (root.error) parts.push({ key: `${prefix}error`, label: `${prefix}JSON-RPC error`, value: root.error });
+      if (root.error) parts.push({ key: `${prefix}error`, label: `${prefix}${rest ? "A2A" : "JSON-RPC"} error`, value: root.error });
     });
     return parts;
   }
-  // The capture records the endpoint actually used: a slim:// name for SLIMRPC, an http(s):// URL for JSON-RPC.
+  // The capture records the endpoint actually used: a slim:// name for SLIMRPC, an http(s):// URL for JSON-RPC or HTTP+JSON.
   const transportOf = entry => entry.endpoint?.startsWith("slim://") ? "SLIM" : "HTTP";
   // A seller's exchanges arrive at its HTTP origin or, over SLIMRPC, at its slim:// name.
   function sellerOwns(endpoint, origin) {
@@ -332,18 +333,18 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         button.setAttribute("aria-pressed", String(chosen));
         const root = roots(entry.request)[0];
         // Only the SLIM multicast request goes to the group; every reply (and every HTTP call) is unicast.
-        const method = roots(entry.request)[0]?.method;
+        const method = entry.restOperation ?? root?.method;
         const viaSlim = transportOf(entry) === "SLIM";
         const delivery = response ? (entry.group ? "unicast reply" : "unicast")
           : slimMulticast ? "multicast" : method === "GetTask" ? "poll" : entry.group ? "fan-out" : "unicast";
         const from = response ? "Supplier → Buyer" : slimMulticast ? `Buyer → ${groupSizes.get(entry.group)} suppliers` : "Buyer → Supplier";
         const heading = node("strong", `${from} · #${entry.id}`);
         const chip = node("span", `${viaSlim ? "SLIM" : "HTTP"} · ${delivery}`, `transport ${viaSlim ? "slim" : "http"}`);
-        chip.title = viaSlim ? `SLIMRPC via ${entry.endpoint}` : `A2A JSON-RPC over HTTP to ${entry.endpoint}`;
+        chip.title = viaSlim ? `SLIMRPC via ${entry.endpoint}` : `A2A ${entry.restOperation ? "HTTP+JSON" : "JSON-RPC"} over HTTP to ${entry.endpoint}`;
         heading.append(chip);
         button.append(heading);
-        button.title = `${root?.method || "A2A request"} · ${new Date(time).toLocaleTimeString()} · ${entry.status}${entry.httpStatus ? ` · HTTP ${entry.httpStatus}` : ""}. Click to inspect all parts and artifacts.`;
-        const allParts = contents(body);
+        button.title = `${method || "A2A request"} · ${new Date(time).toLocaleTimeString()} · ${entry.status}${entry.httpStatus ? ` · HTTP ${entry.httpStatus}` : ""}. Click to inspect all parts and artifacts.`;
+        const allParts = contents(body, !!entry.restOperation);
         button.append(node("small", entry.status,
           entry.errorType || entry.httpStatus >= 400 ? "error" : "muted"));
         button.append(node("span", allParts.length ? pretty(allParts[0].value) : body || (entry.errorType ? `Transport error: ${entry.errorType}` : "Waiting for response..."), "preview"));
@@ -375,7 +376,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     const members = (state?.capture.exchanges || []).filter(other => entry.group && other.group === entry.group);
     const wire = !response && entry.groupLabel?.startsWith("SLIM multicast")
       ? `SLIMRPC multicast to ${members.length} suppliers (${members.map(other => other.endpoint).join(", ")})`
-      : `${transportOf(entry) === "SLIM" ? "SLIMRPC" : "HTTP JSON-RPC"} via ${entry.endpoint}`;
+      : `${transportOf(entry) === "SLIM" ? "SLIMRPC" : entry.restOperation ? `HTTP+JSON ${entry.restOperation}` : "HTTP JSON-RPC"} via ${entry.endpoint}`;
     $("inspector-hint").textContent = `Exchange #${entry.id} - ${response ? "Seller to buyer" : "Buyer to seller"} - ${wire} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
     $("metadata").append(node("code", entry.endpoint), node("span", `HTTP ${entry.httpStatus ?? "pending"}`));
     if (entry.durationMs !== null) $("metadata").append(node("span", `${entry.durationMs.toFixed(1)} ms`));
@@ -387,7 +388,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
       link.target = "_blank"; link.rel = "noopener noreferrer";
       $("metadata").append(link);
     }
-    const parts = contents(body);
+    const parts = contents(body, !!entry.restOperation);
     let part = parts.find(item => item.key === partKey) ?? parts[0];
     if (!raw) {
       parts.forEach(item => {
