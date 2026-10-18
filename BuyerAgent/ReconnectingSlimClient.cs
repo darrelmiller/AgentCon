@@ -11,11 +11,13 @@ namespace BuyerAgent;
 /// <paramref name="current"/>, and any failure hands it to <paramref name="reset"/>, which drops it so the next call
 /// opens a new session. A stream whose first event doesn't arrive within <paramref name="firstEvent"/> is treated
 /// the same way and sent once more on a new session: an A2A agent answers a stream with the task at once, so no
-/// first event means the request never reached it.
+/// first event means the request never reached it. A one-shot call gets <paramref name="unaryTimeout"/>: when the
+/// buyer's own connection to the node was replaced, a call on the old session would otherwise wait until its caller
+/// gives up. <paramref name="track"/> marks each call in flight, so idle sessions can be reset without cutting one.
 /// </summary>
 public sealed class ReconnectingSlimClient(
     string remote, Func<IA2AClient> current, Func<IA2AClient, Exception, Task> reset, TimeSpan firstEvent,
-    ILogger logger) : IA2AClient
+    TimeSpan unaryTimeout, Func<IDisposable> track, ILogger logger) : IA2AClient
 {
     /// <summary>
     /// Whether a failure can mean the session is dead. An A2A error the agent sent back (task not found, invalid
@@ -27,12 +29,20 @@ public sealed class ReconnectingSlimClient(
     private Task ResetAsync(IA2AClient client, Exception exception) =>
         SessionMayBeDead(exception) ? reset(client, exception) : Task.CompletedTask;
 
-    private async Task<T> UnaryAsync<T>(Func<IA2AClient, Task<T>> call)
+    private async Task<T> UnaryAsync<T>(Func<IA2AClient, CancellationToken, Task<T>> call, CancellationToken cancellationToken)
     {
+        using var inFlight = track();
         var client = current();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(unaryTimeout);
         try
         {
-            return await call(client).ConfigureAwait(false);
+            return await call(client, deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            await ResetAsync(client, exception).ConfigureAwait(false);
+            throw new TimeoutException($"SLIM agent {remote} did not answer within {unaryTimeout.TotalSeconds:0} s; its session was reset.", exception);
         }
         catch (Exception exception)
         {
@@ -46,6 +56,7 @@ public sealed class ReconnectingSlimClient(
         Func<IA2AClient, CancellationToken, IAsyncEnumerable<StreamResponse>> call,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        using var inFlight = track();
         for (var attempt = 1; ; attempt++)
         {
             var client = current();
@@ -119,39 +130,39 @@ public sealed class ReconnectingSlimClient(
     }
 
     public Task<SendMessageResponse> SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.SendMessageAsync(request, cancellationToken));
+        UnaryAsync((client, token) => client.SendMessageAsync(request, token), cancellationToken);
 
     public IAsyncEnumerable<StreamResponse> SendStreamingMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default) =>
         StreamAsync((client, token) => client.SendStreamingMessageAsync(request, token), cancellationToken);
 
     public Task<AgentTask> GetTaskAsync(GetTaskRequest request, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.GetTaskAsync(request, cancellationToken));
+        UnaryAsync((client, token) => client.GetTaskAsync(request, token), cancellationToken);
 
     public Task<ListTasksResponse> ListTasksAsync(ListTasksRequest request, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.ListTasksAsync(request, cancellationToken));
+        UnaryAsync((client, token) => client.ListTasksAsync(request, token), cancellationToken);
 
     public Task<AgentTask> CancelTaskAsync(CancelTaskRequest request, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.CancelTaskAsync(request, cancellationToken));
+        UnaryAsync((client, token) => client.CancelTaskAsync(request, token), cancellationToken);
 
     public IAsyncEnumerable<StreamResponse> SubscribeToTaskAsync(SubscribeToTaskRequest request, CancellationToken cancellationToken = default) =>
         StreamAsync((client, token) => client.SubscribeToTaskAsync(request, token), cancellationToken);
 
     public Task<TaskPushNotificationConfig> CreateTaskPushNotificationConfigAsync(
         TaskPushNotificationConfig config, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.CreateTaskPushNotificationConfigAsync(config, cancellationToken));
+        UnaryAsync((client, token) => client.CreateTaskPushNotificationConfigAsync(config, token), cancellationToken);
 
     public Task<TaskPushNotificationConfig> GetTaskPushNotificationConfigAsync(
         GetTaskPushNotificationConfigRequest request, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.GetTaskPushNotificationConfigAsync(request, cancellationToken));
+        UnaryAsync((client, token) => client.GetTaskPushNotificationConfigAsync(request, token), cancellationToken);
 
     public Task<ListTaskPushNotificationConfigsResponse> ListTaskPushNotificationConfigsAsync(
         ListTaskPushNotificationConfigsRequest request, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.ListTaskPushNotificationConfigsAsync(request, cancellationToken));
+        UnaryAsync((client, token) => client.ListTaskPushNotificationConfigsAsync(request, token), cancellationToken);
 
     public async Task DeleteTaskPushNotificationConfigAsync(
         DeleteTaskPushNotificationConfigRequest request, CancellationToken cancellationToken = default) =>
-        await UnaryAsync(async client => { await client.DeleteTaskPushNotificationConfigAsync(request, cancellationToken); return true; });
+        await UnaryAsync(async (client, token) => { await client.DeleteTaskPushNotificationConfigAsync(request, token); return true; }, cancellationToken);
 
     public Task<AgentCard> GetExtendedAgentCardAsync(GetExtendedAgentCardRequest request, CancellationToken cancellationToken = default) =>
-        UnaryAsync(client => client.GetExtendedAgentCardAsync(request, cancellationToken));
+        UnaryAsync((client, token) => client.GetExtendedAgentCardAsync(request, token), cancellationToken);
 }

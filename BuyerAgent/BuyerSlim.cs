@@ -200,6 +200,9 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
 
     /// <summary>How long a stream may stay silent before its session is treated as dead (agents answer at once).</summary>
     internal static readonly TimeSpan FirstEventTimeout = TimeSpan.FromSeconds(15);
+    /// <summary>Longest one-shot SLIM call (quotes take seconds; streams have no such limit, purchases wait for wallets).</summary>
+    internal static readonly TimeSpan UnaryCallTimeout = TimeSpan.FromSeconds(45);
+    private readonly ConcurrentDictionary<string, int> _inFlight = new(StringComparer.Ordinal);
 
     /// <summary>
     /// A SLIMRPC client to <paramref name="target"/> when connected, recorded in the dashboard; otherwise null. It opens
@@ -209,7 +212,8 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
     {
         if (Volatile.Read(ref _connection) is null || TargetName(target) is not { } remote) return null;
         IA2AClient client = new ReconnectingSlimClient(remote, () => CurrentClient(remote),
-            (stale, reason) => ResetClientAsync(remote, stale, reason), FirstEventTimeout, logger);
+            (stale, reason) => ResetClientAsync(remote, stale, reason), FirstEventTimeout, UnaryCallTimeout,
+            () => Track(remote), logger);
         return exchanges.Enabled ? new CapturingClient(client, exchanges, new Uri($"slim://{remote}")) : client;
     }
 
@@ -225,6 +229,30 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
             IdentityVerifier = Identity?.Verifier,
             Remote = name,
         }))).Value;
+    }
+
+    private IDisposable Track(string remote)
+    {
+        _inFlight.AddOrUpdate(remote, 1, (_, count) => count + 1);
+        return new Release(() => _inFlight.AddOrUpdate(remote, 0, (_, count) => Math.Max(0, count - 1)));
+    }
+
+    private sealed class Release(Action action) : IDisposable
+    {
+        private int _done;
+        public void Dispose() { if (Interlocked.Exchange(ref _done, 1) == 0) action(); }
+    }
+
+    /// <summary>
+    /// Drops every per-supplier session with no call in flight, so the next calls start new ones. Used when a failure
+    /// points at the buyer's own connection to the node (it reconnects on its own, but sessions opened on the old
+    /// connection stay dead); a session with a call in flight is left to fail and reset itself.
+    /// </summary>
+    public async Task ResetIdleClientsAsync(Exception reason)
+    {
+        foreach (var (remote, entry) in _clients.ToArray())
+            if (entry.IsValueCreated && _inFlight.GetValueOrDefault(remote) == 0)
+                await ResetClientAsync(remote, entry.Value, reason).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -252,6 +280,7 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
     public bool CanMulticast(IEnumerable<string> targets) =>
         Volatile.Read(ref _connection) is not null && _groupApp is not null && targets.All(target => TargetName(target) is not null);
 
+    private static readonly TimeSpan MulticastCloseTimeout = TimeSpan.FromSeconds(5);
     private static readonly JsonParser ProtoJson = new(JsonParser.Settings.Default.WithIgnoreUnknownFields(true));
 
     /// <summary>
@@ -305,6 +334,15 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
         {
             foreach (var name in names.Where(name => !answered.Contains(name) && exchanges.Enabled))
                 exchanges.Status(keys[name], "no multicast reply", errorType: "Timeout", durationMs: clock.Elapsed.TotalMilliseconds);
+            // Close the group session: disposing the channel alone leaves it, and its traffic, open on every member.
+            try
+            {
+                await channel.CloseAsync(MulticastCloseTimeout).ConfigureAwait(false);
+            }
+            catch (uniffi.slim_rpc.RpcException exception)
+            {
+                logger.LogDebug(exception, "Closing the SLIM multicast session failed");
+            }
         }
     }
 

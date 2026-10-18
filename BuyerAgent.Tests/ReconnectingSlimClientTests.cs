@@ -68,6 +68,46 @@ public sealed class ReconnectingSlimClientTests
         Assert.Equal([first, second], resets);
     }
 
+    [Fact]
+    public async Task OneShotCallIntoADeadSessionTimesOutAndResets()
+    {
+        var dead = new FakeClient { HangUnary = true };
+        var (client, resets) = Reconnecting(dead, new FakeClient());
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAsync<TimeoutException>(() => client.GetTaskAsync(new() { Id = "t" }));
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5));
+        Assert.Equal([dead], resets);
+        Assert.Equal("t", (await client.GetTaskAsync(new() { Id = "t" })).Id);
+    }
+
+    [Fact]
+    public async Task CallsAreTrackedInFlightUntilTheyEnd()
+    {
+        var inFlight = 0;
+        var peak = 0;
+        var gate = new TaskCompletionSource();
+        var slow = new FakeClient { Gate = gate.Task };
+        var client = new ReconnectingSlimClient("agntcy/test/seller", () => slow, (_, _) => Task.CompletedTask,
+            FirstEvent, TimeSpan.FromSeconds(5), () =>
+            {
+                peak = Math.Max(peak, Interlocked.Increment(ref inFlight));
+                return new Scope(() => Interlocked.Decrement(ref inFlight));
+            }, NullLogger.Instance);
+        var call = client.GetTaskAsync(new() { Id = "t" });
+        Assert.Equal(1, inFlight);
+        gate.SetResult();
+        await call;
+        await foreach (var _ in client.SendStreamingMessageAsync(new() { Message = new() { MessageId = "m" } }))
+            Assert.Equal(1, inFlight);
+        Assert.Equal(0, inFlight);
+        Assert.Equal(1, peak);
+    }
+
+    private sealed class Scope(Action dispose) : IDisposable
+    {
+        public void Dispose() => dispose();
+    }
+
     private static (ReconnectingSlimClient, List<IA2AClient>) Reconnecting(params FakeClient[] clients)
     {
         var resets = new List<IA2AClient>();
@@ -80,7 +120,7 @@ public sealed class ReconnectingSlimClientTests
                 resets.Add(stale);
                 if (ReferenceEquals(stale, current)) current = null;
                 return Task.CompletedTask;
-            }, FirstEvent, NullLogger.Instance);
+            }, FirstEvent, TimeSpan.FromMilliseconds(300), () => new Scope(() => { }), NullLogger.Instance);
         return (client, resets);
     }
 
@@ -89,6 +129,8 @@ public sealed class ReconnectingSlimClientTests
         public bool Silent { get; init; }
         public bool FailAfterFirst { get; init; }
         public Exception? Unary { get; init; }
+        public bool HangUnary { get; init; }
+        public Task? Gate { get; init; }
         public int Streams { get; private set; }
 
         public async IAsyncEnumerable<StreamResponse> SendStreamingMessageAsync(SendMessageRequest request,
@@ -101,8 +143,13 @@ public sealed class ReconnectingSlimClientTests
             if (FailAfterFirst) throw new TimeoutException("session lost");
         }
 
-        public Task<AgentTask> GetTaskAsync(GetTaskRequest request, CancellationToken cancellationToken = default) =>
-            Unary is { } failure ? Task.FromException<AgentTask>(failure) : Task.FromResult(new AgentTask { Id = request.Id, ContextId = "c" });
+        public async Task<AgentTask> GetTaskAsync(GetTaskRequest request, CancellationToken cancellationToken = default)
+        {
+            if (HangUnary) await Task.Delay(Timeout.Infinite, cancellationToken);
+            if (Gate is { } gate) await gate;
+            if (Unary is { } failure) throw failure;
+            return new AgentTask { Id = request.Id, ContextId = "c" };
+        }
 
         public Task<SendMessageResponse> SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<ListTasksResponse> ListTasksAsync(ListTasksRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();

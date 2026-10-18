@@ -71,12 +71,23 @@ public sealed class ExchangeDashboard(
             logger.LogInformation("Buyer native support changed to {Enabled}; active turns retain their snapshot.", change.Enabled);
             return Results.Ok(new { nativeStructuredSupport = change.Enabled });
         });
+        app.MapPost("/demo/transport", (HttpContext context, TransportChange change, BuyerOptions options,
+            ILogger<ExchangeDashboard> logger) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            if (!Enum.TryParse<SupplierTransport>(change.Transport, ignoreCase: true, out var transport) || !Enum.IsDefined(transport))
+                return Results.BadRequest(new { error = "Transport must be Automatic, Slim or Http." });
+            options.SupplierTransport = transport;
+            logger.LogInformation("Buyer supplier transport changed to {Transport}; active turns retain their snapshot.", transport);
+            return Results.Ok(new { supplierTransport = transport.ToString() });
+        });
         app.MapPost("/demo/supplier-structures", async (HttpContext context, SupplierChange change, ExchangeDashboard dashboard) =>
             await dashboard.ChangeSupplierAsync(change, context.RequestAborted));
     }
 
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record NativeChange([property: JsonRequired] bool Enabled);
+    public sealed record TransportChange([property: JsonRequired] string Transport);
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record SupplierChange([property: JsonRequired] string Identifier, [property: JsonRequired] bool Enabled);
 
@@ -202,7 +213,8 @@ public sealed class ExchangeDashboard(
             buyer = new { name = "Buyer Agent", origin = options.ListenUrl.TrimEnd('/'), status = "HTTP ready",
                 // slimUrl once serving on SLIM; slimConfigured without slimUrl means the node is unreachable.
                 slimUrl = slim?.ServingUrl, slimConfigured = slim?.Configured == true,
-                communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport },
+                communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport,
+                supplierTransport = options.SupplierTransport.ToString() },
             sellers, catalogError, warnings, capture = store.Snapshot()
         };
     }
