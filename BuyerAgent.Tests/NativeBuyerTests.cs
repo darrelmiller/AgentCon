@@ -20,6 +20,67 @@ public sealed class NativeBuyerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task LiveNativeToggleUpdatesSdkValidationForSendAndStreaming(bool streaming)
+    {
+        using var network = new WineNetwork();
+        using var files = new TempCatalogs();
+        await using var app = await StartAsync(network, files, native: false);
+        using var http = app.GetTestClient();
+        http.BaseAddress = new("http://localhost:5100");
+        using var buyer = new A2AClient(new Uri(http.BaseAddress, "/a2a"), http);
+        async Task SendQuote()
+        {
+            var request = Request(Rfq, SupplierFormats.Rfq);
+            if (streaming)
+            {
+                var completed = false;
+                await foreach (var item in buyer.SendStreamingMessageAsync(request))
+                    completed |= item.Task?.Status.State == TaskState.Completed ||
+                        item.StatusUpdate?.Status.State == TaskState.Completed;
+                Assert.True(completed);
+            }
+            else Assert.Equal(TaskState.Completed, (await buyer.SendMessageAsync(request)).Task!.Status.State);
+        }
+        async Task Toggle(bool enabled)
+        {
+            http.DefaultRequestHeaders.Add("Origin", http.BaseAddress.GetLeftPart(UriPartial.Authority));
+            try
+            {
+                using var response = await http.PostAsJsonAsync("/demo/native", new { enabled });
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+            finally { http.DefaultRequestHeaders.Remove("Origin"); }
+            var card = await new A2ACardResolver(http.BaseAddress, http).GetAgentCardAsync();
+            Assert.Equal(enabled, card.DefaultInputModes.Contains(SupplierFormats.Rfq));
+            Assert.Equal(enabled, app.Services.GetRequiredService<A2AServerOptions>().SupportedInputModes.Contains(SupplierFormats.Rfq));
+        }
+
+        async Task AssertRejected()
+        {
+            var error = await Assert.ThrowsAsync<A2AException>(() => buyer.SendMessageAsync(Request(Rfq, SupplierFormats.Rfq)));
+            Assert.Equal(A2AErrorCode.ContentTypeNotSupported, error.ErrorCode);
+            using var response = await http.PostAsJsonAsync("/a2a", new
+            {
+                jsonrpc = "2.0", id = "rejected-stream", method = "SendStreamingMessage",
+                @params = Request(Rfq, SupplierFormats.Rfq)
+            }, A2AJsonUtilities.DefaultOptions);
+            Assert.Contains("CONTENT_TYPE_NOT_SUPPORTED", await response.Content.ReadAsStringAsync());
+        }
+        await AssertRejected();
+        await Toggle(true);
+        await SendQuote();
+        Assert.Single(network.Calls);
+        await Toggle(false);
+        await AssertRejected();
+        Assert.Single(network.Calls);
+        await Toggle(true);
+        await SendQuote();
+        Assert.Equal(2, network.Calls.Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void CardRecommendsStructuredRequestsAndSchemaDiscoveryOnlyWhenEnabled(bool enabled)
     {
         var card = BuyerCard.Create(new BuyerOptions { NativeStructuredSupport = enabled });
@@ -459,10 +520,11 @@ public sealed class NativeBuyerTests
         Configuration = new() { ReturnImmediately = false }
     };
 
-    private static async Task<WebApplication> StartAsync(WineNetwork network, TempCatalogs files, IBuyerHarness? harness = null)
+    private static async Task<WebApplication> StartAsync(WineNetwork network, TempCatalogs files, IBuyerHarness? harness = null,
+        bool native = true)
     {
         var catalog = files.Write("catalog.json", TempCatalogs.Agent(Identifier, "http://localhost:6002/.well-known/agent-card.json"));
-        var app = BuyerApplication.Build(["--Buyer:NativeStructuredSupport=true", "--Buyer:ExchangeCaptureEnabled=true", $"--Buyer:CatalogUrl={catalog}"], builder =>
+        var app = BuyerApplication.Build([$"--Buyer:NativeStructuredSupport={native}", "--Buyer:ExchangeCaptureEnabled=true", $"--Buyer:CatalogUrl={catalog}"], builder =>
         {
             builder.WebHost.UseTestServer();
             builder.Services.RemoveAll<IBuyerHarness>();

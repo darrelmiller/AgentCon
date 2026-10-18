@@ -64,6 +64,9 @@ statuses change, and show the text parts of each task's latest status message.
 With native structures enabled, the buyer skill recommends structured requests,
 schema discovery through the `urn:agentcon:extension:structured-schemas:v1`
 extension links, and `text/plain` only as a fallback.
+The native-structures toggle updates both the live card and the SDK's input
+validation for HTTP and SLIM calls without restarting; active turns keep their
+execution snapshot.
 Click either agent's icon/name to open its full current Agent Card JSON in a
 popup, including input/output modes, skills and extensions. The seller card is
 fetched through the buyer from the selected catalog entry, not directly from the

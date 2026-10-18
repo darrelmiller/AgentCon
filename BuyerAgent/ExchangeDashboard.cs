@@ -64,10 +64,12 @@ public sealed class ExchangeDashboard(
             return Results.NoContent();
         });
         app.MapPost("/demo/native", (HttpContext context, NativeChange change, BuyerOptions options,
-            ILogger<ExchangeDashboard> logger) =>
+            A2A.A2AServerOptions serverOptions, ILogger<ExchangeDashboard> logger) =>
         {
             context.Response.Headers.CacheControl = "no-store";
             options.NativeStructuredSupport = change.Enabled;
+            // The SDK copies input modes at startup; keep its shared HTTP/SLIM validator aligned with the live card.
+            serverOptions.SupportedInputModes = BuyerCard.Create(options).DefaultInputModes.ToArray();
             logger.LogInformation("Buyer native support changed to {Enabled}; active turns retain their snapshot.", change.Enabled);
             return Results.Ok(new { nativeStructuredSupport = change.Enabled });
         });
