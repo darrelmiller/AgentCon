@@ -29,6 +29,7 @@ class Element {
 
 async function dashboard() {
   let copied;
+  let intercept;
   const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => [match[1], new Element()]));
   const document = {
     body: new Element(), listeners: {},
@@ -44,9 +45,10 @@ async function dashboard() {
     artifacts: [{ name: "quote", parts: [{ data: { quoteId: "q" }, mediaType: "application/vnd.test.quote+json" }] }]
   } } });
   const state = {
-    capturedAt: "2026-10-11T18:00:00Z", buyer: { origin: "http://localhost:5100", status: "HTTP ready", nativeStructuredSupport: true },
+    capturedAt: "2026-10-11T18:00:00Z", buyer: { origin: "http://localhost:5100", status: "HTTP ready", nativeStructuredSupport: true,
+      llm: { calls: 3, responseTimeMs: 1250, timedCalls: 3, complete: true } },
     sellers: [{ origin: "http://localhost:6000", identifier: "urn:wine", name: "Wine supplier", status: "HTTP ready",
-      structuredDataParts: true, controlsEnabled: true }],
+      structuredDataParts: true, controlsEnabled: true, llm: { calls: 0, responseTimeMs: 0, timedCalls: 0, complete: true } }],
     warnings: [],
     capture: { generation: 1, maxExchanges: 64, maxBodyBytes: 32768, droppedExchanges: 2,
       tasks: [{ agent: "seller", endpoint: "http://localhost:6000/a2a", id: "full-supplier-task-id",
@@ -62,12 +64,13 @@ async function dashboard() {
   vm.runInNewContext(script, {
     document, URLSearchParams, AbortController, location: { origin: "http://localhost:5100" },
     navigator: { clipboard: { writeText: async value => { copied = value; } } },
-    fetch: async url => ({ ok: true, json: async () => url === "/demo/catalog" ?
+    fetch: async url => await intercept?.(url) ?? ({ ok: true, json: async () => url === "/demo/catalog" ?
       { specVersion: "1.0", entries: [{ identifier: "urn:test:buyer" }] } : state }),
     window: { setTimeout: handler => { refresh = handler; } }, setTimeout: () => {}
   });
   await new Promise(resolve => setImmediate(resolve));
-  return { elements, document, state, clipboard: () => copied, refresh: async () => { await refresh(); } };
+  return { elements, document, state, clipboard: () => copied, refresh: async () => { await refresh(); },
+    intercept: handler => { intercept = handler; } };
 }
 
 function text(element) {
@@ -82,8 +85,9 @@ test("minimal dashboard preserves states, counts, artifacts, task details and in
   assert.equal(elements.get("buyer-native").checked, true);
   assert.equal(elements.get("seller-structures").disabled, false);
   const conversation = elements.get("conversation");
-  assert.match(text(conversation), /LLM calls: 3/);
-  assert.match(text(conversation), /LLM calls: 0/);
+  assert.doesNotMatch(text(conversation), /LLM calls:/);
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 3.*1.25 s/);
+  assert.match(text(elements.get("seller-llm")), /LLM calls: 0.*0.00 s/);
   assert.match(text(conversation), /1 artifact/);
   assert.match(conversation.children[0].title, /SendMessage.*HTTP 200/);
   const task = elements.get("seller-tasks").children[0];
@@ -103,6 +107,72 @@ test("minimal dashboard preserves states, counts, artifacts, task details and in
   assert.match(elements.get("payload").textContent, /quoteId/);
 });
 
+test("HTTP+JSON exchanges show unwrapped parts, the operation and the binding", async () => {
+  const { elements, state, refresh } = await dashboard();
+  Object.assign(state.capture.exchanges[0], {
+    endpoint: "http://localhost:6000/a2a/rest/message:send", restOperation: "SendMessage",
+    request: JSON.stringify({ message: { parts: [{ text: "Quote wine." }] } }),
+    response: JSON.stringify({ task: { status: { message: { parts: [{ text: "Quote ready." }] } },
+      artifacts: [{ name: "quote", parts: [{ data: { quoteId: "q" } }] }] } })
+  });
+  state.capture.exchanges.push({ id: 2, endpoint: "http://localhost:6000/a2a/rest/tasks/t", restOperation: "GetTask",
+    startedAt: "2026-10-11T18:00:02Z", status: "sending", request: "GET /a2a/rest/tasks/t", response: "" });
+  await refresh();
+  const conversation = elements.get("conversation");
+  assert.match(conversation.children[0].title, /SendMessage/);
+  assert.match(conversation.children[0].children[0].children[0].title, /HTTP\+JSON/);
+  assert.match(text(conversation), /1 artifact/);
+  assert.match(text(conversation), /HTTP · poll.*GET \/a2a\/rest\/tasks\/t/);
+  conversation.children[1].listeners.click();
+  assert.equal(elements.get("payload").textContent, "Quote ready.");
+});
+
+test("tasks show status text and stay earliest-to-latest regardless of activity and updates", async () => {
+  const { elements, state, refresh } = await dashboard();
+  const original = state.capture.tasks[0];
+  original.startedAt = "2026-10-11T18:00:00Z";
+  original.updatedAt = "2026-10-11T18:00:05Z";
+  original.statusMessage = "Quote ready.\nPlease review.";
+  state.capture.tasks.unshift({ ...original, id: "later", state: "TASK_STATE_WORKING",
+    startedAt: "2026-10-11T18:00:02Z", updatedAt: "2026-10-11T18:00:03Z", statusMessage: "<b>Working</b>" });
+  await refresh();
+  const tasks = elements.get("seller-tasks");
+  assert.match(text(tasks.children[0]), /full-supplier-task-id.*Quote ready\.\nPlease review\./);
+  assert.match(text(tasks.children[1]), /later.*<b>Working<\/b>/);
+  original.updatedAt = "2026-10-11T18:00:10Z";
+  original.statusMessage = "Updated quote.";
+  await refresh();
+  assert.match(text(tasks.children[0]), /full-supplier-task-id.*Updated quote\./);
+  assert.match(text(tasks.children[1]), /later/);
+});
+
+test("User Agent exchanges survive the seller filter and expose content type and rejected wire", async () => {
+  const { elements, state, refresh } = await dashboard();
+  state.capture.exchanges.unshift({
+    id: 2, inbound: true, endpoint: "http://localhost:5100/a2a", httpMethod: "POST",
+    requestContentType: "application/json; charset=utf-8", responseContentType: "application/json",
+    startedAt: "2026-10-11T17:59:58Z", responseStartedAt: "2026-10-11T17:59:59Z",
+    status: "complete", httpStatus: 200, durationMs: 5,
+    request: JSON.stringify({ method: "SendMessage", params: { message: { parts: [
+      { mediaType: "application/vnd.agentcon.demo.wine-rfq.v1+json", data: { kind: "rfq" } }
+    ] } } }),
+    response: JSON.stringify({ error: { code: -32005, message: "CONTENT_TYPE_NOT_SUPPORTED" } })
+  });
+  await refresh();
+  const conversation = elements.get("conversation");
+  assert.equal(conversation.children.length, 4);
+  assert.match(text(conversation.children[0]), /User Agent → Buyer Agent/);
+  assert.match(text(conversation.children[1]), /Buyer Agent → User Agent/);
+  conversation.children[0].listeners.click();
+  assert.match(text(elements.get("metadata")), /POST.*Content-Type: application\/json; charset=utf-8/);
+  assert.match(text(elements.get("parts")), /application\/vnd.agentcon.demo.wine-rfq.v1\+json/);
+  elements.get("raw-tab").listeners.click();
+  assert.match(elements.get("payload").textContent, /"mediaType": "application\/vnd.agentcon.demo.wine-rfq.v1\+json"/);
+  conversation.children[1].listeners.click();
+  assert.match(elements.get("inspector-hint").textContent, /Buyer Agent to User Agent/);
+  assert.match(elements.get("payload").textContent, /CONTENT_TYPE_NOT_SUPPORTED/);
+});
+
 test("tips are focus-accessible and dismissible; failures remain visible", async () => {
   const { elements, document, state, refresh } = await dashboard();
   assert.ok(!html.includes("Demo content capture is ON."));
@@ -118,9 +188,25 @@ test("tips are focus-accessible and dismissible; failures remain visible", async
   } } });
   state.sellers[0].problem = "Health endpoint unreachable.";
   await refresh();
-  assert.match(text(elements.get("conversation")), /incomplete/);
+  state.sellers[0].llm = { calls: 2, responseTimeMs: 500, timedCalls: 1, complete: false };
+  await refresh();
+  assert.match(text(elements.get("seller-llm")), /2 \(incomplete\).*0.50 s \(partial\)/);
   assert.match(text(elements.get("conversation")), /TRUNCATED/);
   assert.match(elements.get("seller-status").textContent, /Health endpoint unreachable/);
+});
+
+test("agent counters reset with Clear and unavailable metrics are not presented as zero", async () => {
+  const { elements, state, refresh } = await dashboard();
+  state.buyer.llm = { calls: 0, responseTimeMs: 0, timedCalls: 0, complete: true };
+  state.capture.generation++;
+  await elements.get("clear").listeners.click();
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 0.*0.00 s/);
+  state.sellers[0].llm = null;
+  await refresh();
+  assert.match(text(elements.get("seller-llm")), /LLM calls: not reported.*time: not reported/);
+  state.buyer.llm = { calls: 1, responseTimeMs: 0, timedCalls: 0 };
+  await refresh();
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 1.*time: not reported/);
 });
 
 test("agent logos are inline theme-aware wine glass and wine crate vectors", () => {
@@ -130,6 +216,30 @@ test("agent logos are inline theme-aware wine glass and wine crate vectors", () 
   assert.match(html, /aria-hidden="true">\s*<svg viewBox="0 0 32 32" focusable="false"/);
   assert.ok(!html.includes('aria-hidden="true">B</span>'));
   assert.ok(!html.includes('aria-hidden="true">S</span>'));
+});
+
+test("changing the selected supplier displays that agent's totals", async () => {
+  const { elements, state, refresh } = await dashboard();
+  state.sellers.push({ ...state.sellers[0], origin: "http://localhost:6100", identifier: "urn:second",
+    llm: { calls: 8, responseTimeMs: 3200, timedCalls: 8, complete: true } });
+  await refresh();
+  elements.get("seller-select").value = "http://localhost:6100";
+  elements.get("seller-select").listeners.change();
+  assert.match(text(elements.get("seller-llm")), /LLM calls: 8.*3.20 s/);
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 3.*1.25 s/);
+});
+
+test("a poll started before Clear cannot restore old agent totals afterward", async () => {
+  const { elements, state, refresh, intercept } = await dashboard();
+  const old = structuredClone(state);
+  let finish;
+  intercept(url => url === "/demo/state" ? new Promise(resolve => { finish = resolve; }) : undefined);
+  const pending = refresh();
+  await elements.get("clear").listeners.click();
+  finish({ ok: true, json: async () => old });
+  await pending;
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 0.*0.00 s/);
+  assert.match(text(elements.get("seller-llm")), /LLM calls: 0.*0.00 s/);
 });
 
 test("right-aligned header AI Catalog button opens current JSON in a closable popup", async () => {

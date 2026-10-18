@@ -55,7 +55,7 @@ async fn sdk_background_executor_is_child_of_http_and_preserves_remote_trace() {
         .init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    let router = app(Arc::new(Supplier::new(Arc::new(NoInference))), &url);
+    let router = app(Arc::new(Supplier::new(Arc::new(NoInference)).with_structured(true)), &url);
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     for cases in [12, 0] {
         let result: serde_json::Value = reqwest::Client::new().post(format!("{url}/a2a"))

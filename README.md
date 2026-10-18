@@ -48,7 +48,8 @@ The local supplier gates all purchases on task-bound OID4VP wallet verification
 through the demo issuer. Real purchasing/payment/fulfillment are not implemented.
 The buyer and Rust supplier also support an optional SLIMRPC binding; regular
 HTTP JSON-RPC remains the default for the initial demo. Buyer and supplier
-dashboard checkboxes control native input support and structured advertisement;
+dashboard checkboxes control native input support and structured advertisement
+(seller structures are disabled by default);
 outbound format negotiation is automatic.
 
 ## Start the local demo on Windows
@@ -66,7 +67,9 @@ automatically when traces are enabled. Use `-NoTraces` to skip Podman/Aspire,
 `-NoBrowser` to suppress browser tabs, or `-CheckOnly -NoTraces` to validate
 the configuration and ports without building or starting services. Ctrl+C
 stops the agent processes; the Aspire container remains running, matching the
-Bash launcher.
+Bash launcher. Add `-HttpBinding http-json` (or set `HTTP_BINDING=http-json`)
+to make the buyer call suppliers over the A2A **HTTP+JSON** (REST) binding at
+`/a2a/rest` instead; suppliers advertise and serve both HTTP bindings.
 
 Equivalent environment variables from `start-demo.sh` and PowerShell options:
 
@@ -78,7 +81,7 @@ Equivalent environment variables from `start-demo.sh` and PowerShell options:
 | `SARDINIA_INVENTORY` | `-SardiniaInventory` | `SupplierAgent\inventories\sardinia.json` |
 | `FRANCE_INVENTORY` | `-FranceInventory` | `SupplierAgent\inventories\france.json` |
 | `SUPPLIER_VERIFIER_URL` | `-SupplierVerifierUrl` | unset |
-| `SUPPLIER_VERIFIER_TOKEN` | `-SupplierVerifierToken` | unset; prompted if a verifier URL is set |
+| `SUPPLIER_VERIFIER_TOKEN` | `-SupplierVerifierToken` | unset; PowerShell also accepts `ISSUER_ADMIN_TOKEN` as a fallback |
 | `TRACES=0` | `-NoTraces` | Aspire traces enabled |
 | `SLIM` | `-Slim` | unset; `public` or `local` opts into SLIMRPC |
 | `SLIM_NAMESPACE` | `-SlimNamespace` | `agentcon` |
@@ -88,9 +91,11 @@ Other script options: `-BuyerArgs` passes additional arguments through to the
 buyer, for example
 `.\start-demo.ps1 -BuyerArgs @('--Buyer:NativeStructuredSupport=true')`.
 The positional arguments accepted by the Bash script are likewise additional
-buyer command-line arguments. For secrets, prefer entering the verifier token
-at the prompt or setting it in the current process environment rather than
-putting it on the command line.
+buyer command-line arguments. For secrets, set the verifier token in the current
+process environment rather than putting it on the command line. PowerShell
+reads `SUPPLIER_VERIFIER_TOKEN`, falling back to `ISSUER_ADMIN_TOKEN`; an explicit
+`-SupplierVerifierToken` takes precedence. It does not prompt, and fails if a
+verifier URL is supplied without a token.
 
 The launcher requires .NET 10, Rust/MSVC build tools and matching-host libclang
 (see [supplier Windows setup](SupplierAgent/README.md#run-on-this-windows-arm64-machine)), `gh` authenticated as the
@@ -99,6 +104,9 @@ enabled. Optional SLIM modes additionally require the tools and login described
 in [Windows SLIM setup](docs/windows-setup.md). Logs are written under
 `artifacts\demo-logs`; supplier Copilot state is kept outside the repository
 under `%LOCALAPPDATA%\AgentConDemo`.
+Rust build output defaults to `%LOCALAPPDATA%\AgentConDemo\rust\<worktree-hash>`
+to avoid MSBuild long-path failures. Set `CARGO_TARGET_DIR` in the current
+terminal to override it; the launcher runs the supplier from that directory.
 
 ### Compare HTTP with local SLIMRPC
 

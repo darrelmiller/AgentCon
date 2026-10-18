@@ -439,10 +439,31 @@ public sealed class AiCatalogClient(HttpClient httpClient, BuyerOptions options)
             .Distinct()
             .ToList();
 
+    /// <summary>
+    /// Deterministic product routing: entries whose catalog text contains the whole product phrase, otherwise the
+    /// entries tied for the highest term score. Callers treat anything other than one result as ambiguous.
+    /// </summary>
+    public async Task<IReadOnlyList<CatalogAgentEntry>> MatchProductAsync(string? product, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(product)) return [];
+        var entries = (await LoadAsync(cancellationToken)).AgentEntries;
+        var phrase = product.Trim().ToLowerInvariant();
+        var phraseMatches = entries.Where(entry => SearchText(entry).Contains(phrase, StringComparison.Ordinal)).ToList();
+        if (phraseMatches.Count > 0) return phraseMatches;
+        var terms = Tokenize(product);
+        var scored = entries.Select(entry => (Entry: entry, Score: Score(entry, terms))).Where(item => item.Score > 0).ToList();
+        if (scored.Count == 0) return [];
+        var best = scored.Max(item => item.Score);
+        return scored.Where(item => item.Score == best).Select(item => item.Entry).ToList();
+    }
+
+    private static string SearchText(CatalogAgentEntry entry) =>
+        string.Join(' ', new[] { entry.Identifier, entry.DisplayName, entry.Description }
+            .Concat(entry.Tags).Where(value => value is not null)).ToLowerInvariant();
+
     private static int Score(CatalogAgentEntry entry, IReadOnlyList<string> terms)
     {
-        var text = string.Join(' ', new[] { entry.Identifier, entry.DisplayName, entry.Description }
-            .Concat(entry.Tags).Where(value => value is not null)).ToLowerInvariant();
+        var text = SearchText(entry);
         return terms.Count(term => text.Contains(term, StringComparison.Ordinal));
     }
 

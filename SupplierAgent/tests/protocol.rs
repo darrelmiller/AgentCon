@@ -70,6 +70,9 @@ async fn live_structured_control_changes_card_schema_and_acceptance_without_infe
     )
     .await;
     let client = reqwest::Client::new();
+    let initial: Value = client.get(format!("{}/health", server.url))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(initial["structuredDataParts"], false);
     let control = format!("{}/demo/structures", server.url);
     assert_eq!(
         client
@@ -452,7 +455,7 @@ struct TestServer {
 #[tokio::test]
 async fn streaming_unapproved_purchase_expires_without_a_receipt_or_inference() {
     let server = TestServer::with_supplier(
-        Supplier::new(Arc::new(NoInference)).with_verifier(Arc::new(ExpiringVerifier)),
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(Arc::new(ExpiringVerifier)),
     ).await;
     let quoted = server.send(vec![Part::data(rfq(1)).with_media_type(RFQ)], "expired-stream").await;
     let quote = quoted["task"]["artifacts"][0]["parts"][0]["data"]["quoteId"].as_str().unwrap();
@@ -475,7 +478,7 @@ async fn streaming_unapproved_purchase_expires_without_a_receipt_or_inference() 
 async fn streaming_wallet_approval_emits_receipt_and_completed_without_resending_or_inference() {
     let verifier = Arc::new(TestVerifier::default());
     let server = TestServer::with_supplier(
-        Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()),
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()),
     ).await;
     let quoted = server.send(vec![Part::data(rfq(1)).with_media_type(RFQ)], "stream-context").await;
     let quote = quoted["task"]["artifacts"][0]["parts"][0]["data"]["quoteId"].as_str().unwrap();
@@ -512,6 +515,52 @@ async fn streaming_wallet_approval_emits_receipt_and_completed_without_resending
     assert_eq!(server.supplier.metrics.inference_attempts.load(Ordering::Relaxed), 0);
 }
 
+#[tokio::test]
+async fn http_json_binding_is_advertised_and_completes_streaming_wallet_approval() {
+    let verifier = Arc::new(TestVerifier::default());
+    let server = TestServer::with_supplier(
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()),
+    ).await;
+    let card: Value = reqwest::get(format!("{}/.well-known/agent-card.json", server.url))
+        .await.unwrap().json().await.unwrap();
+    assert!(card["supportedInterfaces"].as_array().unwrap().iter().any(|interface|
+        interface["protocolBinding"] == "HTTP+JSON" && interface["url"] == format!("{}/a2a/rest", server.url)));
+    let client = reqwest::Client::new();
+    let mut rfq_message = Message::new(Role::User, vec![Part::data(rfq(1)).with_media_type(RFQ)]);
+    rfq_message.context_id = Some("rest-context".into());
+    let quoted: Value = client.post(format!("{}/a2a/rest/message:send", server.url))
+        .header("A2A-Version", "1.0")
+        .json(&json!({"message":rfq_message,"configuration":{"acceptedOutputModes":["text/plain",QUOTE]}}))
+        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    let quote = quoted["task"]["artifacts"][0]["parts"][0]["data"]["quoteId"].as_str().unwrap();
+    let mut message = Message::new(Role::User, vec![Part::data(order(quote, "rest-po")).with_media_type(PURCHASE)]);
+    message.context_id = Some("rest-context".into());
+    let mut response = client.post(format!("{}/a2a/rest/message:stream", server.url))
+        .header("A2A-Version", "1.0")
+        .json(&json!({"message":message,"configuration":{"acceptedOutputModes":["text/plain",RECEIPT]}}))
+        .send().await.unwrap().error_for_status().unwrap();
+    let mut wire = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            wire.push_str(&String::from_utf8(response.chunk().await.unwrap().unwrap().to_vec()).unwrap());
+            if wire.contains("TASK_STATE_AUTH_REQUIRED") { break; }
+        }
+        assert!(wire.contains("complete automatically"));
+        verifier.0.store(true, Ordering::SeqCst);
+        while let Some(chunk) = response.chunk().await.unwrap() {
+            wire.push_str(&String::from_utf8(chunk.to_vec()).unwrap());
+        }
+    }).await.unwrap();
+    let events: Vec<Value> = wire.split("\n\n").filter_map(|frame|
+        frame.lines().find_map(|line| line.strip_prefix("data:"))
+            .and_then(|data| serde_json::from_str(data.trim()).ok())).collect();
+    assert!(events.iter().any(|event| event["statusUpdate"]["status"]["state"] == "TASK_STATE_COMPLETED"));
+    let receipt = events.iter().find_map(|event| event["artifactUpdate"]["artifact"]["parts"][0]["data"].as_object()).unwrap();
+    assert_eq!(receipt["purchaseOrderId"], "rest-po");
+    assert_eq!(receipt["ageVerification"], "verified-demo-over-21");
+    assert_eq!(server.supplier.metrics.inference_attempts.load(Ordering::Relaxed), 0);
+}
+
 /// SLIMRPC calls the request handler directly (no HTTP middleware). Through `BridgedHandler`, a streaming purchase
 /// still gets the supplier's wallet wait, which runs in the server's own execution task: even when the caller's
 /// stream ends at auth-required, approval completes the purchase into the task store.
@@ -521,7 +570,7 @@ async fn slim_streaming_purchase_completes_after_wallet_approval_even_when_the_s
     use a2a_server::RequestHandler;
     use futures::StreamExt;
     let verifier = Arc::new(TestVerifier::default());
-    let supplier = Arc::new(Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()));
+    let supplier = Arc::new(Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()));
     let handler = agentcon_supplier::BridgedHandler(agentcon_supplier::request_handler(supplier.clone()));
     let params = Default::default();
     let request = |parts: Vec<Part>| {
@@ -570,7 +619,7 @@ impl Drop for TestServer {
 
 impl TestServer {
     async fn new(interpreter: Arc<dyn Interpreter>) -> Self {
-        Self::with_supplier(Supplier::new(interpreter)).await
+        Self::with_supplier(Supplier::new(interpreter).with_structured(true)).await
     }
 
     async fn with_supplier(supplier: Supplier) -> Self {
@@ -617,7 +666,7 @@ impl TestServer {
 async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
     let verifier = Arc::new(TestVerifier::default());
     let server = TestServer::with_supplier(
-        Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()),
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()),
     )
     .await;
     let card: Value = reqwest::get(format!("{}/.well-known/agent-card.json", server.url))
@@ -794,6 +843,13 @@ async fn invalid_structured_input_never_falls_back_to_inference() {
         .await
         .unwrap();
     assert_eq!(forbidden.status(), 403);
+    let health: Value = reqwest::get(format!("{}/health", server.url))
+        .await.unwrap().json().await.unwrap();
+    assert!(health["llm"]["instanceId"].as_str().is_some_and(|id| !id.is_empty()));
+    assert!(health["llm"]["calls"].is_u64());
+    assert!(health["llm"]["responseTimeMs"].as_f64().is_some_and(|ms| ms >= 0.0));
+    assert!(health["llm"]["timedCalls"].is_u64());
+    assert!(health["llm"]["complete"].is_boolean());
     assert_eq!(
         server
             .supplier
@@ -847,11 +903,12 @@ async fn output_negotiation_and_per_message_zero_inference_counts() {
             assert_eq!(task["artifacts"][0]["parts"][0]["mediaType"], "text/plain");
             assert!(task["artifacts"][0]["parts"][0].get("data").is_none());
             assert!(
-                task["status"]["message"]["parts"][0]["text"]
+                task["artifacts"][0]["parts"][0]["text"]
                     .as_str()
                     .unwrap()
                     .contains("1753.00")
             );
+            assert_eq!(task["status"]["message"]["parts"][0]["text"], "Quote ready; see the quote artifact.");
         } else {
             assert_eq!(task["artifacts"][0]["parts"][0]["mediaType"], QUOTE);
             if index == 2 {

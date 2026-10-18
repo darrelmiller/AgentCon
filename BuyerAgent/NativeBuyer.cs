@@ -33,19 +33,24 @@ public sealed class NativeBuyer(SupplierGateway gateway)
                     throw new InvalidOperationException("RFQ continuation must retain the issuing catalog supplier.");
                 identifier = rfqTask.Supplier.Identifier;
             }
-            else if (identifier is null)
+            var rfq = data.Deserialize<WineRfq>(JsonOptions)!;
+            if (rfqTask is null && identifier is null)
             {
-                identifier = turn.Conversation.SelectedSupplier?.Identifier;
+                // Explicit metadata wins; otherwise route by the requested wine before falling back to the conversation.
+                var wineMatches = await gateway.MatchProductAsync(rfq.Wine, cancellationToken);
+                if (wineMatches.Count == 1) identifier = wineMatches[0].Identifier;
+                identifier ??= turn.Conversation.SelectedSupplier?.Identifier;
                 if (identifier is null)
                 {
-                    var matches = (await gateway.SearchAsync(null, cancellationToken)).Matches;
+                    var matches = wineMatches.Count > 1 ? wineMatches : (await gateway.SearchAsync(null, cancellationToken)).Matches;
                     if (matches.Count != 1)
-                        throw new InvalidOperationException("Specify agentcon.supplierIdentifier from the configured catalog when discovery is ambiguous.");
+                        throw new InvalidOperationException(
+                            $"No single catalog supplier matches wine {JsonSerializer.Serialize(rfq.Wine)}; set agentcon.supplierIdentifier metadata to one of: " +
+                            (matches.Count == 0 ? "(no catalog suppliers)" : string.Join(", ", matches.Select(match => match.Identifier))) + ".");
                     identifier = matches[0].Identifier;
                 }
             }
             if (rfqTask is null) await tools.SelectAsync(identifier!, version);
-            var rfq = data.Deserialize<WineRfq>(JsonOptions)!;
             var text = $"Quote {rfq.Cases} cases of {rfq.Vintage} {rfq.Wine} delivered to " +
                 $"{JsonSerializer.Serialize(rfq.DeliveryCity)}, {rfq.DeliveryCountry}. Demo only; do not purchase.";
             await tools.SendNativeAsync(text, data.GetRawText(), part.MediaType!, rfqTask?.SupplierTaskId,

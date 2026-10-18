@@ -100,7 +100,8 @@ impl Interpreter for OpenAiInterpreter {
             ]
         });
         count_call();
-        let reply: Value = async {
+        let started = std::time::Instant::now();
+        let reply = async {
             // OpenAI reads a bearer token; Azure OpenAI reads the `api-key` header.
             let response = self.http.post(format!("{}/chat/completions", self.provider.base_url))
                 .bearer_auth(&self.provider.api_key)
@@ -125,7 +126,9 @@ impl Interpreter for OpenAiInterpreter {
         }
         .instrument(span.clone())
         .await
-        .inspect_err(|_| crate::telemetry::error(&span, "model_request_failed"))?;
+        .inspect_err(|_| crate::telemetry::error(&span, "model_request_failed"));
+        crate::inference::record_duration(started.elapsed().as_secs_f64() * 1000.0);
+        let reply: Value = reply?;
         for (field, name) in [("prompt_tokens", "gen_ai.usage.input_tokens"), ("completion_tokens", "gen_ai.usage.output_tokens")] {
             if let Some(tokens) = reply.pointer(&format!("/usage/{field}")).and_then(Value::as_i64) {
                 span.record(name, tokens);
@@ -153,6 +156,46 @@ fn parse_intent(content: &str) -> Result<Intent, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn model_requests_count_and_measure_responses_including_http_errors() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let router = axum::Router::new()
+            .route("/ok/chat/completions", axum::routing::post(|| async {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                axum::Json(json!({"choices":[{"message":{"content":"{\"action\":\"help\"}"}}]}))
+            }))
+            .route("/error/chat/completions", axum::routing::post(|| async {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                axum::http::StatusCode::BAD_GATEWAY
+            }));
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+        let before = crate::inference::llm_snapshot();
+        crate::inference::MESSAGE_LLM_CALLS.scope(AtomicU64::new(0), async {
+            for endpoint in ["ok", "error"] {
+                let interpreter = OpenAiInterpreter::new(ModelProvider {
+                    base_url: format!("{origin}/{endpoint}"),
+                    api_key: "test-only".into(),
+                    model: "test-model".into(),
+                }, &crate::domain::BAROLO).unwrap();
+                let result = interpreter.interpret("help", None, "metrics-test").await;
+                if endpoint == "ok" {
+                    assert!(matches!(result, Ok(Intent::Help)));
+                } else {
+                    assert!(result.unwrap_err().contains("502"));
+                }
+            }
+            assert_eq!(crate::inference::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)), 2);
+        }).await;
+        let after = crate::inference::llm_snapshot();
+        assert!(after["calls"].as_u64().unwrap() >= before["calls"].as_u64().unwrap() + 2);
+        assert!(after["timedCalls"].as_u64().unwrap() >= before["timedCalls"].as_u64().unwrap() + 2);
+        assert!(after["responseTimeMs"].as_f64().unwrap() - before["responseTimeMs"].as_f64().unwrap() >= 50.0);
+        server.abort();
+    }
 
     #[test]
     fn parses_plain_and_fenced_intents() {

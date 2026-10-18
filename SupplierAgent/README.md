@@ -50,15 +50,20 @@ $env:LIBCLANG_PATH = "$env:LOCALAPPDATA\AgentConDemo\build-tools\libclang\clang\
 The launcher discovers Visual Studio through `vswhere.exe`. On Windows ARM64
 it uses an installed x64 MSVC Rust toolchain, or honors `RUSTUP_TOOLCHAIN`
 when set; no Rust version or Visual Studio installation path is hard-coded.
-Install the matching **MSVC x64/x86 Spectre-mitigated libraries** component
-through Visual Studio Installer as well: SLIM's native dependencies require it.
+It uses Ninja and configures CMake to identify the x64 target correctly on an
+ARM64 host; Ninja must be on `PATH` or installed with Visual Studio's
+CMake/Ninja component. An existing `CMAKE_TOOLCHAIN_FILE` is preserved. Install
+the matching **MSVC x64/x86 Spectre-mitigated libraries** component through
+Visual Studio Installer as well: SLIM's native dependencies require it.
 
 For a manual build in this machine's existing toolchain:
 
 ```powershell
+$env:CMAKE_GENERATOR = 'Ninja'
+$env:CMAKE_TOOLCHAIN_FILE = Join-Path $PWD 'SupplierAgent\windows-x64.cmake'
 # Keep vcvars and cargo in the same cmd.exe process.
-& $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --locked'
-.\SupplierAgent\target\debug\agentcon-supplier.exe
+& $env:ComSpec /c 'set "PATH=C:\Program Files (x86)\Microsoft Visual Studio\Installer;%PATH%" && call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul && cargo +1.98.1-x86_64-pc-windows-msvc build --manifest-path SupplierAgent\Cargo.toml --target-dir "%LOCALAPPDATA%\AgentConDemo\rust\manual" --locked'
+& "$env:LOCALAPPDATA\AgentConDemo\rust\manual\debug\agentcon-supplier.exe"
 ```
 
 On a normally configured native Rust/MSVC installation, `cargo run
@@ -67,9 +72,17 @@ and structured requests need **no Copilot login or inference**.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `http://localhost:6000/health` | Readiness, structured requests and inference **attempts** |
+| `http://localhost:6000/health` | Readiness, structured requests, inference **attempts** and cumulative agent LLM metrics |
 | `http://localhost:6000/.well-known/agent-card.json` | SDK-served live A2A 1.0 Agent Card |
 | `http://localhost:6000/a2a` | SDK JSON-RPC, including task get/list/cancel and SSE |
+| `http://localhost:6000/a2a/rest` | SDK HTTP+JSON (REST), e.g. `/message:send`, `/message:stream`, `/tasks/{id}` |
+
+Health's `llm` object reports a process `instanceId`, actual model `calls`,
+`responseTimeMs`, `timedCalls` and event-stream `complete` status. Copilot time is
+the sum of SDK usage durations; the OpenAI-compatible client measures the model
+HTTP wait, including failed responses. Missing usage samples are not filled with
+zero. These process totals are independent of message capture and transport;
+the buyer dashboard applies per-agent Clear baselines without resetting suppliers.
 
 Only `127.0.0.1` is bound. Startup fails if the port is occupied; do not kill an
 existing process. Browser-origin/fetch requests are rejected. This is an
@@ -80,7 +93,8 @@ Environment options (scope them to the service process):
 `SUPPLIER_COPILOT_STATE` (absolute directory outside the repository; default
 `%LOCALAPPDATA%\AgentConDemo\supplier-copilot`).
 
-`SUPPLIER_STRUCTURED_DATA` is `true` by default (strict `true`/`false`).
+`SUPPLIER_STRUCTURED_DATA` is `false` by default (strict `true`/`false`).
+Set it to `true` to enable structured inputs and schema advertisement at startup.
 The buyer dashboard's supplier checkbox can change it live. Configure matching
 process-scoped `SUPPLIER_DEMO_CONTROL_TOKEN` and `Buyer__SupplierControlToken`
 random base64url tokens (32-256 characters). Without a token the configuration
@@ -146,7 +160,7 @@ holder key signature, nonce, audience, state, and presentation expiry. It accept
 only the issuer's demo credential type and `demo_only:true`. This proves possession
 of a signed demo assertion, **not independently verified age**.
 
-With `SendStreamingMessage`, the seller keeps the execution alive after
+With `SendStreamingMessage` over HTTP JSON-RPC, HTTP+JSON or SLIMRPC, the seller keeps the execution alive after
 `auth_required` and checks authenticated task-bound verifier status once per
 second until approval, expiry or cancellation. Approval executes the immutable
 saved PO without inference, then emits `TaskArtifactUpdateEvent` and

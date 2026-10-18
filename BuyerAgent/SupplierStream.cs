@@ -37,7 +37,16 @@ public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supp
     {
         if (_reader is null) throw new InvalidOperationException("Seller stream has not started.");
         using var registration = cancellationToken.Register(() => _lifetime.Cancel());
-        if (await _reader.MoveNextAsync()) return Apply(_reader.Current);
+        bool hasNext;
+        try
+        {
+            hasNext = await _reader.MoveNextAsync();
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested && !CancellationRequested)
+        {
+            throw new SupplierStreamReadException("Seller stream could not be read; its task state is unchanged.", exception);
+        }
+        if (hasNext) return Apply(_reader.Current);
         // A seller may end its stream at auth-required (A2A streams may close on an interrupted state; over SLIMRPC
         // they do), and with it the seller's own wait for the wallet. Resend the same purchase bound to the seller's
         // task: the seller checks the verifier and resumes the purchase it stored, never new order data from this
@@ -50,7 +59,16 @@ public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supp
                 MessageId = Guid.NewGuid().ToString("N"), Role = Role.User, Parts = sent.Parts,
                 TaskId = waiting.Id, ContextId = waiting.ContextId, Metadata = sent.Metadata, Extensions = sent.Extensions
             };
-            var reply = await _client!.SendMessageAsync(new SendMessageRequest { Message = resume }, _lifetime.Token);
+            SendMessageResponse reply;
+            try
+            {
+                reply = await _client!.SendMessageAsync(new SendMessageRequest { Message = resume }, _lifetime.Token);
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested && !CancellationRequested &&
+                exception is HttpRequestException or IOException or TimeoutException or OperationCanceledException)
+            {
+                throw new SupplierStreamReadException("Seller authorization resume could not be read; its task state is unchanged.", exception);
+            }
             if (reply.Task is not { } current) return Apply(new StreamResponse { Message = reply.Message });
             if (current.Status.State != TaskState.AuthRequired) return Apply(new StreamResponse { Task = current });
         }
@@ -94,3 +112,6 @@ public sealed class SupplierStream(SupplierGateway gateway, SupplierBinding supp
         _lifetime.Dispose();
     }
 }
+
+public sealed class SupplierStreamReadException(string message, Exception innerException)
+    : Exception(message, innerException);

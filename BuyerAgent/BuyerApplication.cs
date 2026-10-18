@@ -88,6 +88,7 @@ public static class BuyerApplication
             }
             await next(context);
         });
+        app.UseMiddleware<IncomingExchangeCapture>();
         app.MapGet("/health", () => Results.Ok(new { status = "ok", agent = card.Name }));
         app.MapA2A("/a2a");
         app.MapGet("/schemas/wine-v1.schema.json", () =>

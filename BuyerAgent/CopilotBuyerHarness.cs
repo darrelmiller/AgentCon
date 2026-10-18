@@ -71,7 +71,8 @@ public sealed class CopilotRuntime(BuyerOptions options) : IAsyncDisposable
 }
 
 public sealed class CopilotBuyerHarness(
-    CopilotRuntime runtime, SupplierGateway gateway, BuyerOptions options, ILogger<CopilotBuyerHarness> logger) : IBuyerHarness
+    CopilotRuntime runtime, SupplierGateway gateway, BuyerOptions options, ILogger<CopilotBuyerHarness> logger,
+    ExchangeStore exchanges) : IBuyerHarness
 {
     private const string Instructions = """
         You are the AgentCon demo wine buyer, not a coding assistant.
@@ -203,9 +204,15 @@ public sealed class CopilotBuyerHarness(
         using var subscription = session.On<SessionEvent>(evt =>
         {
             if (evt is AssistantTurnStartEvent or AssistantTurnRetryEvent)
+            {
                 turn.Inference.Record();
+                exchanges.BuyerLlm.Call();
+            }
             if (evt is AssistantUsageEvent usageEvent)
+            {
                 usage.Record(usageEvent);
+                exchanges.BuyerLlm.Usage(usageEvent);
+            }
             if (evt is ToolExecutionStartEvent tool)
             {
                 logger.LogInformation("Buyer tool: {ToolName}", tool.Data.ToolName);

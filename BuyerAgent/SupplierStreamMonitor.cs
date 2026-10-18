@@ -87,7 +87,8 @@ public sealed class SupplierStreamMonitor(
                             {
                                 var parts = artifact.Parts;
                                 if (accepted is not null && parts.Any(part => !accepted.Contains(part.MediaType ?? "text/plain")))
-                                    parts = [Part.FromText(seller.Status.Message?.Parts.FirstOrDefault()?.Text ?? "Seller task completed.")];
+                                    parts = [.. parts.Select(part => part.Text is not null ? Part.FromText(part.Text)
+                                        : part.Data is { } data ? Part.FromText(data.GetRawText()) : Part.FromText("Seller artifact omitted."))];
                                 var update = new StreamResponse { ArtifactUpdate = new()
                                 {
                                     TaskId = taskId, ContextId = contextId, LastChunk = true,
@@ -122,7 +123,7 @@ public sealed class SupplierStreamMonitor(
                         await tasks.SaveTaskAsync(taskId, buyer, _shutdown.Token);
                         notifier.Notify(taskId, status);
                         exchanges.BuyerTask(taskId, contextId,
-                            JsonSerializer.SerializeToElement(state, A2AJsonUtilities.DefaultOptions).GetString()!);
+                            JsonSerializer.SerializeToElement(state, A2AJsonUtilities.DefaultOptions).GetString()!, message);
                     }
                     if (seller.Status.State is TaskState.Completed or TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
                     {
@@ -135,12 +136,15 @@ public sealed class SupplierStreamMonitor(
                 }
                 finally { turn.Conversation.Gate.Release(); }
             }
-            if (turn.SupplierResponses.LastOrDefault()?.Task?.Status.State == TaskState.AuthRequired &&
-                turn.SupplierResponses.Last().Task!.Status.Message?.Metadata?.ContainsKey(BuyerCard.AuthorizationExtensionUri) == true)
-                throw new InvalidOperationException("Seller stream closed before authorization completed.");
-            // Input-required executions may end normally; retain the handoff for an explicit answer.
+            logger.LogInformation("Seller stream for buyer task {TaskId} closed; retaining the last task state. " +
+                "Inspect or resume the original seller task; no purchase was resent.", taskId);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested || stream.CancellationRequested) { }
+        catch (SupplierStreamReadException exception)
+        {
+            logger.LogWarning(exception, "Seller stream for buyer task {TaskId} disconnected; retaining the last task state. " +
+                "Inspect or resume the original seller task; no purchase was resent.", taskId);
+        }
         catch (Exception exception)
         {
             logger.LogError(exception, "Seller stream for buyer task {TaskId} stopped", taskId);
@@ -164,7 +168,7 @@ public sealed class SupplierStreamMonitor(
                         ?? throw new InvalidOperationException("Buyer error projection failed.");
                     await tasks.SaveTaskAsync(taskId, buyer, CancellationToken.None);
                     notifier.Notify(taskId, update);
-                    exchanges.BuyerTask(taskId, contextId, "TASK_STATE_FAILED");
+                    exchanges.BuyerTask(taskId, contextId, "TASK_STATE_FAILED", update.StatusUpdate.Status.Message);
                 }
             }
         }

@@ -18,6 +18,89 @@ public sealed class NativeBuyerTests
     private const string Order = """{"kind":"purchase-order","schemaVersion":"1","demoOnly":true,"quoteId":"q","purchaseOrderId":"po"}""";
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LiveNativeToggleUpdatesSdkValidationForSendAndStreaming(bool streaming)
+    {
+        using var network = new WineNetwork();
+        using var files = new TempCatalogs();
+        await using var app = await StartAsync(network, files, native: false);
+        using var http = app.GetTestClient();
+        http.BaseAddress = new("http://localhost:5100");
+        using var buyer = new A2AClient(new Uri(http.BaseAddress, "/a2a"), http);
+        async Task SendQuote()
+        {
+            var request = Request(Rfq, SupplierFormats.Rfq);
+            if (streaming)
+            {
+                var completed = false;
+                await foreach (var item in buyer.SendStreamingMessageAsync(request))
+                    completed |= item.Task?.Status.State == TaskState.Completed ||
+                        item.StatusUpdate?.Status.State == TaskState.Completed;
+                Assert.True(completed);
+            }
+            else Assert.Equal(TaskState.Completed, (await buyer.SendMessageAsync(request)).Task!.Status.State);
+        }
+        async Task Toggle(bool enabled)
+        {
+            http.DefaultRequestHeaders.Add("Origin", http.BaseAddress.GetLeftPart(UriPartial.Authority));
+            try
+            {
+                using var response = await http.PostAsJsonAsync("/demo/native", new { enabled });
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+            finally { http.DefaultRequestHeaders.Remove("Origin"); }
+            var card = await new A2ACardResolver(http.BaseAddress, http).GetAgentCardAsync();
+            Assert.Equal(enabled, card.DefaultInputModes.Contains(SupplierFormats.Rfq));
+            Assert.Equal(enabled, app.Services.GetRequiredService<A2AServerOptions>().SupportedInputModes.Contains(SupplierFormats.Rfq));
+        }
+
+        async Task AssertRejected()
+        {
+            var error = await Assert.ThrowsAsync<A2AException>(() => buyer.SendMessageAsync(Request(Rfq, SupplierFormats.Rfq)));
+            Assert.Equal(A2AErrorCode.ContentTypeNotSupported, error.ErrorCode);
+            using var response = await http.PostAsJsonAsync("/a2a", new
+            {
+                jsonrpc = "2.0", id = "rejected-stream", method = "SendStreamingMessage",
+                @params = Request(Rfq, SupplierFormats.Rfq)
+            }, A2AJsonUtilities.DefaultOptions);
+            Assert.Contains("CONTENT_TYPE_NOT_SUPPORTED", await response.Content.ReadAsStringAsync());
+        }
+        await AssertRejected();
+        await Toggle(true);
+        await SendQuote();
+        Assert.Single(network.Calls);
+        await Toggle(false);
+        await AssertRejected();
+        Assert.Single(network.Calls);
+        await Toggle(true);
+        await SendQuote();
+        Assert.Equal(2, network.Calls.Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CardRecommendsStructuredRequestsAndSchemaDiscoveryOnlyWhenEnabled(bool enabled)
+    {
+        var card = BuyerCard.Create(new BuyerOptions { NativeStructuredSupport = enabled });
+        var skill = Assert.Single(card.Skills);
+        if (enabled)
+        {
+            Assert.Contains("Prefer structured content", skill.Description);
+            Assert.Contains(SupplierFormats.Extension, skill.Description);
+            Assert.Contains("following the links", skill.Description);
+            Assert.Contains("text/plain only as a fallback", skill.Description);
+            Assert.Contains(card.Capabilities.Extensions!, extension => extension.Uri == SupplierFormats.Extension);
+        }
+        else
+        {
+            Assert.DoesNotContain("Prefer structured content", skill.Description);
+            Assert.DoesNotContain(SupplierFormats.Extension, skill.Description);
+        }
+    }
+
+    [Theory]
     [InlineData("none", TaskState.Completed)]
     [InlineData("receipt", TaskState.Failed)]
     [InlineData("ownership", TaskState.Failed)]
@@ -348,9 +431,35 @@ public sealed class NativeBuyerTests
 
         var ambiguous = Request(Rfq, SupplierFormats.Rfq).Message;
         ambiguous.Metadata = [];
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             native.RunAsync(new BuyerTurn(ambiguous, new BuyerConversation()), CancellationToken.None));
+        Assert.Contains("urn:first, urn:second", failure.Message);
         Assert.Equal(3, network.Calls.Count);
+    }
+
+    [Fact]
+    public async Task TypedRfqWithoutSupplierMetadataRoutesByCatalogWineMatch()
+    {
+        using var network = new WineNetwork();
+        using var files = new TempCatalogs();
+        using var http = new HttpClient(network);
+        var options = new BuyerOptions { NativeStructuredSupport = true, CatalogUrl = files.Write("catalog.json",
+            TempCatalogs.Agent("urn:french", "http://localhost:6002/.well-known/agent-card.json",
+                description: "2015 Château Margaux", tags: ["wine", "France"]),
+            TempCatalogs.Agent("urn:barolo", "http://localhost:6003/.well-known/agent-card.json",
+                description: "Wine supplier", tags: ["wine", "Barolo"])) };
+        var native = new NativeBuyer(new SupplierGateway(http, options, new AiCatalogClient(http, options)));
+        var conversation = new BuyerConversation();
+        var request = Request(Rfq, SupplierFormats.Rfq).Message;
+        request.Metadata = [];
+        await native.RunAsync(new BuyerTurn(request, conversation), CancellationToken.None);
+        Assert.Equal([6003], network.Ports);
+        Assert.Equal("urn:barolo", conversation.SelectedSupplier!.Identifier);
+
+        var margaux = Request(Rfq.Replace("Barolo", "Chateau Margaux"), SupplierFormats.Rfq, taskId: "rfq2").Message;
+        margaux.Metadata = [];
+        await native.RunAsync(new BuyerTurn(margaux, conversation), CancellationToken.None);
+        Assert.Equal([6003, 6002], network.Ports);
     }
 
     [Fact]
@@ -445,10 +554,11 @@ public sealed class NativeBuyerTests
         Configuration = new() { ReturnImmediately = false }
     };
 
-    private static async Task<WebApplication> StartAsync(WineNetwork network, TempCatalogs files, IBuyerHarness? harness = null)
+    private static async Task<WebApplication> StartAsync(WineNetwork network, TempCatalogs files, IBuyerHarness? harness = null,
+        bool native = true)
     {
         var catalog = files.Write("catalog.json", TempCatalogs.Agent(Identifier, "http://localhost:6002/.well-known/agent-card.json"));
-        var app = BuyerApplication.Build(["--Buyer:NativeStructuredSupport=true", "--Buyer:ExchangeCaptureEnabled=true", $"--Buyer:CatalogUrl={catalog}"], builder =>
+        var app = BuyerApplication.Build([$"--Buyer:NativeStructuredSupport={native}", "--Buyer:ExchangeCaptureEnabled=true", $"--Buyer:CatalogUrl={catalog}"], builder =>
         {
             builder.WebHost.UseTestServer();
             builder.Services.RemoveAll<IBuyerHarness>();

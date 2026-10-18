@@ -19,6 +19,96 @@ public sealed class ExchangeTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void IncomingStreamingUpdatesKeepFirstResponseTimeAndCannotRepopulateAfterClear()
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        var key = store.Begin(new Uri("http://localhost:5100/a2a"), inbound: true);
+        store.Status(key, "receiving", 200);
+        var first = Snapshot(store).GetProperty("exchanges")[0].GetProperty("responseStartedAt").GetString();
+        store.Status(key, "receiving", 200, responseContentType: "text/event-stream");
+        Assert.Equal(first, Snapshot(store).GetProperty("exchanges")[0].GetProperty("responseStartedAt").GetString());
+        store.Clear();
+        store.Body(key, true, "data: {}\n\n", false, true);
+        store.Status(key, "complete", 200);
+        Assert.Empty(Snapshot(store).GetProperty("exchanges").EnumerateArray());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IncomingCallerWireIsCapturedWithoutHeadersAndWithoutInventingSellerTasks(bool streaming)
+    {
+        await using var app = await App(true);
+        using var http = app.GetTestClient();
+        http.DefaultRequestHeaders.Authorization = new("Bearer", "SECRET-REQUEST");
+        http.DefaultRequestHeaders.Add("Cookie", "SECRET-COOKIE");
+        using var sdk = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
+        if (streaming)
+        {
+            await foreach (var _ in sdk.SendStreamingMessageAsync(BuyerServiceTests.Request("User quote request"))) { }
+        }
+        else
+        {
+            Assert.Equal(TaskState.Completed, (await sdk.SendMessageAsync(BuyerServiceTests.Request("User quote request"))).Task!.Status.State);
+        }
+        var snapshot = Snapshot(app.Services.GetRequiredService<ExchangeStore>());
+        var exchange = Assert.Single(snapshot.GetProperty("exchanges").EnumerateArray());
+        Assert.True(exchange.GetProperty("inbound").GetBoolean());
+        Assert.Equal("POST", exchange.GetProperty("httpMethod").GetString());
+        Assert.StartsWith("application/json", exchange.GetProperty("requestContentType").GetString());
+        Assert.Contains("User quote request", exchange.GetProperty("request").GetString());
+        Assert.Contains("Demo reply", exchange.GetProperty("response").GetString());
+        Assert.Equal("complete", exchange.GetProperty("status").GetString());
+        Assert.Equal(200, exchange.GetProperty("httpStatus").GetInt32());
+        Assert.StartsWith(streaming ? "text/event-stream" : "application/json",
+            exchange.GetProperty("responseContentType").GetString());
+        Assert.DoesNotContain("SECRET", snapshot.ToString());
+        Assert.All(snapshot.GetProperty("tasks").EnumerateArray(), task => Assert.Equal("buyer", task.GetProperty("agent").GetString()));
+    }
+
+    [Theory]
+    [InlineData("application/json", """{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"messageId":"m","role":"ROLE_USER","parts":[{"data":{"kind":"rfq"},"mediaType":"application/vnd.agentcon.demo.wine-rfq.v1+json"}]}}}""")]
+    [InlineData("text/plain", """{"jsonrpc":"2.0","id":1,"method":"SendMessage"}""")]
+    [InlineData("application/json", "{malformed")]
+    public async Task RejectedCallerRequestsRemainInspectable(string contentType, string body)
+    {
+        await using var app = await App(true);
+        using var http = app.GetTestClient();
+        using var response = await http.PostAsync("/a2a", new StringContent(body, Encoding.UTF8, contentType));
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.True(!response.IsSuccessStatusCode || responseBody.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+            responseBody.Contains("TASK_STATE_FAILED", StringComparison.Ordinal));
+        var exchange = Assert.Single(Snapshot(app.Services.GetRequiredService<ExchangeStore>()).GetProperty("exchanges").EnumerateArray());
+        Assert.Equal(body, exchange.GetProperty("request").GetString());
+        Assert.Equal(responseBody, exchange.GetProperty("response").GetString());
+        Assert.Equal((int)response.StatusCode, exchange.GetProperty("httpStatus").GetInt32());
+        Assert.StartsWith(contentType, exchange.GetProperty("requestContentType").GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IncomingCaptureRespectsOptInExcludesDiscoveryAndBoundsBodies(bool enabled)
+    {
+        await using var app = await App(enabled);
+        using var http = app.GetTestClient();
+        await http.GetAsync("/health");
+        await http.GetAsync("/.well-known/agent-card.json");
+        var body = new string('x', ExchangeStore.MaxBodyBytes + 500);
+        using var response = await http.PostAsync("/a2a", new StringContent(body, Encoding.UTF8, "text/plain"));
+        await response.Content.ReadAsStringAsync();
+        var snapshot = Snapshot(app.Services.GetRequiredService<ExchangeStore>());
+        if (enabled)
+        {
+            var entry = Assert.Single(snapshot.GetProperty("exchanges").EnumerateArray());
+            Assert.True(entry.GetProperty("requestTruncated").GetBoolean());
+            Assert.Equal(ExchangeStore.MaxBodyBytes, Encoding.UTF8.GetByteCount(entry.GetProperty("request").GetString()!));
+            Assert.Empty(snapshot.GetProperty("tasks").EnumerateArray());
+        }
+        else Assert.Empty(snapshot.GetProperty("exchanges").EnumerateArray());
+    }
+
+    [Fact]
     public async Task ActualSdkWireBodiesAreCapturedWithoutHeadersAndTasksAreObserved()
     {
         var options = new BuyerOptions { ExchangeCaptureEnabled = true };
@@ -67,6 +157,43 @@ public sealed class ExchangeTests
         var task = Assert.Single(snapshot.GetProperty("tasks").EnumerateArray());
         Assert.Equal("seller-task", task.GetProperty("id").GetString());
         Assert.Equal("TASK_STATE_COMPLETED", task.GetProperty("state").GetString());
+    }
+
+    [Fact]
+    public async Task HttpJsonSdkCallsAreCapturedIncludingBodylessTaskReadsAndObservedPerInterface()
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        var task = new AgentTask
+        {
+            Id = "seller-task", ContextId = "seller-context",
+            Status = new A2A.TaskStatus { State = TaskState.InputRequired, Message = new Message
+            {
+                Role = Role.Agent, MessageId = "reply", TaskId = "seller-task", Parts = [Part.FromText("How many cases?")]
+            } }
+        };
+        using var client = Client(store, (request, _) =>
+        {
+            object body = request.Method == HttpMethod.Get
+                ? new AgentTask { Id = "seller-task", ContextId = "seller-context", Status = new A2A.TaskStatus { State = TaskState.Completed } }
+                : new SendMessageResponse { Task = task };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(body, A2AJsonUtilities.DefaultOptions), Encoding.UTF8, "application/json")
+            });
+        });
+        using var sdk = new A2AHttpJsonClient(new Uri("http://localhost:6000/a2a/rest"), client);
+        await sdk.SendMessageAsync(BuyerServiceTests.Request("Quote wine", "buyer-context", """{"kind":"rfq"}"""));
+        await sdk.GetTaskAsync(new GetTaskRequest { Id = "seller-task" });
+        var snapshot = Snapshot(store);
+        var exchanges = snapshot.GetProperty("exchanges").EnumerateArray().ToArray();
+        Assert.Equal(["SendMessage", "GetTask"], exchanges.Select(entry => entry.GetProperty("restOperation").GetString()));
+        Assert.StartsWith("GET /a2a/rest/tasks/seller-task", exchanges[1].GetProperty("request").GetString());
+        var observed = Assert.Single(snapshot.GetProperty("tasks").EnumerateArray());
+        Assert.Equal("http://localhost:6000/a2a/rest", observed.GetProperty("endpoint").GetString());
+        Assert.Equal("TASK_STATE_COMPLETED", observed.GetProperty("state").GetString());
+        Assert.Null(ExchangeStore.RestOperation(HttpMethod.Get, new Uri("http://localhost:6000/.well-known/agent-card.json")));
+        Assert.Null(ExchangeStore.RestOperation(HttpMethod.Post, new Uri("http://localhost:6000/a2a")));
+        Assert.Equal("CancelTask", ExchangeStore.RestOperation(HttpMethod.Post, new Uri("http://localhost:6000/a2a/rest/tasks/t:cancel")));
     }
 
     [Fact]
@@ -172,6 +299,55 @@ public sealed class ExchangeTests
         var exchange = Snapshot(store).GetProperty("exchanges")[0];
         Assert.Equal(body, exchange.GetProperty("response").GetString());
         Assert.Equal(400, exchange.GetProperty("httpStatus").GetInt32());
+    }
+
+    [Fact]
+    public void BuyerStatusTextUpdatesWithoutReorderingTasks()
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        store.BuyerTask("first", "c", "TASK_STATE_WORKING");
+        var started = Snapshot(store).GetProperty("tasks")[0].GetProperty("startedAt").GetString();
+        store.BuyerTask("second", "c", "TASK_STATE_WORKING");
+        store.BuyerTask("first", "c", "TASK_STATE_COMPLETED", new Message
+        {
+            Role = Role.Agent, MessageId = "reply",
+            Parts = [Part.FromText("Quote ready."), Part.FromData(JsonSerializer.SerializeToElement(42)), Part.FromText("Please review.")]
+        });
+        var tasks = Snapshot(store).GetProperty("tasks");
+        Assert.Equal("first", tasks[0].GetProperty("id").GetString());
+        Assert.Equal("second", tasks[1].GetProperty("id").GetString());
+        Assert.Equal(started, tasks[0].GetProperty("startedAt").GetString());
+        Assert.Equal("Quote ready.\nPlease review.", tasks[0].GetProperty("statusMessage").GetString());
+        store.BuyerTask("first", "c", "TASK_STATE_COMPLETED");
+        Assert.Null(Snapshot(store).GetProperty("tasks")[0].GetProperty("statusMessage").GetString());
+    }
+
+    [Theory]
+    [InlineData("http://localhost:6000/a2a", false, false)]
+    [InlineData("http://localhost:6000/a2a", false, true)]
+    [InlineData("slim://agntcy/agentcon/supplier", false, true)]
+    [InlineData("http://localhost:6000/a2a/rest/message:send", true, false)]
+    [InlineData("http://localhost:6000/a2a/rest/message:stream", true, true)]
+    public void SellerStatusTextIsObservedAcrossBindingsAndUpdatedWithoutChangingStartTime(string url, bool rest, bool sse)
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        var key = store.Begin(new Uri(url), rest ? sse ? "SendStreamingMessage" : "SendMessage" : null);
+        void Update(string text)
+        {
+            var result = new { statusUpdate = new { taskId = "seller", contextId = "c",
+                status = new { state = "TASK_STATE_WORKING", message = new { parts = new object[]
+                {
+                    new { text }, new { data = new { quoteId = "q" } }, new { text = "Second line." }
+                } } } } };
+            var body = rest ? JsonSerializer.Serialize(result) : JsonSerializer.Serialize(new { result });
+            store.Body(key, true, sse ? $"data: {body}\n\n" : body, false, sse);
+        }
+        Update("Preparing quote.");
+        var initial = Snapshot(store).GetProperty("tasks")[0];
+        Update("Quote nearly ready.");
+        var task = Assert.Single(Snapshot(store).GetProperty("tasks").EnumerateArray());
+        Assert.Equal(initial.GetProperty("startedAt").GetString(), task.GetProperty("startedAt").GetString());
+        Assert.Equal("Quote nearly ready.\nSecond line.", task.GetProperty("statusMessage").GetString());
     }
 
     [Fact]
@@ -383,6 +559,42 @@ public sealed class ExchangeTests
         http.DefaultRequestHeaders.Add("Origin", "http://attacker.example");
         Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/demo/agent-card")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/demo/catalog")).StatusCode);
+    }
+
+    [Fact]
+    public async Task DashboardReadsAgentTotalsAndClearResetsBothAgentsWithoutResettingSuppliers()
+    {
+        using var files = new TempCatalogs();
+        using var network = new FakeNetwork().Raw("http://localhost:6000/health",
+            """{"structuredDataParts":true,"llm":{"instanceId":"supplier","calls":3,"responseTimeMs":1200,"timedCalls":3,"complete":true}}""");
+        var catalog = files.Write("catalog.json", TempCatalogs.Agent("urn:test:seller", "http://localhost:6000/.well-known/agent-card.json"));
+        await using var app = BuyerApplication.Build(["--Buyer:ExchangeCaptureEnabled=true", $"--Buyer:CatalogUrl={catalog}"], builder =>
+        {
+            builder.WebHost.UseTestServer();
+            builder.Services.AddHttpClient<ExchangeDashboard>().ConfigurePrimaryHttpMessageHandler(() => network);
+        });
+        await app.StartAsync();
+        var store = app.Services.GetRequiredService<ExchangeStore>();
+        store.BuyerLlm.Call();
+        store.BuyerLlm.Duration(250);
+        using var http = app.GetTestClient();
+        http.BaseAddress = new("http://localhost:5100");
+        var state = await http.GetFromJsonAsync<JsonElement>("/demo/state");
+        Assert.Equal(1, state.GetProperty("buyer").GetProperty("llm").GetProperty("calls").GetInt64());
+        Assert.Equal(250, state.GetProperty("buyer").GetProperty("llm").GetProperty("responseTimeMs").GetDouble());
+        Assert.Equal(3, state.GetProperty("sellers")[0].GetProperty("llm").GetProperty("calls").GetInt64());
+        http.DefaultRequestHeaders.Add("Origin", "http://localhost:5100");
+        Assert.Equal(HttpStatusCode.NoContent, (await http.PostAsync("/demo/clear", null)).StatusCode);
+        state = await http.GetFromJsonAsync<JsonElement>("/demo/state");
+        Assert.Equal(0, state.GetProperty("buyer").GetProperty("llm").GetProperty("calls").GetInt64());
+        Assert.Equal(0, state.GetProperty("sellers")[0].GetProperty("llm").GetProperty("calls").GetInt64());
+        network.Raw("http://localhost:6000/health",
+            """{"llm":{"instanceId":"supplier","calls":5,"responseTimeMs":2200,"timedCalls":5,"complete":true}}""");
+        state = await http.GetFromJsonAsync<JsonElement>("/demo/state");
+        var seller = state.GetProperty("sellers")[0].GetProperty("llm");
+        Assert.Equal(2, seller.GetProperty("calls").GetInt64());
+        Assert.Equal(1000, seller.GetProperty("responseTimeMs").GetDouble());
+        Assert.All(network.Requests, request => Assert.Null(request.Method));
     }
 
     private sealed class Network(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler

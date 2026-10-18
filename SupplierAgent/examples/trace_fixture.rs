@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
     println!("TRACE_FIXTURE_URL={origin}");
-    let router = app(Arc::new(Supplier::new(Arc::new(NoInference))), &origin);
+    let router = app(Arc::new(Supplier::new(Arc::new(NoInference)).with_structured(true)), &origin);
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             use tokio::io::AsyncBufReadExt;

@@ -3,6 +3,7 @@ pub mod authorization;
 mod copilot;
 pub mod domain;
 pub mod inference;
+mod negotiation;
 mod openai;
 pub mod slim;
 pub mod telemetry;
@@ -69,7 +70,7 @@ impl Supplier {
             metrics: Arc::new(Metrics::default()),
             verifier: None,
             pending: Mutex::new(std::collections::HashMap::new()),
-            structured: AtomicBool::new(true),
+            structured: AtomicBool::new(false),
             control_token: None,
             slim_url: None,
             slim_ready: AtomicBool::new(false),
@@ -487,7 +488,13 @@ impl AgentExecutor for SupplierExecutor {
             execution.completed = true;
             tracing::info!(task_id = %ctx.task_id, state = ?outcome.state, elapsed_ms = started.elapsed().as_millis(), "supplier execution");
             let result_text = outcome.text.clone();
-            let mut response = Message::new(Role::Agent, vec![Part::text(outcome.text)]);
+            // Results live in the artifact; keep the status message a short pointer rather than a duplicate.
+            let status_text = match &outcome.data {
+                Some((QUOTE, _)) => "Quote ready; see the quote artifact.".to_owned(),
+                Some(_) => "Order recorded; see the order-receipt artifact.".to_owned(),
+                None => outcome.text,
+            };
+            let mut response = Message::new(Role::Agent, vec![Part::text(status_text)]);
             response.metadata = Some(std::collections::HashMap::from([
                 ("agentcon.llmCalls".into(), json!(llm_calls)),
                 ("agentcon.llmCallsComplete".into(), json!(count_complete))
@@ -562,6 +569,9 @@ impl AgentExecutor for SupplierExecutor {
                     ("agentcon.llmCallsComplete".into(), json!(true))
                 ]);
                 let mut events = Vec::new();
+                let status_text = if outcome.data.is_some() {
+                    "Order recorded; see the order-receipt artifact.".to_owned()
+                } else { outcome.text.clone() };
                 if let Some((media_type, data)) = outcome.data {
                     let typed = watch_structured &&
                         accepted.as_ref().is_none_or(|modes| modes.iter().any(|mode| mode == media_type));
@@ -577,7 +587,7 @@ impl AgentExecutor for SupplierExecutor {
                         append: Some(false), last_chunk: Some(true), metadata: None,
                     })));
                 }
-                let mut message = Message::new(Role::Agent, vec![Part::text(outcome.text)]);
+                let mut message = Message::new(Role::Agent, vec![Part::text(status_text)]);
                 message.task_id = Some(task_id.clone());
                 message.context_id = Some(context_id.clone());
                 message.metadata = Some(metadata);
@@ -659,7 +669,10 @@ pub fn card(origin: &str, inventory: &Inventory, slim_url: Option<&str>) -> Agen
         ],
         default_input_modes: vec!["text/plain".into(), RFQ.into(), PURCHASE.into()],
         default_output_modes: vec!["text/plain".into(), QUOTE.into(), RECEIPT.into()],
-        supported_interfaces: std::iter::once(AgentInterface::new(format!("{origin}/a2a"), TRANSPORT_PROTOCOL_JSONRPC))
+        supported_interfaces: [
+                AgentInterface::new(format!("{origin}/a2a"), TRANSPORT_PROTOCOL_JSONRPC),
+                AgentInterface::new(format!("{origin}/a2a/rest"), TRANSPORT_PROTOCOL_HTTP_JSON),
+            ].into_iter()
             .chain(slim_url.map(|url| AgentInterface::new(url.to_owned(), a2a::TRANSPORT_PROTOCOL_SLIMRPC)))
             .collect(),
         security_schemes: None, security_requirements: None,
@@ -929,8 +942,12 @@ pub fn app_with_handler(
         }))
         .nest(
             "/a2a",
-            a2a_server::jsonrpc::jsonrpc_router(handler)
+            a2a_server::jsonrpc::jsonrpc_router(handler.clone())
                 .layer(middleware::from_fn(preserve_output_modes)),
+        )
+        .nest(
+            "/a2a/rest",
+            a2a_server::rest::rest_router(Arc::new(negotiation::NegotiatingHandler(handler))),
         )
         .route("/.well-known/agent-card.json", axum::routing::get(move || {
             let supplier = card_supplier.clone();
@@ -950,6 +967,7 @@ pub fn app_with_handler(
                     "status": "ok", "demoOnly": true,
                     "structuredRequests": metrics.structured_requests.load(Ordering::Relaxed),
                     "inferenceAttempts": metrics.inference_attempts.load(Ordering::Relaxed),
+                    "llm": inference::llm_snapshot(),
                     "structuredDataParts": supplier.structured.load(Ordering::Relaxed),
                     "oid4vp": if verifier_configured { "presentation-verifier-configured" } else { "verifier-not-configured" },
                     "slim": supplier.advertised_slim_url().unwrap_or(if supplier.slim_url.is_some() { "unavailable" } else { "disabled" })

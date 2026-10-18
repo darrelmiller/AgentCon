@@ -57,17 +57,19 @@ public sealed class ExchangeDashboard(
             context.Response.Headers.CacheControl = "no-store";
             return await dashboard.CardAsync(identifier, context.RequestAborted);
         });
-        app.MapPost("/demo/clear", (HttpContext context, ExchangeStore exchanges) =>
+        app.MapPost("/demo/clear", async (HttpContext context, ExchangeDashboard dashboard) =>
         {
             context.Response.Headers.CacheControl = "no-store";
-            exchanges.Clear();
+            await dashboard.StateAsync(context.RequestAborted, clear: true);
             return Results.NoContent();
         });
         app.MapPost("/demo/native", (HttpContext context, NativeChange change, BuyerOptions options,
-            ILogger<ExchangeDashboard> logger) =>
+            A2A.A2AServerOptions serverOptions, ILogger<ExchangeDashboard> logger) =>
         {
             context.Response.Headers.CacheControl = "no-store";
             options.NativeStructuredSupport = change.Enabled;
+            // The SDK copies input modes at startup; keep its shared HTTP/SLIM validator aligned with the live card.
+            serverOptions.SupportedInputModes = BuyerCard.Create(options).DefaultInputModes.ToArray();
             logger.LogInformation("Buyer native support changed to {Enabled}; active turns retain their snapshot.", change.Enabled);
             return Results.Ok(new { nativeStructuredSupport = change.Enabled });
         });
@@ -177,8 +179,16 @@ public sealed class ExchangeDashboard(
         }
     }
 
-    private async Task<object> StateAsync(CancellationToken cancellationToken)
+    private async Task<object> StateAsync(CancellationToken cancellationToken, bool clear = false)
     {
+        await store.DashboardGate.WaitAsync(cancellationToken);
+        try { return await ReadStateAsync(cancellationToken, clear); }
+        finally { store.DashboardGate.Release(); }
+    }
+
+    private async Task<object> ReadStateAsync(CancellationToken cancellationToken, bool clear)
+    {
+        var refreshedSuppliers = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>();
         object[] sellers = [];
         string? catalogError = null;
         IReadOnlyList<string> warnings = [];
@@ -189,15 +199,21 @@ public sealed class ExchangeDashboard(
             // Discovery is metadata only; the viewer never selects suppliers or runs tasks.
             sellers = await Task.WhenAll(snapshot.AgentEntries.Take(AiCatalogClient.MaxResults).Select(async entry =>
             {
+                AgentLlmTotals? llm = null;
                 var probe = entry.CardUrl.AbsolutePath == "/.well-known/agent-card.json"
                     ? await ProbeHealthAsync(entry.CardUrl, cancellationToken)
                     : await ProbePublishedAsync(entry.CardUrl, cancellationToken);
+                if (probe.Llm is { } sample)
+                {
+                    llm = store.SupplierLlm(entry.Identifier, sample);
+                    refreshedSuppliers.TryAdd(entry.Identifier, 0);
+                }
                 return (object)new
                 {
                     identifier = entry.Identifier, name = entry.DisplayName ?? entry.Identifier,
                     origin = probe.Origin, cardUrl = entry.CardUrl.AbsoluteUri, slimUrl = probe.SlimUrl,
                     slimVerified = probe.SlimVerified, status = probe.Status, problem = probe.Problem,
-                    structuredDataParts = probe.Structured,
+                    llm, structuredDataParts = probe.Structured,
                     controlsEnabled = entry.CardUrl.IsLoopback && !string.IsNullOrWhiteSpace(options.SupplierControlToken) && probe.Structured is not null
                 };
             }));
@@ -207,6 +223,7 @@ public sealed class ExchangeDashboard(
             logger.LogWarning("Exchange dashboard catalog unavailable: {ErrorType}", exception.GetType().Name);
             catalogError = "Cannot read the configured catalog. Check the catalog and buyer console.";
         }
+        if (clear) store.Clear(refreshedSuppliers.Keys.ToHashSet());
         return new
         {
             capturedAt = DateTimeOffset.UtcNow,
@@ -214,13 +231,13 @@ public sealed class ExchangeDashboard(
                 // slimUrl once serving on SLIM; slimConfigured without slimUrl means the node is unreachable.
                 slimUrl = slim?.ServingUrl, slimConfigured = slim?.Configured == true,
                 communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport,
-                supplierTransport = options.SupplierTransport.ToString() },
+                llm = store.BuyerLlm.Snapshot(), supplierTransport = options.SupplierTransport.ToString() },
             sellers, catalogError, warnings, capture = store.Snapshot()
         };
     }
 
     private sealed record SellerProbe(string Origin, string Status, string? Problem = null, string? SlimUrl = null,
-        bool SlimVerified = true, bool? Structured = null);
+        bool SlimVerified = true, bool? Structured = null, AgentLlmTotals? Llm = null);
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Uri, (DateTimeOffset At, SellerProbe Probe)> PublishedProbes = new();
     private static readonly TimeSpan PublishedProbeInterval = TimeSpan.FromSeconds(15);
@@ -235,12 +252,21 @@ public sealed class ExchangeDashboard(
             if (!response.IsSuccessStatusCode)
                 return new(origin, "unavailable", $"Health endpoint returned HTTP {(int)response.StatusCode}.");
             using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            AgentLlmTotals? llm = null;
+            if (body.RootElement.TryGetProperty("llm", out var counters) &&
+                counters.ValueKind == JsonValueKind.Object)
+            {
+                llm = counters.Deserialize<AgentLlmTotals>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (llm is null || string.IsNullOrWhiteSpace(llm.InstanceId) ||
+                    llm.Calls < 0 || llm.TimedCalls < 0 || !double.IsFinite(llm.ResponseTimeMs) || llm.ResponseTimeMs < 0)
+                    throw new JsonException("Invalid supplier LLM counters.");
+            }
             bool? structured = body.RootElement.TryGetProperty("structuredDataParts", out var enabled) &&
                 enabled.ValueKind is JsonValueKind.True or JsonValueKind.False ? enabled.GetBoolean() : null;
             // A supplier serving SLIMRPC reports its slim:// name; its SLIM exchanges are recorded under it.
             var slimUrl = body.RootElement.TryGetProperty("slim", out var slimName) && slimName.ValueKind == JsonValueKind.String &&
                 BuyerSlim.TargetName(slimName.GetString()!) is { } name ? $"slim://{name}" : null;
-            return new(origin, "HTTP ready", SlimUrl: slimUrl, Structured: structured);
+            return new(origin, "HTTP ready", SlimUrl: slimUrl, Structured: structured, Llm: llm);
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException ||
             exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)

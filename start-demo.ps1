@@ -16,6 +16,10 @@ bearer token. AGENTCON_BIN_DIR, when set, installs the built supplier and buyer
 there and runs them from that copy (build outputs can then live elsewhere);
 unset, the agents run from their build outputs.
 
+.PARAMETER HttpBinding
+A2A HTTP binding for buyer-to-supplier calls: jsonrpc (default) or http-json
+(A2A HTTP+JSON/REST). Same as HTTP_BINDING. With SLIM, this is the HTTP fallback.
+
 .PARAMETER BuyerArgs
 Additional arguments forwarded to the BuyerAgent after its default options.
 
@@ -36,6 +40,9 @@ building or starting services.
 .\start-demo.ps1 -SupplierVerifierUrl https://agentcon-issuer.azurewebsites.net
 
 .EXAMPLE
+.\start-demo.ps1 -HttpBinding http-json
+
+.EXAMPLE
 .\start-demo.ps1 -BuyerArgs @('--Buyer:NativeStructuredSupport=true')
 
 .EXAMPLE
@@ -53,6 +60,7 @@ param(
     [string]$Slim,
     [string]$SlimNamespace,
     [string]$SlimIdentity,
+    [string]$HttpBinding,
     [string]$Sellers,
     [string]$BinDir,
     [string[]]$BuyerArgs = @(),
@@ -176,12 +184,22 @@ $tracesEnabled = -not $NoTraces -and $env:TRACES -ne '0'
 $slimMode = Get-Setting $boundParameters 'Slim' 'SLIM' ''
 $slimNamespaceValue = Get-Setting $boundParameters 'SlimNamespace' 'SLIM_NAMESPACE' 'agentcon'
 $slimIdentityValue = Get-Setting $boundParameters 'SlimIdentity' 'SLIM_IDENTITY' 'shared-secret'
+$httpBindingValue = (Get-Setting $boundParameters 'HttpBinding' 'HTTP_BINDING' 'jsonrpc').ToLowerInvariant()
 $sellersValue = Get-Setting $boundParameters 'Sellers' 'SELLERS' 'local'
 $binDirectory = Get-Setting $boundParameters 'BinDir' 'AGENTCON_BIN_DIR' ''
 $localSellers = $sellersValue -eq 'local'
 $verifierUrl = Get-Setting $boundParameters 'SupplierVerifierUrl' 'SUPPLIER_VERIFIER_URL' ''
-$verifierToken = Get-Setting $boundParameters 'SupplierVerifierToken' 'SUPPLIER_VERIFIER_TOKEN' ''
+$verifierToken = Get-Setting $boundParameters 'SupplierVerifierToken' 'SUPPLIER_VERIFIER_TOKEN' $(
+    if ([string]::IsNullOrWhiteSpace($env:ISSUER_ADMIN_TOKEN)) { '' } else { $env:ISSUER_ADMIN_TOKEN }
+)
 $stateRoot = Join-Path $env:LOCALAPPDATA 'AgentConDemo'
+$worktreeHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+    [Text.Encoding]::UTF8.GetBytes($repo))).Substring(0, 8).ToLowerInvariant()
+$rustTargetDirectory = if ($env:CARGO_TARGET_DIR) {
+    [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR, $repo)
+} else {
+    Join-Path $stateRoot "rust\$worktreeHash"
+}
 $logDirectory = Join-Path $repo 'artifacts\demo-logs'
 $dashboardImage = 'mcr.microsoft.com/dotnet/aspire-dashboard:9.5'
 $dashboardName = 'agentcon-dashboard'
@@ -193,6 +211,12 @@ try {
     if ($slimIdentityValue -notin @('shared-secret', 'did-key', 'did-web')) {
         throw 'SlimIdentity must be shared-secret, did-key, or did-web.'
     }
+    $supplierHttpBinding = switch ($httpBindingValue) {
+        'jsonrpc' { 'JSONRPC' }
+        'http-json' { 'HTTP+JSON' }
+        default { throw 'HttpBinding must be jsonrpc or http-json.' }
+    }
+    $httpTransport = if ($supplierHttpBinding -eq 'JSONRPC') { 'HTTP JSON-RPC' } else { 'HTTP+JSON' }
     if ($sellersValue -notin @('local', 'cloud')) { throw 'Sellers must be local or cloud.' }
     if (-not $localSellers -and ($slimMode -ne 'public' -or $slimIdentityValue -ne 'did-web')) {
         throw 'Sellers cloud needs Slim public and SlimIdentity did-web.'
@@ -200,12 +224,7 @@ try {
     # Cloud sellers run in the SLIM cluster: only the buyer starts here.
     if (-not $localSellers) { $ports = @(5100) }
     if (($verifierUrl.Length -gt 0) -xor ($verifierToken.Length -gt 0)) {
-        if ($verifierUrl.Length -gt 0 -and -not $verifierToken -and [Environment]::UserInteractive) {
-            $secureToken = Read-Host "Issuer admin token for $verifierUrl" -AsSecureString
-            $verifierToken = [Net.NetworkCredential]::new('', $secureToken).Password
-        } else {
-            throw 'Set both SupplierVerifierUrl and SupplierVerifierToken, or neither.'
-        }
+        throw 'Set both SupplierVerifierUrl and its token (SUPPLIER_VERIFIER_TOKEN or ISSUER_ADMIN_TOKEN), or neither.'
     }
 
     foreach ($file in $(if ($localSellers) { $inventoryFiles } else { @() })) {
@@ -263,6 +282,17 @@ try {
         $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvarsall.bat'
         if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw "Visual Studio build environment not found: $vcvars" }
         $vsInstallerDirectory = Split-Path -Parent $vswhere
+        if ($env:CMAKE_GENERATOR -and $env:CMAKE_GENERATOR -ne 'Ninja') {
+            throw 'Windows ARM64 x64 builds require the Ninja CMake generator. Unset CMAKE_GENERATOR or set it to Ninja.'
+        }
+        $ninjaCommand = Get-Command ninja.exe -CommandType Application -ErrorAction SilentlyContinue
+        $ninjaDirectory = if ($ninjaCommand) { Split-Path -Parent $ninjaCommand.Source } else {
+            $ninjaPath = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
+            if (Test-Path -LiteralPath $ninjaPath -PathType Leaf) { Split-Path -Parent $ninjaPath }
+        }
+        if (-not $ninjaDirectory) {
+            throw 'Ninja was not found on PATH or in Visual Studio. Install Ninja or the Visual Studio CMake/Ninja component.'
+        }
     }
     if ($tracesEnabled) { Assert-Command 'podman' 'Install Podman Desktop and initialize a Podman machine.' }
     if ($slimMode) {
@@ -275,7 +305,7 @@ try {
     }
 
     if ($CheckOnly) {
-        Write-Host "Configuration is valid. HTTP ports: $($ports -join ', '); traces: $tracesEnabled; SLIM: $(if ($slimMode) { "$slimMode ($slimIdentityValue)" } else { 'disabled' }); sellers: $sellersValue."
+        Write-Host "Configuration is valid. HTTP ports: $($ports -join ', '); transport: $httpTransport; traces: $tracesEnabled; SLIM: $(if ($slimMode) { "$slimMode ($slimIdentityValue)" } else { 'disabled' }); sellers: $sellersValue."
         return
     }
 
@@ -427,28 +457,43 @@ services:
 
     Invoke-Build 'Building Rust suppliers...' {
         $previousLibclangPath = $env:LIBCLANG_PATH
+        $previousCmakeToolchainFile = $env:CMAKE_TOOLCHAIN_FILE
+        $previousCmakeGenerator = $env:CMAKE_GENERATOR
+        $previousPath = $env:PATH
         try {
             $env:LIBCLANG_PATH = $libclangDirectory
+            if ($vcvars) {
+                $env:PATH = "$ninjaDirectory;$env:PATH"
+                if (-not $env:CMAKE_GENERATOR) { $env:CMAKE_GENERATOR = 'Ninja' }
+            }
+            if ($vcvars -and -not $env:CMAKE_TOOLCHAIN_FILE) {
+                $env:CMAKE_TOOLCHAIN_FILE = Join-Path $repo 'SupplierAgent\windows-x64.cmake'
+            }
             $cargoArguments = @()
             if ($rustToolchain) { $cargoArguments += "+$rustToolchain" }
             if ($vcvars) {
                 $buildCommand = 'set "PATH=' + $vsInstallerDirectory + ';%PATH%" && call "' +
                     $vcvars + '" x64 >nul && cargo ' + $cargoArguments[0] +
-                    ' build --manifest-path SupplierAgent\Cargo.toml --locked --quiet'
+                    ' build --manifest-path SupplierAgent\Cargo.toml --target-dir "' + $rustTargetDirectory + '" --locked --quiet'
                 & $env:ComSpec /d /s /c $buildCommand
             } else {
-                & cargo @cargoArguments build --manifest-path SupplierAgent\Cargo.toml --locked --quiet
+                & cargo @cargoArguments build --manifest-path SupplierAgent\Cargo.toml --target-dir $rustTargetDirectory --locked --quiet
             }
         } finally {
             $env:LIBCLANG_PATH = $previousLibclangPath
+            $env:CMAKE_TOOLCHAIN_FILE = $previousCmakeToolchainFile
+            $env:CMAKE_GENERATOR = $previousCmakeGenerator
+            $env:PATH = $previousPath
         }
     }
-    $supplierExecutable = Join-Path $repo 'SupplierAgent\target\debug\agentcon-supplier.exe'
+    $supplierExecutable = Join-Path $rustTargetDirectory 'debug\agentcon-supplier.exe'
     $buyerCommand = @('run', '--no-build', '--project', 'BuyerAgent\BuyerAgent.csproj', '--')
     if ($binDirectory) {
         # Run from an installed copy, so the build outputs can live elsewhere (e.g. an external drive).
         New-Item -ItemType Directory -Force -Path $binDirectory | Out-Null
-        Copy-Item -LiteralPath $supplierExecutable -Destination (Join-Path $binDirectory 'agentcon-supplier.exe') -Force
+        if ($localSellers) {
+            Copy-Item -LiteralPath $supplierExecutable -Destination (Join-Path $binDirectory 'agentcon-supplier.exe') -Force
+        }
         $supplierExecutable = Join-Path $binDirectory 'agentcon-supplier.exe'
         Invoke-Build 'Publishing .NET buyer...' {
             & dotnet publish BuyerAgent\BuyerAgent.csproj -c Debug --nologo -v quiet -o (Join-Path $binDirectory 'buyer')
@@ -515,7 +560,7 @@ services:
     }
     $buyerArguments = $buyerCommand + @(
         '--Buyer:ExchangeCaptureEnabled=true', "--Buyer:Model=$model",
-        "--Buyer:CopilotStateDirectory=$buyerState")
+        "--Buyer:CopilotStateDirectory=$buyerState", "--Buyer:SupplierHttpBinding=$supplierHttpBinding")
     if ($slimMode) {
         # The buyer's own identity (did-key, did-web); with a shared secret every app uses the common file.
         $buyerSlimConfig = switch ($slimIdentityValue) {
@@ -577,8 +622,8 @@ services:
     }
 
     Write-Host "`nModel: $model"
-    Write-Host $(if ($slimMode) { "Transport: SLIMRPC ($slimMode, identity $slimIdentityValue, sellers $sellersValue), HTTP JSON-RPC as fallback." }
-        else { 'Transport: HTTP JSON-RPC (SLIMRPC is opt-in).' })
+    Write-Host $(if ($slimMode) { "Transport: SLIMRPC ($slimMode, identity $slimIdentityValue, sellers $sellersValue), $httpTransport as fallback." }
+        else { "Transport: $httpTransport (SLIMRPC is opt-in)." })
     Write-Host 'Buyer dashboard: http://localhost:5100/demo'
     if ($tracesEnabled) { Write-Host "Aspire: $dashboardLogin`nOTLP: http://localhost:4317 (gRPC)" }
     else { Write-Host 'Traces: disabled' }

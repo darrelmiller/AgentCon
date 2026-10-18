@@ -150,7 +150,7 @@ pub async fn serve<H: RequestHandler + 'static>(
         .await
         .map_err(|e| format!("SLIM subscribe failed: {e}"))?;
     let server = Server::new(app.clone(), app.app_name().clone(), notifications);
-    SlimRpcHandler::new(handler).register(&server);
+    SlimRpcHandler::new(Arc::new(crate::negotiation::NegotiatingHandler(handler))).register(&server);
     let identity = match &settings.identity { Identity::SharedSecret(_) => "shared-secret", Identity::Configured { .. } => "configured" };
     tracing::info!(name = %settings.name, %endpoint, identity, "SLIMRPC server registered");
     on_status(true);
