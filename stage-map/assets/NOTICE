@@ -1,0 +1,11 @@
+Official A2A logo and Ada mascot artwork
+
+Source: https://github.com/a2aproject/A2A
+Revision: 1205f45951ca97c209634ce6046180e38c5dfb30
+
+a2a-icon-black.svg: docs/assets/a2a_logo/icon/black/SVG/a2a_icon_black.svg
+a2a-icon-white.svg: docs/assets/a2a_logo/icon/white/SVG/a2a_icon_white.svg
+ada.png: docs/assets/a2a_logo/mascot/PNG/a2a_ada.png
+
+Artwork is reproduced without modification. The upstream Apache-2.0
+license is included in LICENSE. Trademark rights remain with their owners.

@@ -69,7 +69,7 @@
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--cp-bg);
+      background: var(--cp-surface);
       color: var(--cp-text);
       font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
     }
@@ -78,90 +78,103 @@
       width: min(100%, 1600px);
       min-height: min(820px, calc(100svh - 112px));
       padding: clamp(28px, 5vw, 80px);
-      background: var(--cp-bg-elevated);
-      border: 1px solid var(--cp-border);
-      border-radius: 16px;
+      background: var(--cp-surface);
       display: flex;
       flex-direction: column;
       justify-content: space-between;
       gap: 56px;
     }
     .slide[hidden] { display: none; }
+    #title { text-align: left; align-items: stretch; gap: 48px; }
+    .title-header { width: 100%; }
+    .title-content { flex: 1; width: 100%; display: grid; grid-template-columns: minmax(180px, .8fr) minmax(0, 2.2fr); align-items: center; gap: 64px; }
+    .a2a-logo { display: block; width: 100%; max-width: 320px; height: auto; }
+    .a2a-logo-dark { display: none; }
+    html[data-theme="dark"] .a2a-logo-light { display: none; }
+    html[data-theme="dark"] .a2a-logo-dark { display: block; }
+    .demo-slide { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: center; gap: 48px; }
+    .demo-copy { display: grid; gap: 32px; }
+    .ada { width: 100%; max-width: 340px; height: auto; justify-self: end; }
+    .demo-slide h2 { margin: 0; font-size: clamp(64px, 9vw, 144px); font-style: italic; }
     .conference {
-      font-size: clamp(14px, 1.5vw, 22px);
-      font-weight: 600;
-      letter-spacing: .08em;
-      text-transform: uppercase;
+      font-family: Consolas, "Courier New", Courier, monospace;
+      font-size: clamp(14px, 1.3vw, 18px);
+      font-weight: 400;
+      letter-spacing: .01em;
       color: var(--cp-text-muted);
     }
-    .title-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(240px, 1fr); gap: 64px; align-items: center; }
-    h1 { margin: 0; font-size: clamp(52px, 7vw, 108px); font-weight: 700; letter-spacing: -.055em; line-height: 1.02; }
-    h1 span { color: var(--cp-accent); }
-    .subtitle { max-width: 840px; margin: 28px 0 0; font-size: clamp(24px, 2.8vw, 42px); line-height: 1.25; font-weight: 400; letter-spacing: -.02em; }
-    .presenters { display: flex; flex-wrap: wrap; gap: 16px 40px; margin-top: 48px; font-size: clamp(20px, 2vw, 30px); font-weight: 600; }
+    h1, h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; }
+    #session-title { margin: 0; font-size: clamp(48px, 6vw, 92px); letter-spacing: -.035em; line-height: 1.1; }
+    .subtitle { margin: 20px 0 0; font-size: clamp(24px, 2.4vw, 36px); line-height: 1.3; font-weight: 400; letter-spacing: -.01em; }
+    .presenters { display: flex; flex-wrap: wrap; gap: 24px 64px; margin-top: 48px; font-size: clamp(20px, 1.8vw, 26px); font-weight: 500; }
     .presenter { display: grid; gap: 8px; }
     .company { font-size: clamp(16px, 1.5vw, 22px); font-weight: 400; color: var(--cp-text-muted); }
-    .layers { display: grid; gap: 12px; margin: 0; }
+    .layers { display: grid; margin: 0; }
     .layer {
-      padding: 24px;
-      border: 1px solid var(--cp-border);
-      border-radius: .625rem;
-      background: var(--cp-surface);
+      display: flex; justify-content: space-between; align-items: baseline; gap: 32px; padding: 32px 0;
+      border-bottom: 1px solid var(--cp-border-strong);
     }
-    .layer:last-child { background: var(--cp-accent); color: var(--cp-accent-fg); border-color: var(--cp-accent); }
-    .layer-number { display: block; font-family: Consolas, "Courier New", Courier, monospace; font-size: 14px; margin-bottom: 12px; }
-    .layer-name { display: block; font-size: clamp(20px, 2vw, 30px); font-weight: 600; line-height: 1.15; }
-    .session-details { display: flex; flex-wrap: wrap; gap: 12px 28px; color: var(--cp-text-muted); font-size: clamp(14px, 1.4vw, 20px); }
-    h2 { margin: 12px 0 0; font-size: clamp(36px, 4.4vw, 64px); letter-spacing: -.04em; line-height: 1.1; }
-    .protocol-stack { display: grid; gap: 16px; }
+    .layer .layer-number { margin: 0; flex-shrink: 0; font-size: clamp(24px, 2.5vw, 36px); }
+    .layer-number { display: block; font-family: Consolas, "Courier New", Courier, monospace; font-size: 14px; margin-bottom: 12px; color: var(--cp-text-muted); }
+    .layer-name { display: block; font-size: clamp(28px, 3.5vw, 48px); font-weight: 400; line-height: 1.2; }
+    h2 { margin: 20px 0 0; font-size: clamp(40px, 4.6vw, 68px); letter-spacing: -.035em; line-height: 1.1; }
+    .protocol-stack { display: grid; }
     .protocol-layer {
-      display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr);
-      gap: 24px; align-items: center; padding: 24px 32px;
-      border: 1px solid var(--cp-border); border-radius: .625rem; background: var(--cp-surface);
+      display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 1.5fr) minmax(0, 1.5fr);
+      gap: 32px; align-items: start; padding: 28px 0;
+      border-bottom: 1px solid var(--cp-border-strong);
     }
-    .protocol-layer h3 { margin: 0; font-size: clamp(24px, 2.5vw, 36px); letter-spacing: -.02em; }
-    .protocol-layer p { margin: 0; color: var(--cp-text-muted); font-size: clamp(18px, 1.8vw, 26px); line-height: 1.4; }
+    .protocol-layer h3 { margin: 0; font-size: clamp(24px, 2.5vw, 36px); font-weight: 500; letter-spacing: -.02em; }
+    .protocol-layer p { margin: 0; font-size: clamp(18px, 1.65vw, 24px); line-height: 1.45; }
     .protocol-layer .layer-number { color: var(--cp-text-muted); }
-    .binding-examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    .extension-options { padding-left: 0; }
+    .extension-label { display: block; margin-bottom: 12px; font-size: clamp(18px, 1.65vw, 24px); font-weight: 600; }
+    .binding-examples { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 16px; }
     .binding-example {
-      font-size: clamp(14px, 1.3vw, 19px); padding: 8px 12px;
-      background: var(--cp-surface-soft); border: 1px solid var(--cp-border); border-radius: .625rem;
+      font-family: Consolas, "Courier New", Courier, monospace;
+      font-size: clamp(14px, 1.2vw, 18px); color: var(--cp-text-muted);
     }
-    .binding-example.custom { background: var(--cp-accent-soft); border-color: var(--cp-accent); color: var(--cp-accent); }
     .takeaway { margin: 0; font-size: clamp(20px, 2vw, 30px); line-height: 1.3; }
-    .takeaway strong { color: var(--cp-accent); }
+    .takeaway strong { font-weight: 600; }
+    .future-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 64px; }
+    .future-card { padding: 0; }
+    .future-card h3 { margin: 0 0 32px; font-size: clamp(28px, 3vw, 42px); font-weight: 500; letter-spacing: -.02em; }
+    .future-card p { margin: 24px 0 0; font-size: clamp(20px, 2vw, 30px); line-height: 1.4; color: var(--cp-text-muted); }
+    .future-card .direction { margin: 0; padding: 0; color: var(--cp-text); font-family: Georgia, "Times New Roman", serif; font-size: clamp(24px, 2.6vw, 38px); }
     .controls {
       position: fixed; bottom: 8px; right: 32px; left: 32px;
       display: flex; align-items: center; justify-content: flex-end; gap: 8px;
       font-size: 13px; color: var(--cp-text-muted);
     }
     button {
-      font: inherit; padding: 8px 12px; border-radius: .625rem;
-      border: 1px solid var(--cp-border); background: var(--cp-bg-elevated); color: var(--cp-text);
+      font: inherit; padding: 8px 12px;
+      border: 0; background: var(--cp-surface); color: var(--cp-text);
       cursor: pointer;
     }
-    button:hover:not(:disabled) { background: var(--cp-accent-soft); border-color: var(--cp-accent); }
+    button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 4px; }
     button:disabled { opacity: .4; cursor: default; }
     button:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 3px; }
     .counter { min-width: 48px; text-align: center; font-family: Consolas, "Courier New", Courier, monospace; }
     .error { color: var(--cp-danger); margin-right: auto; }
-    :fullscreen .deck { background: var(--cp-bg); }
+    :fullscreen .deck { background: var(--cp-surface); }
     @media (max-width: 900px) {
       .deck { padding: 16px 16px 64px; }
       .slide { min-height: calc(100svh - 80px); gap: 40px; }
-      .title-grid { grid-template-columns: 1fr; gap: 36px; }
-      .layers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .layer { padding: 16px; }
-      .layer-name { font-size: 18px; }
+      .layer { padding: 16px 0; }
       .presenters { margin-top: 32px; }
+      .title-content { grid-template-columns: minmax(120px, .7fr) minmax(0, 2fr); gap: 32px; }
       .controls { left: 16px; right: 16px; }
-      .protocol-layer { grid-template-columns: 1fr; padding: 20px; gap: 12px; }
+      .protocol-layer { grid-template-columns: 1fr; padding: 24px 0; gap: 20px; }
+      .extension-options { padding: 0; }
+      .future-grid { grid-template-columns: 1fr; gap: 40px; }
+      .demo-slide { grid-template-columns: 1fr; gap: 32px; }
+      .ada { max-width: 200px; }
     }
     @media (max-width: 480px) {
-      .layers { grid-template-columns: 1fr; gap: 8px; }
-      .layer { display: flex; align-items: center; gap: 16px; padding: 12px 16px; }
-      .layer-number { margin: 0; }
+      .layer { gap: 16px; }
       .presenters { flex-direction: column; gap: 8px; }
+      .title-content { grid-template-columns: 1fr; gap: 32px; }
+      .a2a-logo { max-width: 160px; }
     }
     @media print {
       .deck { display: block; padding: 0; }
@@ -175,28 +188,34 @@
 <body>
   <main class="deck" aria-label="Session slide deck">
     <section class="slide" id="title" aria-labelledby="session-title">
-      <header class="conference">AGNTCon + MCPCon North America 2026</header>
-      <div class="title-grid">
+      <header class="title-header">
+        <span class="conference">AGNTCon + MCPCon North America 2026</span>
+      </header>
+      <div class="title-content">
         <div>
-          <h1 id="session-title">A2A v1<br><span>Deep Dive</span></h1>
-          <p class="subtitle">The Specification, Extensions,<br>and Custom Protocol Bindings</p>
+          <img class="a2a-logo a2a-logo-light" src="assets/a2a-icon-black.svg" alt="A2A">
+          <img class="a2a-logo a2a-logo-dark" src="assets/a2a-icon-white.svg" alt="A2A">
+        </div>
+        <div>
+          <h1 id="session-title">A2A v1 Deep Dive</h1>
+          <p class="subtitle">Extending the Protocol</p>
           <div class="presenters">
             <div class="presenter"><span>Luca Muscariello</span><span class="company">Cisco</span></div>
             <div class="presenter"><span>Darrel Miller</span><span class="company">Microsoft</span></div>
           </div>
         </div>
-        <div class="layers" aria-label="Three themes: the specification, extensions, and custom protocol bindings">
-          <div class="layer"><span class="layer-number">01 /</span><span class="layer-name">Specification</span></div>
-          <div class="layer"><span class="layer-number">02 /</span><span class="layer-name">Extensions</span></div>
-          <div class="layer"><span class="layer-number">03 /</span><span class="layer-name">Custom Protocol<br>Bindings</span></div>
-        </div>
       </div>
-      <footer class="session-details">
-        <span>San Jose</span>
-        <span>Thursday, October 22, 2026</span>
-        <span>11:10&ndash;11:35 AM</span>
-        <span>Room 210B</span>
-      </footer>
+    </section>
+    <section class="slide" id="agenda" aria-labelledby="agenda-title" hidden>
+      <header>
+        <div class="conference">A2A v1 / Extending the Protocol</div>
+        <h2 id="agenda-title">Agenda</h2>
+      </header>
+      <div class="layers" aria-label="Session agenda and timings">
+        <div class="layer"><span class="layer-name">Protocol layers</span><span class="layer-number">2 mins</span></div>
+        <div class="layer"><span class="layer-name">Wine agent demo</span><span class="layer-number">20 mins</span></div>
+        <div class="layer"><span class="layer-name">A2A 1.1</span><span class="layer-number">3 mins</span></div>
+      </div>
     </section>
     <section class="slide" id="protocol-layers" aria-labelledby="layers-title" hidden>
       <header>
@@ -207,25 +226,65 @@
         <article class="protocol-layer">
           <div><span class="layer-number">01 / SHARED VOCABULARY</span><h3>Data model</h3></div>
           <p>Agent Cards, messages, parts, tasks, artifacts.<br>The objects agents exchange.</p>
+          <div class="extension-options">
+            <span class="extension-label">Extend the data</span>
+            <p>Add metadata and structured payloads.<br>Define schemas and profiles, not new core fields.</p>
+          </div>
         </article>
         <article class="protocol-layer">
           <div><span class="layer-number">02 / SHARED BEHAVIOR</span><h3>Operations</h3></div>
           <p>Send a message. Get or cancel a task. Subscribe to updates.<br>What agents can do with those objects.</p>
+          <div class="extension-options">
+            <span class="extension-label">Extend the behavior</span>
+            <p>Define new methods or interaction flows.<br>Layer workflow rules onto core operations.</p>
+          </div>
         </article>
         <article class="protocol-layer">
           <div><span class="layer-number">03 / WIRE MAPPING</span><h3>Protocol bindings</h3></div>
           <div>
             <p>Map the same operations and data onto a concrete protocol.</p>
-            <div class="binding-examples" aria-label="Standard bindings and experimental custom binding">
+            <div class="binding-examples" aria-label="Standard bindings">
               <span class="binding-example">JSON-RPC</span>
               <span class="binding-example">HTTP+JSON</span>
               <span class="binding-example">gRPC</span>
+            </div>
+          </div>
+          <div class="extension-options">
+            <span class="extension-label">Add a custom binding</span>
+            <p>Define a new mapping of A2A to a protocol.<br>Preserve the data model and operation semantics.</p>
+            <div class="binding-examples" aria-label="Experimental custom binding">
               <span class="binding-example custom">SLIMRPC / experimental</span>
             </div>
           </div>
         </article>
       </div>
-      <footer><p class="takeaway"><strong>Change the binding.</strong> Keep the data model and operations.</p></footer>
+      <footer><p class="takeaway"><strong>Extend each layer.</strong> Keep the core interoperable.</p></footer>
+    </section>
+    <section class="slide demo-slide" id="demo-time" aria-labelledby="demo-title" hidden>
+      <div class="demo-copy">
+        <h2 id="demo-title">Demo time!</h2>
+        <p class="takeaway">Working with agents that buy and sell wine.</p>
+      </div>
+      <img class="ada" src="assets/ada.png" alt="Ada, the A2A mascot" width="1238" height="1581">
+    </section>
+    <section class="slide" id="looking-ahead" aria-labelledby="future-title" hidden>
+      <header>
+        <div class="conference">A2A 1.1 / Work in progress</div>
+        <h2 id="future-title">Where we&rsquo;re going next</h2>
+      </header>
+      <div class="future-grid">
+        <article class="future-card">
+          <h3>Task timeline</h3>
+          <p class="direction">History <span aria-label="to">&rarr;</span> Timeline</p>
+          <p>Replace task history with a task timeline: a record of how the task unfolds.</p>
+        </article>
+        <article class="future-card">
+          <h3>Bidirectional streaming</h3>
+          <p class="direction">Client <span aria-label="exchanges artifacts with">&larr; Artifacts &rarr;</span> Agent</p>
+          <p>Let clients send artifacts as well as receive them, enabling streaming in both directions.</p>
+        </article>
+      </div>
+      <footer><p class="takeaway"><strong>Help shape A2A 1.1.</strong> Bring your use cases and feedback.</p></footer>
     </section>
   </main>
   <nav class="controls" aria-label="Presentation controls">
@@ -250,6 +309,11 @@
         previous.disabled = current === 0;
         next.disabled = current === slides.length - 1;
         document.getElementById("counter").textContent = `${current + 1} / ${slides.length}`;
+        window.history.replaceState(window.history.state, "", `#${slides[current].id}`);
+      }
+
+      function restoreSlide() {
+        show(slides.findIndex((slide) => slide.id === window.location.hash.slice(1)));
       }
 
       async function toggleFullscreen() {
@@ -286,7 +350,8 @@
           event.preventDefault(); toggleFullscreen();
         }
       });
-      show(0);
+      window.addEventListener("hashchange", restoreSlide);
+      restoreSlide();
     })();
   </script>
 </body>

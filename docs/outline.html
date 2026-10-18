@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AgentCon A2A v1 talk: outline</title>
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --cp-bg: #f7f4ef;
+      --cp-bg-elevated: #fcfbf8;
+      --cp-surface: #ffffff;
+      --cp-surface-soft: #f5f5f5;
+      --cp-border: #dedede;
+      --cp-border-strong: #919191;
+      --cp-text: #242424;
+      --cp-text-muted: #5c5c5c;
+      --cp-text-soft: #6f6f6f;
+      --cp-accent: #b11f4b;
+      --cp-accent-hover: #9a1a41;
+      --cp-accent-soft: rgba(177, 31, 75, 0.08);
+      --cp-accent-fg: #ffffff;
+      --cp-success: #16a34a;
+      --cp-danger: #dc2626;
+      --cp-warning: #f59e0b;
+      --cp-link: #0078d4;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+      --cp-overlay: rgba(255, 255, 255, 0.8);
+      --cp-panel: rgba(255, 255, 255, 0.86);
+      --cp-panel-strong: rgba(255, 255, 255, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.55);
+      --cp-highlight: rgba(177, 31, 75, 0.12);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --cp-bg: #3d3b3a;
+      --cp-bg-elevated: #343231;
+      --cp-surface: #292929;
+      --cp-surface-soft: #2e2e2e;
+      --cp-border: #474747;
+      --cp-border-strong: #5f5f5f;
+      --cp-text: #dedede;
+      --cp-text-muted: #919191;
+      --cp-text-soft: #b0b0b0;
+      --cp-accent: #fd8ea1;
+      --cp-accent-hover: #fb7b91;
+      --cp-accent-soft: rgba(253, 142, 161, 0.14);
+      --cp-accent-fg: #1a1a1a;
+      --cp-success: #4ade80;
+      --cp-danger: #f87171;
+      --cp-warning: #fbbf24;
+      --cp-link: #4da6ff;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+      --cp-overlay: rgba(41, 41, 41, 0.88);
+      --cp-panel: rgba(41, 41, 41, 0.72);
+      --cp-panel-strong: rgba(41, 41, 41, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.04);
+      --cp-highlight: rgba(253, 142, 161, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--cp-bg);
+      color: var(--cp-text);
+      font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    main { max-width: 1000px; margin: 40px auto; padding: 40px; background: var(--cp-bg-elevated); border: 1px solid var(--cp-border); border-radius: 16px; }
+    h1 { margin-top: 0; font-size: 38px; line-height: 1.2; letter-spacing: -.02em; }
+    h2 { margin-top: 40px; font-size: 28px; line-height: 1.3; }
+    p, li { font-size: 18px; line-height: 1.6; }
+    li { margin: 10px 0; }
+    a { color: var(--cp-link); overflow-wrap: anywhere; }
+    code { font-family: Consolas, "Courier New", Courier, monospace; background: var(--cp-surface-soft); padding: 2px 4px; overflow-wrap: anywhere; }
+    nav { margin-bottom: 32px; font-size: 18px; }
+    @media (max-width: 700px) {
+      main { margin: 16px; padding: 24px; }
+      h1 { font-size: 30px; }
+      h2 { font-size: 24px; }
+    }
+    @media print {
+      main { max-width: none; margin: 0; padding: 0; border: 0; }
+      nav { display: none; }
+      h2 { break-after: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <nav aria-label="Presentation"><a href="../stage-map/index.html">Open the slides</a></nav>
+    <h1>AgentCon A2A v1 talk: outline (wine scenario)</h1>
+    <p>25 minutes: 2 minutes for the opening and protocol layers, 20 minutes for the demo, and 3 minutes for A2A 1.1 and closing feedback.</p>
+    <h2>0:00–2:00 Opening slides <em>(both)</em></h2>
+    <ul>
+    <li><strong>Slide 1 — A2A v1 Deep Dive: Extending the Protocol.</strong> One-line introductions.</li>
+    <li><strong>Slide 2 — Agenda.</strong> "Two minutes on the protocol layers and how to extend them, twenty minutes working with agents that buy and sell wine, then three minutes on what's coming in A2A 1.1."</li>
+    <li><strong>Slide 3 — One protocol. Three layers.</strong> Read across each row: what the layer defines, then how it can be extended. "The data model is the vocabulary: add metadata, structured payloads, and profiles without changing core fields. Operations define behavior: extensions can add methods and interaction flows. Protocol bindings map those operations and data to a concrete protocol: a custom binding adds a new mapping while preserving their semantics."</li>
+    <li><strong>Slide 4 — Demo time!</strong> "Working with agents that buy and sell wine."</li>
+    <li>Promise: "In 20 minutes Luca's seller agent will come off the public internet, and my agent will still be able to buy from it. That's what a custom protocol binding gets you, and you don't have to change the spec to get it."</li>
+    <li>Switch from Edge to a clear GitHub Copilot CLI instance; leave the slides parked on slide 4.</li>
+    </ul>
+    <h2>2:00–4:00 Discover and send an RFQ in natural language <em>(Darrel)</em></h2>
+    <ul>
+    <li>Start with a clear GitHub Copilot CLI instance.</li>
+    <li>For the baseline, start with the seller's <strong>Advertise structures</strong> and the buyer's <strong>Native structures</strong> disabled.</li>
+    <li>Enter: "Can you find an agent to help me buy wine?"</li>
+    <li>GitHub Copilot uses the AI Catalog CLI to find the agent.</li>
+    <li>Stay in the CLI and proceed directly to the quote request.</li>
+    <li>Enter: "Can you get me a quote for 15 cases of 2019 Barolo to be shipped to Montreal, Quebec"</li>
+    <li>Let the agents obtain the quote, then switch to the dashboard.</li>
+    </ul>
+    <h2>4:00–7:00 Explain the dashboard <em>(Darrel)</em></h2>
+    <p>Follow one quote request through the dashboard rather than touring every control. Use these three minutes to connect the live interaction to the protocol layers on slide 3.</p>
+    <ol>
+    <li><strong>Orient: Buyer, Conversation, Seller.</strong> "Copilot is talking to our buyer agent. The buyer talks to the wine seller. These are the actual exchanges, not a generated summary." Establish who is communicating.</li>
+    <li><strong>Explain the Buyer Agent and Seller Agent information panels.</strong> Point out their endpoints, availability, and LLM call and response-time totals. Keep the Agent Cards closed for now; save them for the transition into structured content.</li>
+    <li><strong>Select the outgoing quote request, then the reply; use Stream Inspector &rarr; Content.</strong> "The request and response carry natural-language text inside message parts." Point to the actual wine, quantity, and destination. Connect to the <strong>data model: messages and parts</strong>.</li>
+    <li><strong>Expand the relevant Buyer task and Seller task.</strong> "Each agent manages its own task. Here are their IDs and observed states." Do not imply that they share one task ID. Connect to the <strong>data model: tasks</strong>, and <strong>operations: work initiated by sending a message</strong>.</li>
+    <li><strong>Switch the selected request to Wire.</strong> Identify the operation and its concrete representation. "This is how the operation and message are mapped onto this protocol binding." Use the inspector's binding label for this exchange, not the setting for the next request. Connect to <strong>operations and protocol bindings</strong>.</li>
+    <li><strong>Finish by opening the seller's Agent Card.</strong> "This describes the agent's capabilities and the interfaces it supports. Right now, it only advertises <code>text/plain</code>." Point to the supported content types. Connect to the <strong>data model: Agent Card</strong>, then use this as the before-state for enabling structured content in the next section.</li>
+    </ol>
+    <p>Briefly point to <strong>LLM calls and LLM response time</strong> on each agent: "Remember these numbers; we'll compare them with the structured exchange later." These are cumulative since Clear. Model-response time is <strong>not total transaction time</strong>, and the dashboard does <strong>not display token counts</strong>. Respect any partial or not-reported indicators.</p>
+    <p>The Agent Card is the final reveal of this walkthrough and the transition into structured content. The seller's switch is labelled <strong>Advertise structures</strong>; the buyer's is <strong>Native structures</strong>. Keep the seller-first, buyer-second sequence. Save binding selection and the authorization extension for later.</p>
+    <h2>7:00–9:00 Enable seller structured content <em>(both)</em></h2>
+    <ul>
+    <li>Close the Agent Card and enable <strong>Advertise structures</strong> on the seller. Leave the buyer's <strong>Native structures</strong> disabled so the audience sees one change at a time.</li>
+    <li>Reopen the seller's Agent Card to show how it changed: compare the earlier <code>text/plain</code>-only advertisement with the newly advertised media types and schemas for wine RFQs, quotes, and purchase orders.</li>
+    <li>Repeat the quote for 15 cases of 2019 Barolo shipped to Montreal, Quebec. Inspect the structured parts rather than only the natural-language summary.</li>
+    <li>"The seller now advertises structured content. The buyer can learn the advertised schema, but that adaptation can still involve the model."</li>
+    <li>Explain that a media type identifies a format; advertising it alone does not teach an unknown schema. The agents need an agreed, versioned schema.</li>
+    </ul>
+    <h2>9:00–11:00 Enable buyer structured content <em>(both)</em></h2>
+    <ul>
+    <li>Open the buyer's Agent Card and show its current content types. Close it, enable <strong>Native structures</strong> on the buyer, then reopen the card to show the change. Keep the seller's structured content enabled.</li>
+    <li>Repeat the same quote and inspect the typed RFQ and quote parts. Compare the additional LLM calls and model-response time with the previous runs; the dashboard totals are cumulative.</li>
+    <li>"Now the buyer has native support for these structures too. The structured exchange is faster and more deterministic, so we'll keep it enabled for the purchase."</li>
+    <li>Distinguish the natural-language CLI instruction from the typed agent-to-agent exchange. Text input can still invoke Copilot; do not claim that the entire interaction uses zero inference merely because the switches are enabled.</li>
+    <li>Only claim zero model calls for a measured deterministic segment when the observed counts support it. Keep discovery, schema learning, and natural-language interpretation separate from that claim.</li>
+    <li>Concepts: advertised media types, agreed profiles, and typed parts. Local demo profiles are defined in <code>SupplierAgent/schemas/wine-v1.schema.json</code>; its unregistered <code>application/vnd.agentcon.demo.wine-*.v1+json</code> types must be agreed with Luca, not assumed interoperable from advertising alone.</li>
+    </ul>
+    <h2>11:00–14:00 Buy it: purchase and age check <em>(both)</em></h2>
+    <ul>
+    <li>Keep structured content enabled on both agents. This puts the faster, more deterministic interaction in place before the live purchase and wallet flow.</li>
+    <li>"Buy it." Task goes to <code>TASK_STATE_AUTH_REQUIRED</code>.</li>
+    <li>QR code appears; Darrel scans it with his phone wallet.</li>
+    <li>Luca shows his verifier received "over 21" and nothing else.</li>
+    <li>Task resumes and completes. Inspect the structured purchase result and its artifact.</li>
+    <li>Explain the extension from the card: purpose, declaration, where its data goes.</li>
+    </ul>
+    <h2>14:00–22:00 Private endpoints over SLIM <em>(Luca, then Darrel)</em></h2>
+    <ul>
+    <li>Set up the why: a public HTTP endpoint is attack surface, and a small seller doesn't want to run ingress, a gateway and certificates just to take orders. A custom binding takes the endpoint off the public internet.</li>
+    <li>Luca moves to a phone hotspot and shows there's no public IP or open port.</li>
+    <li>His card lists a SLIMRPC interface; Catalog entry advertises a SLIM name.</li>
+    <li>Same order. App logic unchanged, binding different.</li>
+    <li>Show the routing node forwarding encrypted traffic it can't read.</li>
+    <li>Concepts: custom bindings, why the layers matter.</li>
+    </ul>
+    <h2>22:00–25:00 Wrap-up <em>(both)</em></h2>
+    <ul>
+    <li>Return briefly to <strong>slide 3</strong>. Map the demo back to the framework: structured wine payloads and profiles extend the data; the authorization extension adds an interaction flow; SLIMRPC supplies a custom protocol binding. Distinguish these from changes to the core specification.</li>
+    <li>Advance past slide 4 to <strong>slide 5 — Where we're going next</strong>, and leave it on screen for the close.</li>
+    <li>"For A2A 1.1, we're working on a task timeline to replace history: a record of how the task unfolds."</li>
+    <li>"We're also working on letting clients send artifacts as well as receive them, enabling bidirectional streaming."</li>
+    <li>Present these as work in progress, not capabilities already available in v1.</li>
+    <li>Links to the experimental repos; ask for feedback.</li>
+    <li>Close: "Help shape A2A 1.1. Bring your use cases and feedback."</li>
+    </ul>
+    <h2>Slide and screen cues</h2>
+    <p>The five-slide HTML presentation is in <code>stage-map/index.html</code>. Open the file from this worktree in Edge, not an embedded browser panel.</p>
+    <ol>
+    <li><strong>Title:</strong> introduce the speakers and "Extending the Protocol."</li>
+    <li><strong>Agenda:</strong> protocol layers (2 minutes), wine agent demo (20 minutes), and A2A 1.1 (3 minutes).</li>
+    <li><strong>Three layers:</strong> explain the core concepts and their extension points; revisit briefly during the wrap-up.</li>
+    <li><strong>Demo time!:</strong> give the one-line wine scenario, then switch to the live demo for discovery, a natural-language quote, seller structured content, buyer native structures, purchase and authorization, and SLIM.</li>
+    <li><strong>A2A 1.1 closing slide:</strong> task timeline and bidirectional streaming; keep visible for feedback and questions.</li>
+    </ol>
+    <p>Use the arrow keys or Previous/Next buttons to navigate; <code>F</code> toggles fullscreen. <code>Home</code> returns to the title and <code>End</code> jumps to the closing slide. The current slide is kept in the URL, so refreshing stays on that slide. Switch between Edge and the Copilot app or terminal for the live demo; show the Agent Card, task state, wallet flow, and measurements in the demo itself rather than as additional slides.</p>
+    <h2>Fallback cues</h2>
+    <ul>
+    <li>Wallet flow fails: play the recording.</li>
+    <li>SLIM fails: play the recording.</li>
+    <li>Never debug on stage.</li>
+    </ul>
+    <h2>Open decisions</h2>
+    <ul>
+    <li>Buyer implementation: GitHub Copilot CLI drives the official <a href="https://github.com/a2aproject/a2a-cli"><code>a2a</code> CLI</a> to call the local C# <code>BuyerAgent</code> A2A service. That service uses the GitHub Copilot SDK as its harness and the official .NET A2A SDK to call the seller. No Microsoft Agent Framework in the initial implementation.<ul>
+    <li>Already there: <code>--data-part</code> for structured orders; <code>--wait</code> stops on <code>auth-required</code>; pluggable transports (<code>a2a-transport-&lt;name&gt;</code> on PATH).</li>
+    <li>SLIM: a SLIMRPC plugin was built in a2a-rs (a2aproject/a2a-rs#296, closed); docs still open (a2aproject/a2a-rs#297). Verify it round-trips and assess reuse from the .NET buyer before building our own. The buyer currently implements JSON-RPC only.</li>
+    <li>Catalog: the <code>a2a</code> CLI has no AI Catalog resolution (optional in the CLI spec, not implemented), so the buyer resolves it: its <code>search_supplier_catalog</code> tool searches the configured catalog (default <code>catalog.json</code>) for A2A Agent Card entries and <code>select_supplier</code> selects one by catalog identifier. The local Rust seller now has a live card entry on port 6000; Luca's eventual card also goes into the catalog, not buyer configuration.</li>
+    <li>Local seller baseline: <code>SupplierAgent</code> uses official A2A and Copilot Rust SDKs for NL quotes and simulated purchases, plus deterministic typed RFQs/orders. Purchases require a task-bound OID4VP presentation to the issuer-hosted verifier; quotes remain open. This verifies a signed demo claim, not real age. SLIM remains unimplemented.</li>
+    <li>Wallet hand-off: the buyer relays the experimental extension's authorization request and the issuer-hosted QR page. After wallet approval, continue the same seller purchase task; approval never comes from model or user assertions. The buyer sends the extension URI in the seller's <code>A2A-Extensions</code> header. Actual Sphereon presentation interoperability still needs a phone scan.</li>
+    <li>Wallet installed: Sphereon 0.8.0. Upstream 0.7.0 release notes advertise OID4VP 1.0 Final and OID4VCI draft 15; the 0.8.0 source includes SD-JWT and DCQL support. Darrel confirmed successful QR issuance and credential receipt on his phone on October 10, 2026. OID4VP presentation and verifier interoperability remain untested.</li>
+    <li>Phone issuer: <code>IssuerAgent</code> implements demo OID4VCI pre-authorized issuance at <code>https://agentcon-issuer.azurewebsites.net</code>. Admin-created QR offers are short-lived and single-use; credentials are signed for the phone's proof key. Live deployment and phone receipt are confirmed; subsequent OID4VP presentation remains to be checked. Azure uses a dedicated Linux B1 App Service plan in <code>darrmi_personal</code>.</li>
+    </ul>
+    </li>
+    </ul>
+  </main>
+</body>
+</html>
