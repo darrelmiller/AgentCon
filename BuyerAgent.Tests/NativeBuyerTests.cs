@@ -423,9 +423,35 @@ public sealed class NativeBuyerTests
 
         var ambiguous = Request(Rfq, SupplierFormats.Rfq).Message;
         ambiguous.Metadata = [];
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             native.RunAsync(new BuyerTurn(ambiguous, new BuyerConversation()), CancellationToken.None));
+        Assert.Contains("urn:first, urn:second", failure.Message);
         Assert.Equal(3, network.Calls.Count);
+    }
+
+    [Fact]
+    public async Task TypedRfqWithoutSupplierMetadataRoutesByCatalogWineMatch()
+    {
+        using var network = new WineNetwork();
+        using var files = new TempCatalogs();
+        using var http = new HttpClient(network);
+        var options = new BuyerOptions { NativeStructuredSupport = true, CatalogUrl = files.Write("catalog.json",
+            TempCatalogs.Agent("urn:french", "http://localhost:6002/.well-known/agent-card.json",
+                description: "2015 Château Margaux", tags: ["wine", "France"]),
+            TempCatalogs.Agent("urn:barolo", "http://localhost:6003/.well-known/agent-card.json",
+                description: "Wine supplier", tags: ["wine", "Barolo"])) };
+        var native = new NativeBuyer(new SupplierGateway(http, options, new AiCatalogClient(http, options)));
+        var conversation = new BuyerConversation();
+        var request = Request(Rfq, SupplierFormats.Rfq).Message;
+        request.Metadata = [];
+        await native.RunAsync(new BuyerTurn(request, conversation), CancellationToken.None);
+        Assert.Equal([6003], network.Ports);
+        Assert.Equal("urn:barolo", conversation.SelectedSupplier!.Identifier);
+
+        var margaux = Request(Rfq.Replace("Barolo", "Chateau Margaux"), SupplierFormats.Rfq, taskId: "rfq2").Message;
+        margaux.Metadata = [];
+        await native.RunAsync(new BuyerTurn(margaux, conversation), CancellationToken.None);
+        Assert.Equal([6003, 6002], network.Ports);
     }
 
     [Fact]

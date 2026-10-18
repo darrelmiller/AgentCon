@@ -105,6 +105,8 @@ public sealed class SupplierGateway(HttpClient httpClient, BuyerOptions options,
     }
     public Task<CatalogSearchResult> SearchAsync(string? query, CancellationToken cancellationToken) =>
         catalog.SearchAsync(query, cancellationToken);
+    public Task<IReadOnlyList<CatalogAgentEntry>> MatchProductAsync(string? product, CancellationToken cancellationToken) =>
+        catalog.MatchProductAsync(product, cancellationToken);
 
     public async Task<SupplierSelection> SelectAsync(string identifier, string? version, CancellationToken cancellationToken)
     {

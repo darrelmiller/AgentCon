@@ -419,8 +419,10 @@ send **exactly one typed data part** to its JSON-RPC endpoint:
 The buyer's live card advertises the installed schema discovery descriptors.
 RFQs route through `agentcon.supplierIdentifier` (optional
 `agentcon.supplierVersion`) in **message metadata**, never a caller URL.
-If omitted, the buyer uses the conversation's selected supplier or a single
-unambiguous catalog match; ambiguity explicitly fails without inference.
+If omitted, the buyer deterministically matches the RFQ `wine` against catalog
+entry text (whole phrase first, then best term score); a single match wins.
+Otherwise it uses the conversation's selected supplier or a single catalog
+entry; ambiguity fails, listing candidate identifiers, without inference.
 No hardcoded supplier destination exists. Native inbound validation rejects
 unknown types, generic JSON, mixed/batched parts and invalid wine-v1 payloads
 before sending anything. With the checkbox off, typed inbound requests fail

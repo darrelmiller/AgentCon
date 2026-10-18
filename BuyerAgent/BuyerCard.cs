@@ -43,7 +43,7 @@ public static class BuyerCard
                 .. (options.NativeStructuredSupport ? new[] { new AgentExtension
                 {
                     Uri = SupplierFormats.Extension,
-                    Description = "Installed deterministic wine-v1 input codecs. Route RFQs by agentcon.supplierIdentifier/version catalog metadata (or unique catalog match); purchases use an observed quote in this buyer context. Optional positive agentcon.maxTotalUsd budget. Streaming suppliers complete the original buyer task automatically after external wallet approval; nonstreaming suppliers require the same purchase on the same buyer task.",
+                    Description = "Installed deterministic wine-v1 input codecs. Route RFQs by agentcon.supplierIdentifier/version catalog metadata (or a unique catalog match on the RFQ wine); purchases use an observed quote in this buyer context. Optional positive agentcon.maxTotalUsd budget. Streaming suppliers complete the original buyer task automatically after external wallet approval; nonstreaming suppliers require the same purchase on the same buyer task.",
                     Required = false,
                     Params = JsonSerializer.SerializeToElement(new { schemas = SupplierFormats.Installed().Select(format => new
                     {
