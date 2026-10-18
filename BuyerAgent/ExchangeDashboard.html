@@ -299,7 +299,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     });
   }
   function renderMessages() {
-    const exchanges = (state?.capture.exchanges || []).filter(entry => sellerOwns(entry.endpoint, sellerOrigin));
+    const exchanges = (state?.capture.exchanges || []).filter(entry => entry.inbound || sellerOwns(entry.endpoint, sellerOrigin));
     const signature = JSON.stringify([exchanges, selected, sellerOrigin]);
     if (signature === messageSignature) return;
     messageSignature = signature;
@@ -328,7 +328,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
           bannered.add(entry.group);
           area.append(node("div", `Buyer → all suppliers · ${entry.groupLabel}`, "group-banner"));
         }
-        const button = node("button", undefined, `message ${direction}`);
+        const button = node("button", undefined, `message ${entry.inbound ? (response ? "outgoing" : "incoming") : direction}`);
         button.dataset.exchange = entry.id;
         button.dataset.direction = direction;
         const chosen = selected?.id === entry.id && selected.direction === direction;
@@ -339,7 +339,8 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
         const viaSlim = transportOf(entry) === "SLIM";
         const delivery = response ? (entry.group ? "unicast reply" : "unicast")
           : slimMulticast ? "multicast" : method === "GetTask" ? "poll" : entry.group ? "fan-out" : "unicast";
-        const from = response ? "Supplier → Buyer" : slimMulticast ? `Buyer → ${groupSizes.get(entry.group)} suppliers` : "Buyer → Supplier";
+        const from = entry.inbound ? (response ? "Buyer Agent → User Agent" : "User Agent → Buyer Agent")
+          : response ? "Supplier → Buyer" : slimMulticast ? `Buyer → ${groupSizes.get(entry.group)} suppliers` : "Buyer → Supplier";
         const heading = node("strong", `${from} · #${entry.id}`);
         const chip = node("span", `${viaSlim ? "SLIM" : "HTTP"} · ${delivery}`, `transport ${viaSlim ? "slim" : "http"}`);
         chip.title = viaSlim ? `SLIMRPC via ${entry.endpoint}` : `A2A ${entry.restOperation ? "HTTP+JSON" : "JSON-RPC"} over HTTP to ${entry.endpoint}`;
@@ -379,8 +380,13 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     const wire = !response && entry.groupLabel?.startsWith("SLIM multicast")
       ? `SLIMRPC multicast to ${members.length} suppliers (${members.map(other => other.endpoint).join(", ")})`
       : `${transportOf(entry) === "SLIM" ? "SLIMRPC" : entry.restOperation ? `HTTP+JSON ${entry.restOperation}` : "HTTP JSON-RPC"} via ${entry.endpoint}`;
-    $("inspector-hint").textContent = `Exchange #${entry.id} - ${response ? "Seller to buyer" : "Buyer to seller"} - ${wire} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
+    const route = entry.inbound ? (response ? "Buyer Agent to User Agent" : "User Agent to Buyer Agent")
+      : response ? "Seller to buyer" : "Buyer to seller";
+    $("inspector-hint").textContent = `Exchange #${entry.id} - ${route} - ${wire} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
     $("metadata").append(node("code", entry.endpoint), node("span", `HTTP ${entry.httpStatus ?? "pending"}`));
+    if (entry.httpMethod) $("metadata").append(node("span", entry.httpMethod));
+    if (entry.inbound) $("metadata").append(node("span",
+      `Content-Type: ${(response ? entry.responseContentType : entry.requestContentType) || "(not set)"}`));
     if (entry.durationMs !== null) $("metadata").append(node("span", `${entry.durationMs.toFixed(1)} ms`));
     if (entry.errorType) $("metadata").append(node("span", entry.errorType, "error"));
     if (entry.traceId) {
@@ -450,7 +456,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("seller-card").disabled = !seller;
     $("seller-card").title = seller ? `${seller.name} (${seller.identifier}) — view live Agent Card` : "Choose a catalog supplier to view its Agent Card.";
     $("seller-endpoint").replaceChildren(...(seller ? [node("div", seller.origin), ...(seller.slimUrl ? [node("div", seller.slimUrl)] : [])] : []));
-    const inflight = state.capture.exchanges.filter(entry => sellerOwns(entry.endpoint, sellerOrigin) &&
+    const inflight = state.capture.exchanges.filter(entry => !entry.inbound && sellerOwns(entry.endpoint, sellerOrigin) &&
       (entry.status === "sending" || entry.status === "receiving")).length;
     $("seller-status").textContent = seller ? `${seller.status}${seller.slimUrl ? " · SLIM ready" : ""}${seller.problem ? ` - ${seller.problem}` : ""}${inflight ? ` · ${inflight} in flight` : ""}` : "Unknown";
     $("seller-status").title = "HTTP availability, not proof of Copilot authentication. Task states are the latest observed responses, not automatic polling.";

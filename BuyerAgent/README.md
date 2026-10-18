@@ -41,6 +41,15 @@ dotnet run --project BuyerAgent\BuyerAgent.csproj --artifacts-path .\artifacts\e
 Start-Process 'http://localhost:5100/demo'
 ```
 
+Incoming HTTP `/a2a` calls appear as **User Agent -> Buyer Agent**, with replies
+as **Buyer Agent -> User Agent**, including requests rejected by the SDK before
+buyer execution. These remain visible regardless of the selected seller.
+Select a message to inspect its HTTP method and Content-Type; **Wire** shows
+the actual request body, including each part's `mediaType`, or the response/error
+body and SSE frames. HTTP envelope Content-Type is distinct from part media types.
+Capture is opt-in, bounded to 64 KiB per body, and reset by Clear; authentication
+and cookie headers are not recorded. Incoming SLIM calls are not captured here.
+
 The buyer appears on the left, the catalog seller on the right, and one
 chronological conversation in the center. Entries are labelled **Buyer -> Seller**
 or **Supplier -> Buyer** and ordered by request send / response arrival time, even

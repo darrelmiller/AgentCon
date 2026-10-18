@@ -146,6 +146,33 @@ test("tasks show status text and stay earliest-to-latest regardless of activity 
   assert.match(text(tasks.children[1]), /later/);
 });
 
+test("User Agent exchanges survive the seller filter and expose content type and rejected wire", async () => {
+  const { elements, state, refresh } = await dashboard();
+  state.capture.exchanges.unshift({
+    id: 2, inbound: true, endpoint: "http://localhost:5100/a2a", httpMethod: "POST",
+    requestContentType: "application/json; charset=utf-8", responseContentType: "application/json",
+    startedAt: "2026-10-11T17:59:58Z", responseStartedAt: "2026-10-11T17:59:59Z",
+    status: "complete", httpStatus: 200, durationMs: 5,
+    request: JSON.stringify({ method: "SendMessage", params: { message: { parts: [
+      { mediaType: "application/vnd.agentcon.demo.wine-rfq.v1+json", data: { kind: "rfq" } }
+    ] } } }),
+    response: JSON.stringify({ error: { code: -32005, message: "CONTENT_TYPE_NOT_SUPPORTED" } })
+  });
+  await refresh();
+  const conversation = elements.get("conversation");
+  assert.equal(conversation.children.length, 4);
+  assert.match(text(conversation.children[0]), /User Agent → Buyer Agent/);
+  assert.match(text(conversation.children[1]), /Buyer Agent → User Agent/);
+  conversation.children[0].listeners.click();
+  assert.match(text(elements.get("metadata")), /POST.*Content-Type: application\/json; charset=utf-8/);
+  assert.match(text(elements.get("parts")), /application\/vnd.agentcon.demo.wine-rfq.v1\+json/);
+  elements.get("raw-tab").listeners.click();
+  assert.match(elements.get("payload").textContent, /"mediaType": "application\/vnd.agentcon.demo.wine-rfq.v1\+json"/);
+  conversation.children[1].listeners.click();
+  assert.match(elements.get("inspector-hint").textContent, /Buyer Agent to User Agent/);
+  assert.match(elements.get("payload").textContent, /CONTENT_TYPE_NOT_SUPPORTED/);
+});
+
 test("tips are focus-accessible and dismissible; failures remain visible", async () => {
   const { elements, document, state, refresh } = await dashboard();
   assert.ok(!html.includes("Demo content capture is ON."));

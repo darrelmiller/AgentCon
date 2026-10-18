@@ -19,6 +19,96 @@ public sealed class ExchangeTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void IncomingStreamingUpdatesKeepFirstResponseTimeAndCannotRepopulateAfterClear()
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        var key = store.Begin(new Uri("http://localhost:5100/a2a"), inbound: true);
+        store.Status(key, "receiving", 200);
+        var first = Snapshot(store).GetProperty("exchanges")[0].GetProperty("responseStartedAt").GetString();
+        store.Status(key, "receiving", 200, responseContentType: "text/event-stream");
+        Assert.Equal(first, Snapshot(store).GetProperty("exchanges")[0].GetProperty("responseStartedAt").GetString());
+        store.Clear();
+        store.Body(key, true, "data: {}\n\n", false, true);
+        store.Status(key, "complete", 200);
+        Assert.Empty(Snapshot(store).GetProperty("exchanges").EnumerateArray());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IncomingCallerWireIsCapturedWithoutHeadersAndWithoutInventingSellerTasks(bool streaming)
+    {
+        await using var app = await App(true);
+        using var http = app.GetTestClient();
+        http.DefaultRequestHeaders.Authorization = new("Bearer", "SECRET-REQUEST");
+        http.DefaultRequestHeaders.Add("Cookie", "SECRET-COOKIE");
+        using var sdk = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
+        if (streaming)
+        {
+            await foreach (var _ in sdk.SendStreamingMessageAsync(BuyerServiceTests.Request("User quote request"))) { }
+        }
+        else
+        {
+            Assert.Equal(TaskState.Completed, (await sdk.SendMessageAsync(BuyerServiceTests.Request("User quote request"))).Task!.Status.State);
+        }
+        var snapshot = Snapshot(app.Services.GetRequiredService<ExchangeStore>());
+        var exchange = Assert.Single(snapshot.GetProperty("exchanges").EnumerateArray());
+        Assert.True(exchange.GetProperty("inbound").GetBoolean());
+        Assert.Equal("POST", exchange.GetProperty("httpMethod").GetString());
+        Assert.StartsWith("application/json", exchange.GetProperty("requestContentType").GetString());
+        Assert.Contains("User quote request", exchange.GetProperty("request").GetString());
+        Assert.Contains("Demo reply", exchange.GetProperty("response").GetString());
+        Assert.Equal("complete", exchange.GetProperty("status").GetString());
+        Assert.Equal(200, exchange.GetProperty("httpStatus").GetInt32());
+        Assert.StartsWith(streaming ? "text/event-stream" : "application/json",
+            exchange.GetProperty("responseContentType").GetString());
+        Assert.DoesNotContain("SECRET", snapshot.ToString());
+        Assert.All(snapshot.GetProperty("tasks").EnumerateArray(), task => Assert.Equal("buyer", task.GetProperty("agent").GetString()));
+    }
+
+    [Theory]
+    [InlineData("application/json", """{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"messageId":"m","role":"ROLE_USER","parts":[{"data":{"kind":"rfq"},"mediaType":"application/vnd.agentcon.demo.wine-rfq.v1+json"}]}}}""")]
+    [InlineData("text/plain", """{"jsonrpc":"2.0","id":1,"method":"SendMessage"}""")]
+    [InlineData("application/json", "{malformed")]
+    public async Task RejectedCallerRequestsRemainInspectable(string contentType, string body)
+    {
+        await using var app = await App(true);
+        using var http = app.GetTestClient();
+        using var response = await http.PostAsync("/a2a", new StringContent(body, Encoding.UTF8, contentType));
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.True(!response.IsSuccessStatusCode || responseBody.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+            responseBody.Contains("TASK_STATE_FAILED", StringComparison.Ordinal));
+        var exchange = Assert.Single(Snapshot(app.Services.GetRequiredService<ExchangeStore>()).GetProperty("exchanges").EnumerateArray());
+        Assert.Equal(body, exchange.GetProperty("request").GetString());
+        Assert.Equal(responseBody, exchange.GetProperty("response").GetString());
+        Assert.Equal((int)response.StatusCode, exchange.GetProperty("httpStatus").GetInt32());
+        Assert.StartsWith(contentType, exchange.GetProperty("requestContentType").GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IncomingCaptureRespectsOptInExcludesDiscoveryAndBoundsBodies(bool enabled)
+    {
+        await using var app = await App(enabled);
+        using var http = app.GetTestClient();
+        await http.GetAsync("/health");
+        await http.GetAsync("/.well-known/agent-card.json");
+        var body = new string('x', ExchangeStore.MaxBodyBytes + 500);
+        using var response = await http.PostAsync("/a2a", new StringContent(body, Encoding.UTF8, "text/plain"));
+        await response.Content.ReadAsStringAsync();
+        var snapshot = Snapshot(app.Services.GetRequiredService<ExchangeStore>());
+        if (enabled)
+        {
+            var entry = Assert.Single(snapshot.GetProperty("exchanges").EnumerateArray());
+            Assert.True(entry.GetProperty("requestTruncated").GetBoolean());
+            Assert.Equal(ExchangeStore.MaxBodyBytes, Encoding.UTF8.GetByteCount(entry.GetProperty("request").GetString()!));
+            Assert.Empty(snapshot.GetProperty("tasks").EnumerateArray());
+        }
+        else Assert.Empty(snapshot.GetProperty("exchanges").EnumerateArray());
+    }
+
+    [Fact]
     public async Task ActualSdkWireBodiesAreCapturedWithoutHeadersAndTasksAreObserved()
     {
         var options = new BuyerOptions { ExchangeCaptureEnabled = true };

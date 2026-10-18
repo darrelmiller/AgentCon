@@ -103,7 +103,7 @@ public sealed class ExchangeCaptureHandler(ExchangeStore store) : DelegatingHand
         }
     }
 
-    private sealed class Capture(Action<string, bool> body, Action<bool> done, Action<Exception> failed)
+    internal sealed class Capture(Action<string, bool> body, Action<bool> done, Action<Exception> failed)
     {
         private readonly MemoryStream _bytes = new();
         private bool _truncated;
@@ -133,7 +133,7 @@ public sealed class ExchangeCaptureHandler(ExchangeStore store) : DelegatingHand
         }
     }
 
-    private sealed class CaptureStream(Stream inner, Capture capture, bool leaveOpen) : Stream
+    internal sealed class CaptureStream(Stream inner, Capture capture, bool leaveOpen) : Stream
     {
         public override bool CanRead => inner.CanRead;
         public override bool CanSeek => false;

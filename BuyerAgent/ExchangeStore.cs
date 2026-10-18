@@ -14,6 +14,10 @@ public sealed record ExchangeEntry(
     public string? GroupLabel { get; init; }
     /// <summary>The A2A operation of an HTTP+JSON call, derived from its method and path; null for JSON-RPC and SLIMRPC.</summary>
     public string? RestOperation { get; init; }
+    public bool Inbound { get; init; }
+    public string? HttpMethod { get; init; }
+    public string? RequestContentType { get; init; }
+    public string? ResponseContentType { get; init; }
 }
 
 public sealed record ObservedTask(
@@ -104,7 +108,8 @@ public sealed class ExchangeStore(BuyerOptions options)
         return cut > 0 ? entry.Endpoint[..cut] : entry.Endpoint;
     }
 
-    public (long Id, long Generation) Begin(Uri endpoint, string? restOperation = null)
+    public (long Id, long Generation) Begin(Uri endpoint, string? restOperation = null,
+        bool inbound = false, string? httpMethod = null, string? requestContentType = null)
     {
         lock (_gate)
         {
@@ -112,7 +117,8 @@ public sealed class ExchangeStore(BuyerOptions options)
             _exchanges.Add(new(id, DateTimeOffset.UtcNow, endpoint.GetLeftPart(UriPartial.Path),
                 Activity.Current?.TraceId.ToHexString(), Activity.Current?.SpanId.ToHexString(),
                 "", "", false, false, null, "sending", null, null)
-                { Group = CurrentGroup.Value?.Id, GroupLabel = CurrentGroup.Value?.Label, RestOperation = restOperation });
+                { Group = CurrentGroup.Value?.Id, GroupLabel = CurrentGroup.Value?.Label, RestOperation = restOperation,
+                    Inbound = inbound, HttpMethod = httpMethod, RequestContentType = requestContentType });
             if (_exchanges.Count > MaxExchanges)
             {
                 _exchanges.RemoveAt(0);
@@ -132,6 +138,8 @@ public sealed class ExchangeStore(BuyerOptions options)
             _exchanges[index] = response
                 ? entry with { Response = body, ResponseTruncated = truncated }
                 : entry with { Request = body, RequestTruncated = truncated };
+            // Buyer task state is observed by the handler; caller wire must not be mistaken for seller tasks.
+            if (entry.Inbound) return;
             if (response && sse)
             {
                 foreach (var frame in body.Replace("\r\n", "\n", StringComparison.Ordinal).Split("\n\n").SkipLast(1))
@@ -149,7 +157,7 @@ public sealed class ExchangeStore(BuyerOptions options)
     }
 
     public void Status((long Id, long Generation) key, string status, int? httpStatus = null,
-        string? errorType = null, double? durationMs = null)
+        string? errorType = null, double? durationMs = null, string? responseContentType = null)
     {
         lock (_gate)
         {
@@ -159,9 +167,10 @@ public sealed class ExchangeStore(BuyerOptions options)
             _exchanges[index] = entry with
             {
                 Status = status, HttpStatus = httpStatus ?? entry.HttpStatus,
-                ResponseStartedAt = status == "receiving" || errorType is not null && entry.ResponseStartedAt is null
+                ResponseStartedAt = (status == "receiving" || errorType is not null) && entry.ResponseStartedAt is null
                     ? DateTimeOffset.UtcNow : entry.ResponseStartedAt,
-                ErrorType = errorType, DurationMs = durationMs
+                ErrorType = errorType, DurationMs = durationMs,
+                ResponseContentType = responseContentType ?? entry.ResponseContentType
             };
         }
     }
