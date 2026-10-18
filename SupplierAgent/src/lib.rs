@@ -70,7 +70,7 @@ impl Supplier {
             metrics: Arc::new(Metrics::default()),
             verifier: None,
             pending: Mutex::new(std::collections::HashMap::new()),
-            structured: AtomicBool::new(true),
+            structured: AtomicBool::new(false),
             control_token: None,
             slim_url: None,
             slim_ready: AtomicBool::new(false),

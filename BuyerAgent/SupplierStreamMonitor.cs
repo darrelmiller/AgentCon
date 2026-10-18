@@ -122,7 +122,7 @@ public sealed class SupplierStreamMonitor(
                         await tasks.SaveTaskAsync(taskId, buyer, _shutdown.Token);
                         notifier.Notify(taskId, status);
                         exchanges.BuyerTask(taskId, contextId,
-                            JsonSerializer.SerializeToElement(state, A2AJsonUtilities.DefaultOptions).GetString()!);
+                            JsonSerializer.SerializeToElement(state, A2AJsonUtilities.DefaultOptions).GetString()!, message);
                     }
                     if (seller.Status.State is TaskState.Completed or TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
                     {
@@ -167,7 +167,7 @@ public sealed class SupplierStreamMonitor(
                         ?? throw new InvalidOperationException("Buyer error projection failed.");
                     await tasks.SaveTaskAsync(taskId, buyer, CancellationToken.None);
                     notifier.Notify(taskId, update);
-                    exchanges.BuyerTask(taskId, contextId, "TASK_STATE_FAILED");
+                    exchanges.BuyerTask(taskId, contextId, "TASK_STATE_FAILED", update.StatusUpdate.Status.Message);
                 }
             }
         }

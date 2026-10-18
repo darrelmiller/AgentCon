@@ -100,6 +100,7 @@ public sealed class BuyerServiceTests
             received = turn.Message;
             return Task.FromResult("The requested quote is ready.");
         }));
+        app.Services.GetRequiredService<BuyerOptions>().ExchangeCaptureEnabled = true;
         using var http = app.GetTestClient();
         using var client = new A2AClient(new Uri(http.BaseAddress!, "/a2a"), http);
         var request = Request("Request a quote");
@@ -110,6 +111,9 @@ public sealed class BuyerServiceTests
         Assert.Contains(task.Artifacts!, artifact => artifact.Name == "buyer-response");
         var saved = await client.GetTaskAsync(new GetTaskRequest { Id = task.Id });
         Assert.Equal(TaskState.Completed, saved.Status.State);
+        var observed = JsonSerializer.SerializeToElement(app.Services.GetRequiredService<ExchangeStore>().Snapshot(),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)).GetProperty("tasks");
+        Assert.Equal("The requested quote is ready.", Assert.Single(observed.EnumerateArray()).GetProperty("statusMessage").GetString());
     }
 
     [Theory]

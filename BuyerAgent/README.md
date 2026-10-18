@@ -50,6 +50,11 @@ quote/order/receipt parts. **Wire** shows the HTTP JSON-RPC or HTTP+JSON body
 (JSON pretty-printed) or SSE frames. Trace links open the matching Aspire
 trace in an external browser. Selecting a seller in this viewer only filters
 the view; it does not change any buyer conversation's supplier selection.
+Task lists run earliest-to-latest by first observation, retain that order when
+statuses change, and show the text parts of each task's latest status message.
+With native structures enabled, the buyer skill recommends structured requests,
+schema discovery through the `urn:agentcon:extension:structured-schemas:v1`
+extension links, and `text/plain` only as a fallback.
 Click either agent's icon/name to open its full current Agent Card JSON in a
 popup, including input/output modes, skills and extensions. The seller card is
 fetched through the buyer from the selected catalog entry, not directly from the

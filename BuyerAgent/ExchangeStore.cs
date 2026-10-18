@@ -18,7 +18,11 @@ public sealed record ExchangeEntry(
 
 public sealed record ObservedTask(
     string Agent, string Endpoint, string Id, string? ContextId, string State, DateTimeOffset UpdatedAt,
-    string? PresentationUrl = null);
+    string? PresentationUrl = null)
+{
+    public DateTimeOffset StartedAt { get; init; } = UpdatedAt;
+    public string? StatusMessage { get; init; }
+}
 
 public sealed class ExchangeStore(BuyerOptions options)
 {
@@ -162,10 +166,12 @@ public sealed class ExchangeStore(BuyerOptions options)
         }
     }
 
-    public void BuyerTask(string id, string contextId, string state)
+    public void BuyerTask(string id, string contextId, string state, A2A.Message? message = null)
     {
         if (!Enabled) return;
-        lock (_gate) Task("buyer", options.ListenUrl.TrimEnd('/') + "/a2a", id, contextId, state);
+        lock (_gate) Task("buyer", options.ListenUrl.TrimEnd('/') + "/a2a", id, contextId, state,
+            statusMessage: message is null ? null : string.Join("\n",
+                message.Parts.Where(part => part.Text is not null).Select(part => part.Text)));
     }
 
     public object Snapshot()
@@ -228,7 +234,7 @@ public sealed class ExchangeStore(BuyerOptions options)
                     result.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.Object &&
                     Text(status, "state") is { } state &&
                     (Text(result, "id") ?? Text(result, "taskId")) is { } id)
-                    Task("seller", endpoint, id, Text(result, "contextId"), state, PresentationUrl(status));
+                    Task("seller", endpoint, id, Text(result, "contextId"), state, PresentationUrl(status), StatusText(status));
             }
         }
         catch (JsonException)
@@ -256,16 +262,31 @@ public sealed class ExchangeStore(BuyerOptions options)
         value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString() : null;
 
-    private void Task(string agent, string endpoint, string id, string? context, string state, string? presentationUrl = null)
+    private static string? StatusText(JsonElement status) =>
+        status.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object &&
+        message.TryGetProperty("parts", out var parts) && parts.ValueKind == JsonValueKind.Array
+            ? string.Join("\n", parts.EnumerateArray().Where(part => part.ValueKind == JsonValueKind.Object)
+                .Select(part => Text(part, "text")).Where(text => text is not null))
+            : null;
+
+    private void Task(string agent, string endpoint, string id, string? context, string state,
+        string? presentationUrl = null, string? statusMessage = null)
     {
         var index = _tasks.FindIndex(task => task.Agent == agent && task.Endpoint == endpoint && task.Id == id);
         var previous = index >= 0 ? _tasks[index] : null;
         // Keep the QR page only while the task still waits for wallet authorization.
         var page = state.Contains("AUTH_REQUIRED", StringComparison.OrdinalIgnoreCase)
             ? presentationUrl ?? previous?.PresentationUrl : null;
-        if (previous?.State == state && previous.ContextId == context && previous.PresentationUrl == page) return;
-        if (index >= 0) _tasks.RemoveAt(index);
-        _tasks.Add(new(agent, endpoint, id, context ?? previous?.ContextId, state, DateTimeOffset.UtcNow, page));
+        if (previous?.State == state && previous.ContextId == context && previous.PresentationUrl == page &&
+            previous.StatusMessage == statusMessage) return;
+        var now = DateTimeOffset.UtcNow;
+        var observed = new ObservedTask(agent, endpoint, id, context ?? previous?.ContextId, state, now, page)
+        {
+            StartedAt = previous?.StartedAt ?? now,
+            StatusMessage = statusMessage
+        };
+        if (index >= 0) _tasks[index] = observed;
+        else _tasks.Add(observed);
         if (_tasks.Count > MaxTasks) _tasks.RemoveAt(0);
     }
 }

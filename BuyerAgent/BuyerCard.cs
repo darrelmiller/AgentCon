@@ -61,7 +61,10 @@ public static class BuyerCard
             {
                 Id = "wine-buying",
                 Name = "Wine buyer",
-                Description = "Search the AI Catalog for wine suppliers, select one by catalog identifier, request quotes, send text or structured messages, and inspect supplier tasks.",
+                Description = "Search the AI Catalog for wine suppliers, select one by catalog identifier, request quotes, send text or structured messages, and inspect supplier tasks." +
+                    (options.NativeStructuredSupport
+                        ? $" Prefer structured content for requests. Discover the schemas by following the links in the {SupplierFormats.Extension} extension. Use text/plain only as a fallback."
+                        : ""),
                 Tags = ["wine", "buyer", "a2a", "demo"],
                 InputModes = options.NativeStructuredSupport ? ["text/plain", SupplierFormats.Rfq, SupplierFormats.Purchase] : ["text/plain"],
                 OutputModes = options.CommunicationMode == SupplierCommunicationMode.NaturalLanguage

@@ -212,6 +212,55 @@ public sealed class ExchangeTests
     }
 
     [Fact]
+    public void BuyerStatusTextUpdatesWithoutReorderingTasks()
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        store.BuyerTask("first", "c", "TASK_STATE_WORKING");
+        var started = Snapshot(store).GetProperty("tasks")[0].GetProperty("startedAt").GetString();
+        store.BuyerTask("second", "c", "TASK_STATE_WORKING");
+        store.BuyerTask("first", "c", "TASK_STATE_COMPLETED", new Message
+        {
+            Role = Role.Agent, MessageId = "reply",
+            Parts = [Part.FromText("Quote ready."), Part.FromData(JsonSerializer.SerializeToElement(42)), Part.FromText("Please review.")]
+        });
+        var tasks = Snapshot(store).GetProperty("tasks");
+        Assert.Equal("first", tasks[0].GetProperty("id").GetString());
+        Assert.Equal("second", tasks[1].GetProperty("id").GetString());
+        Assert.Equal(started, tasks[0].GetProperty("startedAt").GetString());
+        Assert.Equal("Quote ready.\nPlease review.", tasks[0].GetProperty("statusMessage").GetString());
+        store.BuyerTask("first", "c", "TASK_STATE_COMPLETED");
+        Assert.Null(Snapshot(store).GetProperty("tasks")[0].GetProperty("statusMessage").GetString());
+    }
+
+    [Theory]
+    [InlineData("http://localhost:6000/a2a", false, false)]
+    [InlineData("http://localhost:6000/a2a", false, true)]
+    [InlineData("slim://agntcy/agentcon/supplier", false, true)]
+    [InlineData("http://localhost:6000/a2a/rest/message:send", true, false)]
+    [InlineData("http://localhost:6000/a2a/rest/message:stream", true, true)]
+    public void SellerStatusTextIsObservedAcrossBindingsAndUpdatedWithoutChangingStartTime(string url, bool rest, bool sse)
+    {
+        var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });
+        var key = store.Begin(new Uri(url), rest ? sse ? "SendStreamingMessage" : "SendMessage" : null);
+        void Update(string text)
+        {
+            var result = new { statusUpdate = new { taskId = "seller", contextId = "c",
+                status = new { state = "TASK_STATE_WORKING", message = new { parts = new object[]
+                {
+                    new { text }, new { data = new { quoteId = "q" } }, new { text = "Second line." }
+                } } } } };
+            var body = rest ? JsonSerializer.Serialize(result) : JsonSerializer.Serialize(new { result });
+            store.Body(key, true, sse ? $"data: {body}\n\n" : body, false, sse);
+        }
+        Update("Preparing quote.");
+        var initial = Snapshot(store).GetProperty("tasks")[0];
+        Update("Quote nearly ready.");
+        var task = Assert.Single(Snapshot(store).GetProperty("tasks").EnumerateArray());
+        Assert.Equal(initial.GetProperty("startedAt").GetString(), task.GetProperty("startedAt").GetString());
+        Assert.Equal("Quote nearly ready.\nSecond line.", task.GetProperty("statusMessage").GetString());
+    }
+
+    [Fact]
     public void AuthRequiredSellerTaskExposesOnlyHttpsPresentationPageUntilAuthorized()
     {
         var store = new ExchangeStore(new BuyerOptions { ExchangeCaptureEnabled = true });

@@ -16,7 +16,7 @@ public sealed class BuyerHandler(
         using var activity = BuyerTelemetry.Agent(context.TaskId, context.ContextId);
         var mode = options.CommunicationMode;
         var snapshot = options.WithMode(mode);
-        void Observe(string state) => exchanges.BuyerTask(context.TaskId, context.ContextId, state);
+        void Observe(string state, Message? message = null) => exchanges.BuyerTask(context.TaskId, context.ContextId, state, message);
         Observe("TASK_STATE_SUBMITTED");
         var updater = new TaskUpdater(eventQueue, context.TaskId, context.ContextId);
         if (!context.IsContinuation)
@@ -65,6 +65,7 @@ public sealed class BuyerHandler(
                             var rejected = CreateReply("Continuation rejected: the original immutable purchase is still waiting for wallet approval. No new order was sent.", context);
                             rejected.Metadata = context.Task!.Status.Message?.Metadata;
                             await updater.RequireAuthAsync(rejected, cancellationToken: cancellationToken);
+                            Observe("TASK_STATE_AUTH_REQUIRED", rejected);
                         }
                     }
                 }
@@ -141,26 +142,26 @@ public sealed class BuyerHandler(
                 message.Parts = [Part.FromText(instructions)];
                 reply = instructions;
                 await updater.RequireAuthAsync(message, cancellationToken: deadline.Token);
-                Observe("TASK_STATE_AUTH_REQUIRED");
+                Observe("TASK_STATE_AUTH_REQUIRED", message);
             }
             else if (turn.PriceApprovalRequired ||
                 supplierTask?.Status.State is TaskState.InputRequired or TaskState.Submitted or TaskState.Working)
             {
                 await updater.RequireInputAsync(message, cancellationToken: deadline.Token);
-                Observe("TASK_STATE_INPUT_REQUIRED");
+                Observe("TASK_STATE_INPUT_REQUIRED", message);
             }
             else if (supplierTask?.Status.State is TaskState.Failed or TaskState.Rejected or TaskState.Canceled)
             {
                 BuyerTelemetry.Error(activity, "supplier_task_failed");
                 await updater.FailAsync(message, cancellationToken: deadline.Token);
-                Observe("TASK_STATE_FAILED");
+                Observe("TASK_STATE_FAILED", message);
             }
             else
             {
                 if (!forwardedArtifacts)
                     await updater.AddArtifactAsync([Part.FromText(reply)], name: "buyer-response", cancellationToken: deadline.Token);
                 await updater.CompleteAsync(textAccepted ? message : null, cancellationToken: deadline.Token);
-                Observe("TASK_STATE_COMPLETED");
+                Observe("TASK_STATE_COMPLETED", textAccepted ? message : null);
             }
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
@@ -189,6 +190,7 @@ public sealed class BuyerHandler(
                             Message = CreateReply("Caller disconnected; buyer execution canceled. Inspect supplier tasks before retrying.", context),
                             Timestamp = DateTimeOffset.UtcNow
                         };
+                        Observe("TASK_STATE_CANCELED", stored.Status.Message);
                         await taskStore.SaveTaskAsync(context.TaskId, stored, CancellationToken.None);
                     }
                 }
@@ -196,15 +198,18 @@ public sealed class BuyerHandler(
             }
             reply = "Buyer execution was canceled or exceeded its configured timeout. A supplier order may already have been accepted; inspect its task before retrying.";
             logger.LogWarning("Buyer task {TaskId} canceled or timed out", context.TaskId);
-            await updater.FailAsync(CreateReply(reply, context), cancellationToken: cancellationToken);
+            var message = CreateReply(reply, context);
+            await updater.FailAsync(message, cancellationToken: cancellationToken);
+            Observe("TASK_STATE_FAILED", message);
         }
         catch (Exception exception)
         {
             BuyerTelemetry.Error(activity, exception);
-            Observe("TASK_STATE_FAILED");
             reply = $"Buyer request failed: {exception.Message}";
             logger.LogError(exception, "Buyer task {TaskId} failed", context.TaskId);
-            await updater.FailAsync(CreateReply(reply, context), cancellationToken: cancellationToken);
+            var message = CreateReply(reply, context);
+            await updater.FailAsync(message, cancellationToken: cancellationToken);
+            Observe("TASK_STATE_FAILED", message);
         }
         finally
         {

@@ -48,7 +48,8 @@ The local supplier gates all purchases on task-bound OID4VP wallet verification
 through the demo issuer. Real purchasing/payment/fulfillment are not implemented.
 The buyer and Rust supplier also support an optional SLIMRPC binding; regular
 HTTP JSON-RPC remains the default for the initial demo. Buyer and supplier
-dashboard checkboxes control native input support and structured advertisement;
+dashboard checkboxes control native input support and structured advertisement
+(seller structures are disabled by default);
 outbound format negotiation is automatic.
 
 ## Start the local demo on Windows

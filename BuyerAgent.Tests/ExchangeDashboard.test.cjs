@@ -127,6 +127,25 @@ test("HTTP+JSON exchanges show unwrapped parts, the operation and the binding", 
   assert.equal(elements.get("payload").textContent, "Quote ready.");
 });
 
+test("tasks show status text and stay earliest-to-latest regardless of activity and updates", async () => {
+  const { elements, state, refresh } = await dashboard();
+  const original = state.capture.tasks[0];
+  original.startedAt = "2026-10-11T18:00:00Z";
+  original.updatedAt = "2026-10-11T18:00:05Z";
+  original.statusMessage = "Quote ready.\nPlease review.";
+  state.capture.tasks.unshift({ ...original, id: "later", state: "TASK_STATE_WORKING",
+    startedAt: "2026-10-11T18:00:02Z", updatedAt: "2026-10-11T18:00:03Z", statusMessage: "<b>Working</b>" });
+  await refresh();
+  const tasks = elements.get("seller-tasks");
+  assert.match(text(tasks.children[0]), /full-supplier-task-id.*Quote ready\.\nPlease review\./);
+  assert.match(text(tasks.children[1]), /later.*<b>Working<\/b>/);
+  original.updatedAt = "2026-10-11T18:00:10Z";
+  original.statusMessage = "Updated quote.";
+  await refresh();
+  assert.match(text(tasks.children[0]), /full-supplier-task-id.*Updated quote\./);
+  assert.match(text(tasks.children[1]), /later/);
+});
+
 test("tips are focus-accessible and dismissible; failures remain visible", async () => {
   const { elements, document, state, refresh } = await dashboard();
   assert.ok(!html.includes("Demo content capture is ON."));

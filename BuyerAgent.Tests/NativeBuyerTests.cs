@@ -18,6 +18,28 @@ public sealed class NativeBuyerTests
     private const string Order = """{"kind":"purchase-order","schemaVersion":"1","demoOnly":true,"quoteId":"q","purchaseOrderId":"po"}""";
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CardRecommendsStructuredRequestsAndSchemaDiscoveryOnlyWhenEnabled(bool enabled)
+    {
+        var card = BuyerCard.Create(new BuyerOptions { NativeStructuredSupport = enabled });
+        var skill = Assert.Single(card.Skills);
+        if (enabled)
+        {
+            Assert.Contains("Prefer structured content", skill.Description);
+            Assert.Contains(SupplierFormats.Extension, skill.Description);
+            Assert.Contains("following the links", skill.Description);
+            Assert.Contains("text/plain only as a fallback", skill.Description);
+            Assert.Contains(card.Capabilities.Extensions!, extension => extension.Uri == SupplierFormats.Extension);
+        }
+        else
+        {
+            Assert.DoesNotContain("Prefer structured content", skill.Description);
+            Assert.DoesNotContain(SupplierFormats.Extension, skill.Description);
+        }
+    }
+
+    [Theory]
     [InlineData("none", TaskState.Completed)]
     [InlineData("receipt", TaskState.Failed)]
     [InlineData("ownership", TaskState.Failed)]

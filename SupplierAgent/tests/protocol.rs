@@ -70,6 +70,9 @@ async fn live_structured_control_changes_card_schema_and_acceptance_without_infe
     )
     .await;
     let client = reqwest::Client::new();
+    let initial: Value = client.get(format!("{}/health", server.url))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(initial["structuredDataParts"], false);
     let control = format!("{}/demo/structures", server.url);
     assert_eq!(
         client
@@ -452,7 +455,7 @@ struct TestServer {
 #[tokio::test]
 async fn streaming_unapproved_purchase_expires_without_a_receipt_or_inference() {
     let server = TestServer::with_supplier(
-        Supplier::new(Arc::new(NoInference)).with_verifier(Arc::new(ExpiringVerifier)),
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(Arc::new(ExpiringVerifier)),
     ).await;
     let quoted = server.send(vec![Part::data(rfq(1)).with_media_type(RFQ)], "expired-stream").await;
     let quote = quoted["task"]["artifacts"][0]["parts"][0]["data"]["quoteId"].as_str().unwrap();
@@ -475,7 +478,7 @@ async fn streaming_unapproved_purchase_expires_without_a_receipt_or_inference() 
 async fn streaming_wallet_approval_emits_receipt_and_completed_without_resending_or_inference() {
     let verifier = Arc::new(TestVerifier::default());
     let server = TestServer::with_supplier(
-        Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()),
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()),
     ).await;
     let quoted = server.send(vec![Part::data(rfq(1)).with_media_type(RFQ)], "stream-context").await;
     let quote = quoted["task"]["artifacts"][0]["parts"][0]["data"]["quoteId"].as_str().unwrap();
@@ -516,7 +519,7 @@ async fn streaming_wallet_approval_emits_receipt_and_completed_without_resending
 async fn http_json_binding_is_advertised_and_completes_streaming_wallet_approval() {
     let verifier = Arc::new(TestVerifier::default());
     let server = TestServer::with_supplier(
-        Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()),
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()),
     ).await;
     let card: Value = reqwest::get(format!("{}/.well-known/agent-card.json", server.url))
         .await.unwrap().json().await.unwrap();
@@ -566,7 +569,7 @@ impl Drop for TestServer {
 
 impl TestServer {
     async fn new(interpreter: Arc<dyn Interpreter>) -> Self {
-        Self::with_supplier(Supplier::new(interpreter)).await
+        Self::with_supplier(Supplier::new(interpreter).with_structured(true)).await
     }
 
     async fn with_supplier(supplier: Supplier) -> Self {
@@ -613,7 +616,7 @@ impl TestServer {
 async fn real_sdk_http_discovery_quote_order_get_and_zero_inference() {
     let verifier = Arc::new(TestVerifier::default());
     let server = TestServer::with_supplier(
-        Supplier::new(Arc::new(NoInference)).with_verifier(verifier.clone()),
+        Supplier::new(Arc::new(NoInference)).with_structured(true).with_verifier(verifier.clone()),
     )
     .await;
     let card: Value = reqwest::get(format!("{}/.well-known/agent-card.json", server.url))

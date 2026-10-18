@@ -122,6 +122,7 @@ dialog pre { max-height: 60vh; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: .625rem; background: var(--cp-surface-soft); border: 1px solid var(--cp-border); }
 .task { padding: 8px 0; border-top: 1px solid var(--cp-border); overflow-wrap: anywhere; } .task code { display: block; font-size: 12px; }
 .task summary { cursor: pointer; }
+.task-status-message { display: block; white-space: pre-wrap; }
 .group-banner { margin: 10px 0 4px; padding: 4px 8px; border-left: 3px solid var(--cp-accent); color: var(--cp-accent); font-weight: 600; font-size: 12px; }
 .qr-link { display: inline-block; margin: 4px 0; padding: 2px 8px; border: 1px solid var(--cp-accent); border-radius: 4px; color: var(--cp-accent); font-weight: 600; text-decoration: none; }
 .task summary code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cp-text-muted); }
@@ -273,10 +274,11 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     const area = $(`${agent}-tasks`);
     area.replaceChildren();
     if (!tasks.length) area.append(node("p", "No tasks yet.", "muted"));
-    [...tasks].sort((a, b) => Number(active(b.state)) - Number(active(a.state)) || b.updatedAt.localeCompare(a.updatedAt)).forEach(task => {
+    [...tasks].sort((a, b) => (a.startedAt ?? a.updatedAt).localeCompare(b.startedAt ?? b.updatedAt)).forEach(task => {
       const item = node("details", undefined, "task");
       const summary = node("summary");
       summary.append(node("span", label(task.state), active(task.state) ? "busy" : ""), node("code", task.id));
+      if (task.statusMessage) summary.append(node("span", task.statusMessage, "task-status-message"));
       if (task.presentationUrl) {
         const qr = node("a", "Show QR", "qr-link");
         qr.href = task.presentationUrl; qr.target = "_blank"; qr.rel = "noopener noreferrer";

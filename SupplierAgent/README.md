@@ -93,7 +93,8 @@ Environment options (scope them to the service process):
 `SUPPLIER_COPILOT_STATE` (absolute directory outside the repository; default
 `%LOCALAPPDATA%\AgentConDemo\supplier-copilot`).
 
-`SUPPLIER_STRUCTURED_DATA` is `true` by default (strict `true`/`false`).
+`SUPPLIER_STRUCTURED_DATA` is `false` by default (strict `true`/`false`).
+Set it to `true` to enable structured inputs and schema advertisement at startup.
 The buyer dashboard's supplier checkbox can change it live. Configure matching
 process-scoped `SUPPLIER_DEMO_CONTROL_TOKEN` and `Buyer__SupplierControlToken`
 random base64url tokens (32-256 characters). Without a token the configuration
