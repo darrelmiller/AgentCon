@@ -29,6 +29,42 @@ public sealed class ExchangeStore(BuyerOptions options)
     private long _sequence;
     private long _generation;
     private int _dropped;
+    public AgentLlmMetrics BuyerLlm { get; } = new();
+    internal SemaphoreSlim DashboardGate { get; } = new(1, 1);
+    private bool _llmCleared;
+    private readonly HashSet<string> _supplierResetPending = [];
+    private readonly Dictionary<string, (AgentLlmTotals Last, AgentLlmTotals Total)> _supplierLlm = [];
+
+    public AgentLlmTotals SupplierLlm(string identifier, AgentLlmTotals sample)
+    {
+        lock (_gate)
+        {
+            if (!_supplierLlm.TryGetValue(identifier, out var previous) || _supplierResetPending.Remove(identifier))
+            {
+                var initial = _llmCleared ? sample with { Calls = 0, ResponseTimeMs = 0, TimedCalls = 0 } : sample;
+                _supplierLlm[identifier] = (sample, initial);
+                return initial;
+            }
+            var sameInstance = previous.Last.InstanceId == sample.InstanceId;
+            if (sameInstance)
+                sample = sample with
+                {
+                    Calls = Math.Max(sample.Calls, previous.Last.Calls),
+                    ResponseTimeMs = Math.Max(sample.ResponseTimeMs, previous.Last.ResponseTimeMs),
+                    TimedCalls = Math.Max(sample.TimedCalls, previous.Last.TimedCalls)
+                };
+            var total = sample with
+            {
+                Calls = previous.Total.Calls + Math.Max(0, sample.Calls - (sameInstance ? previous.Last.Calls : 0)),
+                ResponseTimeMs = previous.Total.ResponseTimeMs + Math.Max(0,
+                    sample.ResponseTimeMs - (sameInstance ? previous.Last.ResponseTimeMs : 0)),
+                TimedCalls = previous.Total.TimedCalls + Math.Max(0, sample.TimedCalls - (sameInstance ? previous.Last.TimedCalls : 0)),
+                Complete = previous.Total.Complete && sample.Complete
+            };
+            _supplierLlm[identifier] = (sample, total);
+            return total;
+        }
+    }
 
     public bool Enabled => options.ExchangeCaptureEnabled;
 
@@ -113,7 +149,7 @@ public sealed class ExchangeStore(BuyerOptions options)
         };
     }
 
-    public void Clear()
+    public void Clear(IReadOnlySet<string>? refreshedSuppliers = null)
     {
         lock (_gate)
         {
@@ -121,6 +157,17 @@ public sealed class ExchangeStore(BuyerOptions options)
             _exchanges.Clear();
             _tasks.Clear();
             _dropped = 0;
+            BuyerLlm.Clear();
+            _llmCleared = true;
+            foreach (var (identifier, counters) in _supplierLlm.ToArray())
+            {
+                _supplierLlm[identifier] = (counters.Last, counters.Total with
+                {
+                    Calls = 0, ResponseTimeMs = 0, TimedCalls = 0, Complete = true
+                });
+                if (refreshedSuppliers is not null && !refreshedSuppliers.Contains(identifier))
+                    _supplierResetPending.Add(identifier);
+            }
         }
     }
 

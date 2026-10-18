@@ -29,6 +29,7 @@ class Element {
 
 async function dashboard() {
   let copied;
+  let intercept;
   const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => [match[1], new Element()]));
   const document = {
     body: new Element(), listeners: {},
@@ -44,9 +45,10 @@ async function dashboard() {
     artifacts: [{ name: "quote", parts: [{ data: { quoteId: "q" }, mediaType: "application/vnd.test.quote+json" }] }]
   } } });
   const state = {
-    capturedAt: "2026-10-11T18:00:00Z", buyer: { origin: "http://localhost:5100", status: "HTTP ready", nativeStructuredSupport: true },
+    capturedAt: "2026-10-11T18:00:00Z", buyer: { origin: "http://localhost:5100", status: "HTTP ready", nativeStructuredSupport: true,
+      llm: { calls: 3, responseTimeMs: 1250, timedCalls: 3, complete: true } },
     sellers: [{ origin: "http://localhost:6000", identifier: "urn:wine", name: "Wine supplier", status: "HTTP ready",
-      structuredDataParts: true, controlsEnabled: true }],
+      structuredDataParts: true, controlsEnabled: true, llm: { calls: 0, responseTimeMs: 0, timedCalls: 0, complete: true } }],
     warnings: [],
     capture: { generation: 1, maxExchanges: 64, maxBodyBytes: 32768, droppedExchanges: 2,
       tasks: [{ agent: "seller", endpoint: "http://localhost:6000/a2a", id: "full-supplier-task-id",
@@ -62,12 +64,13 @@ async function dashboard() {
   vm.runInNewContext(script, {
     document, URLSearchParams, AbortController, location: { origin: "http://localhost:5100" },
     navigator: { clipboard: { writeText: async value => { copied = value; } } },
-    fetch: async url => ({ ok: true, json: async () => url === "/demo/catalog" ?
+    fetch: async url => await intercept?.(url) ?? ({ ok: true, json: async () => url === "/demo/catalog" ?
       { specVersion: "1.0", entries: [{ identifier: "urn:test:buyer" }] } : state }),
     window: { setTimeout: handler => { refresh = handler; } }, setTimeout: () => {}
   });
   await new Promise(resolve => setImmediate(resolve));
-  return { elements, document, state, clipboard: () => copied, refresh: async () => { await refresh(); } };
+  return { elements, document, state, clipboard: () => copied, refresh: async () => { await refresh(); },
+    intercept: handler => { intercept = handler; } };
 }
 
 function text(element) {
@@ -82,8 +85,9 @@ test("minimal dashboard preserves states, counts, artifacts, task details and in
   assert.equal(elements.get("buyer-native").checked, true);
   assert.equal(elements.get("seller-structures").disabled, false);
   const conversation = elements.get("conversation");
-  assert.match(text(conversation), /LLM calls: 3/);
-  assert.match(text(conversation), /LLM calls: 0/);
+  assert.doesNotMatch(text(conversation), /LLM calls:/);
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 3.*1.25 s/);
+  assert.match(text(elements.get("seller-llm")), /LLM calls: 0.*0.00 s/);
   assert.match(text(conversation), /1 artifact/);
   assert.match(conversation.children[0].title, /SendMessage.*HTTP 200/);
   const task = elements.get("seller-tasks").children[0];
@@ -118,9 +122,25 @@ test("tips are focus-accessible and dismissible; failures remain visible", async
   } } });
   state.sellers[0].problem = "Health endpoint unreachable.";
   await refresh();
-  assert.match(text(elements.get("conversation")), /incomplete/);
+  state.sellers[0].llm = { calls: 2, responseTimeMs: 500, timedCalls: 1, complete: false };
+  await refresh();
+  assert.match(text(elements.get("seller-llm")), /2 \(incomplete\).*0.50 s \(partial\)/);
   assert.match(text(elements.get("conversation")), /TRUNCATED/);
   assert.match(elements.get("seller-status").textContent, /Health endpoint unreachable/);
+});
+
+test("agent counters reset with Clear and unavailable metrics are not presented as zero", async () => {
+  const { elements, state, refresh } = await dashboard();
+  state.buyer.llm = { calls: 0, responseTimeMs: 0, timedCalls: 0, complete: true };
+  state.capture.generation++;
+  await elements.get("clear").listeners.click();
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 0.*0.00 s/);
+  state.sellers[0].llm = null;
+  await refresh();
+  assert.match(text(elements.get("seller-llm")), /LLM calls: not reported.*time: not reported/);
+  state.buyer.llm = { calls: 1, responseTimeMs: 0, timedCalls: 0 };
+  await refresh();
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 1.*time: not reported/);
 });
 
 test("agent logos are inline theme-aware wine glass and wine crate vectors", () => {
@@ -130,6 +150,30 @@ test("agent logos are inline theme-aware wine glass and wine crate vectors", () 
   assert.match(html, /aria-hidden="true">\s*<svg viewBox="0 0 32 32" focusable="false"/);
   assert.ok(!html.includes('aria-hidden="true">B</span>'));
   assert.ok(!html.includes('aria-hidden="true">S</span>'));
+});
+
+test("changing the selected supplier displays that agent's totals", async () => {
+  const { elements, state, refresh } = await dashboard();
+  state.sellers.push({ ...state.sellers[0], origin: "http://localhost:6100", identifier: "urn:second",
+    llm: { calls: 8, responseTimeMs: 3200, timedCalls: 8, complete: true } });
+  await refresh();
+  elements.get("seller-select").value = "http://localhost:6100";
+  elements.get("seller-select").listeners.change();
+  assert.match(text(elements.get("seller-llm")), /LLM calls: 8.*3.20 s/);
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 3.*1.25 s/);
+});
+
+test("a poll started before Clear cannot restore old agent totals afterward", async () => {
+  const { elements, state, refresh, intercept } = await dashboard();
+  const old = structuredClone(state);
+  let finish;
+  intercept(url => url === "/demo/state" ? new Promise(resolve => { finish = resolve; }) : undefined);
+  const pending = refresh();
+  await elements.get("clear").listeners.click();
+  finish({ ok: true, json: async () => old });
+  await pending;
+  assert.match(text(elements.get("buyer-llm")), /LLM calls: 0.*0.00 s/);
+  assert.match(text(elements.get("seller-llm")), /LLM calls: 0.*0.00 s/);
 });
 
 test("right-aligned header AI Catalog button opens current JSON in a closable popup", async () => {

@@ -744,6 +744,13 @@ async fn invalid_structured_input_never_falls_back_to_inference() {
         .await
         .unwrap();
     assert_eq!(forbidden.status(), 403);
+    let health: Value = reqwest::get(format!("{}/health", server.url))
+        .await.unwrap().json().await.unwrap();
+    assert!(health["llm"]["instanceId"].as_str().is_some_and(|id| !id.is_empty()));
+    assert!(health["llm"]["calls"].is_u64());
+    assert!(health["llm"]["responseTimeMs"].as_f64().is_some_and(|ms| ms >= 0.0));
+    assert!(health["llm"]["timedCalls"].is_u64());
+    assert!(health["llm"]["complete"].is_boolean());
     assert_eq!(
         server
             .supplier

@@ -2,15 +2,86 @@ use crate::domain::{Inventory, Request};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Mutex;
+
+struct LlmTotals {
+    calls: u64,
+    response_time_ms: f64,
+    timed_calls: u64,
+    complete: bool,
+}
+
+impl LlmTotals {
+    fn duration(&mut self, milliseconds: f64) {
+        if milliseconds.is_finite() && milliseconds >= 0.0 {
+            self.response_time_ms += milliseconds;
+            self.timed_calls += 1;
+        }
+    }
+
+    fn snapshot(&self, instance: &str) -> serde_json::Value {
+        json!({
+            "instanceId": instance, "calls": self.calls,
+            "responseTimeMs": self.response_time_ms, "timedCalls": self.timed_calls,
+            "complete": self.complete
+        })
+    }
+}
+
+static LLM_TOTALS: Mutex<LlmTotals> = Mutex::new(LlmTotals {
+    calls: 0,
+    response_time_ms: 0.0,
+    timed_calls: 0,
+    complete: true,
+});
+static LLM_INSTANCE: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+
+pub fn llm_snapshot() -> serde_json::Value {
+    let totals = LLM_TOTALS.lock().expect("LLM metrics lock poisoned");
+    totals.snapshot(&LLM_INSTANCE)
+}
+
+pub(crate) fn record_duration(milliseconds: f64) {
+    LLM_TOTALS.lock().expect("LLM metrics lock poisoned").duration(milliseconds);
+}
+
+#[cfg(feature = "copilot")]
+pub(crate) fn incomplete_metrics() {
+    LLM_TOTALS.lock().expect("LLM metrics lock poisoned").complete = false;
+}
 
 tokio::task_local! {
     pub static MESSAGE_LLM_CALLS: std::sync::atomic::AtomicU64;
     pub static MESSAGE_LLM_COMPLETE: std::sync::atomic::AtomicBool;
 }
 
-/// Count one model call for the current A2A message (reported as `agentcon.llmCalls`).
+/// Count an actual model call for the agent and legacy per-message metadata.
 pub(crate) fn count_call() {
+    LLM_TOTALS.lock().expect("LLM metrics lock poisoned").calls += 1;
     let _ = MESSAGE_LLM_CALLS.try_with(|calls| calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn snapshots_accumulate_model_time_without_consuming_or_inventing_samples() {
+        let mut totals = LlmTotals { calls: 3, response_time_ms: 0.0, timed_calls: 0, complete: true };
+        totals.duration(1200.5);
+        totals.duration(300.25);
+        totals.duration(f64::NAN);
+        totals.duration(-1.0);
+        let snapshot = totals.snapshot("agent");
+        assert_eq!(snapshot["instanceId"], "agent");
+        assert_eq!(snapshot["calls"], 3);
+        assert_eq!(snapshot["timedCalls"], 2);
+        assert_eq!(snapshot["responseTimeMs"], 1500.75);
+        assert_eq!(snapshot, totals.snapshot("agent"));
+        totals.complete = false;
+        assert_eq!(totals.snapshot("agent")["complete"], false);
+    }
 }
 
 #[cfg(feature = "copilot")]

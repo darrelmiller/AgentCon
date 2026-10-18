@@ -71,17 +71,26 @@ context and observed time. Live errors, incomplete counts and truncation remain
 visible rather than being hidden in tips. Capture is still explicitly opt-in
 and remains enabled while the display is paused.
 
-Each conversation bubble shows **LLM calls** from the original A2A message's
-`metadata["agentcon.llmCalls"]`. The count comes from actual Copilot SDK
-`assistant.turn_start` and retry events, not estimated tokens or calls to the
-harness. For buyer sends it counts calls since the previous send in that buyer
-turn (including catalog/selection reasoning). For seller replies it counts calls
-for that request; deterministic structured processing reports zero. Re-reading
-a task preserves the original message's count, not the cost of the GET. A missing
-counter is shown as **not reported**, never assumed to be zero. A lagged seller
-SDK event stream sets `agentcon.llmCallsComplete:false` and shows an incomplete
-count warning rather than claiming an exact count. These are
-per-message counts, not a claim that the buyer or transaction used no inference.
+The buyer and selected seller panels show cumulative **LLM calls** and
+**LLM response time**, not per-message badges. Counts come from actual Copilot
+SDK `assistant.turn_start` and retry events, or actual OpenAI-compatible model
+requests; deterministic structured processing does not increment them. Time is
+the sum of Copilot SDK usage-event durations (milliseconds), or elapsed direct
+model HTTP request time, excluding tool execution and wallet approval. Concurrent
+calls add their durations, so this is not transaction wall-clock time.
+Pending calls and missing usage events can leave timing **partial** or **not
+reported**; lagged supplier event streams also mark counts **incomplete**.
+Legacy per-message metadata remains available in the wire inspector.
+
+**Clear** resets both agent totals alongside captured messages and observed task
+listings, without canceling tasks or resetting remote supplier processes. Supplier
+`/health` totals use per-agent baselines; repeated polling and capture eviction
+do not inflate or lose counts, and supplier restarts are distinguished by instance
+ID. Clear refreshes reachable suppliers before resetting their baselines. An
+unreachable or newly discovered supplier is baselined at its next successful
+observation instead of attributing old calls to the new interval. Durations are
+added when reported; a call still running across Clear can report its duration
+afterward, leaving timing partial relative to the reset call count.
 
 The handler observes the actual outbound A2A SDK HTTP content, not inferred
 tool arguments. JSON and SSE pass through unchanged; SSE content appears as

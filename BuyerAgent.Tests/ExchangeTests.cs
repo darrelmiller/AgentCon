@@ -364,6 +364,42 @@ public sealed class ExchangeTests
         Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/demo/catalog")).StatusCode);
     }
 
+    [Fact]
+    public async Task DashboardReadsAgentTotalsAndClearResetsBothAgentsWithoutResettingSuppliers()
+    {
+        using var files = new TempCatalogs();
+        using var network = new FakeNetwork().Raw("http://localhost:6000/health",
+            """{"structuredDataParts":true,"llm":{"instanceId":"supplier","calls":3,"responseTimeMs":1200,"timedCalls":3,"complete":true}}""");
+        var catalog = files.Write("catalog.json", TempCatalogs.Agent("urn:test:seller", "http://localhost:6000/.well-known/agent-card.json"));
+        await using var app = BuyerApplication.Build(["--Buyer:ExchangeCaptureEnabled=true", $"--Buyer:CatalogUrl={catalog}"], builder =>
+        {
+            builder.WebHost.UseTestServer();
+            builder.Services.AddHttpClient<ExchangeDashboard>().ConfigurePrimaryHttpMessageHandler(() => network);
+        });
+        await app.StartAsync();
+        var store = app.Services.GetRequiredService<ExchangeStore>();
+        store.BuyerLlm.Call();
+        store.BuyerLlm.Duration(250);
+        using var http = app.GetTestClient();
+        http.BaseAddress = new("http://localhost:5100");
+        var state = await http.GetFromJsonAsync<JsonElement>("/demo/state");
+        Assert.Equal(1, state.GetProperty("buyer").GetProperty("llm").GetProperty("calls").GetInt64());
+        Assert.Equal(250, state.GetProperty("buyer").GetProperty("llm").GetProperty("responseTimeMs").GetDouble());
+        Assert.Equal(3, state.GetProperty("sellers")[0].GetProperty("llm").GetProperty("calls").GetInt64());
+        http.DefaultRequestHeaders.Add("Origin", "http://localhost:5100");
+        Assert.Equal(HttpStatusCode.NoContent, (await http.PostAsync("/demo/clear", null)).StatusCode);
+        state = await http.GetFromJsonAsync<JsonElement>("/demo/state");
+        Assert.Equal(0, state.GetProperty("buyer").GetProperty("llm").GetProperty("calls").GetInt64());
+        Assert.Equal(0, state.GetProperty("sellers")[0].GetProperty("llm").GetProperty("calls").GetInt64());
+        network.Raw("http://localhost:6000/health",
+            """{"llm":{"instanceId":"supplier","calls":5,"responseTimeMs":2200,"timedCalls":5,"complete":true}}""");
+        state = await http.GetFromJsonAsync<JsonElement>("/demo/state");
+        var seller = state.GetProperty("sellers")[0].GetProperty("llm");
+        Assert.Equal(2, seller.GetProperty("calls").GetInt64());
+        Assert.Equal(1000, seller.GetProperty("responseTimeMs").GetDouble());
+        Assert.All(network.Requests, request => Assert.Null(request.Method));
+    }
+
     private sealed class Network(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);

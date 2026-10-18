@@ -57,10 +57,10 @@ public sealed class ExchangeDashboard(
             context.Response.Headers.CacheControl = "no-store";
             return await dashboard.CardAsync(identifier, context.RequestAborted);
         });
-        app.MapPost("/demo/clear", (HttpContext context, ExchangeStore exchanges) =>
+        app.MapPost("/demo/clear", async (HttpContext context, ExchangeDashboard dashboard) =>
         {
             context.Response.Headers.CacheControl = "no-store";
-            exchanges.Clear();
+            await dashboard.StateAsync(context.RequestAborted, clear: true);
             return Results.NoContent();
         });
         app.MapPost("/demo/native", (HttpContext context, NativeChange change, BuyerOptions options,
@@ -166,8 +166,16 @@ public sealed class ExchangeDashboard(
         }
     }
 
-    private async Task<object> StateAsync(CancellationToken cancellationToken)
+    private async Task<object> StateAsync(CancellationToken cancellationToken, bool clear = false)
     {
+        await store.DashboardGate.WaitAsync(cancellationToken);
+        try { return await ReadStateAsync(cancellationToken, clear); }
+        finally { store.DashboardGate.Release(); }
+    }
+
+    private async Task<object> ReadStateAsync(CancellationToken cancellationToken, bool clear)
+    {
+        var refreshedSuppliers = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>();
         object[] sellers = [];
         string? catalogError = null;
         IReadOnlyList<string> warnings = [];
@@ -183,6 +191,7 @@ public sealed class ExchangeDashboard(
                 bool? structured = null;
                 string? problem = null;
                 string? slimUrl = null;
+                AgentLlmTotals? llm = null;
                 try
                 {
                     using var response = await http.GetAsync(health, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -190,6 +199,19 @@ public sealed class ExchangeDashboard(
                     {
                         status = "HTTP ready";
                         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                        if (body.RootElement.TryGetProperty("llm", out var counters) &&
+                            counters.ValueKind == JsonValueKind.Object)
+                        {
+                            var sample = counters.Deserialize<AgentLlmTotals>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                            if (sample is not null && !string.IsNullOrWhiteSpace(sample.InstanceId) &&
+                                sample.Calls >= 0 && sample.TimedCalls >= 0 &&
+                                double.IsFinite(sample.ResponseTimeMs) && sample.ResponseTimeMs >= 0)
+                            {
+                                llm = store.SupplierLlm(entry.Identifier, sample);
+                                refreshedSuppliers.TryAdd(entry.Identifier, 0);
+                            }
+                            else throw new JsonException("Invalid supplier LLM counters.");
+                        }
                         if (body.RootElement.TryGetProperty("structuredDataParts", out var enabled) &&
                             enabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
                             structured = enabled.GetBoolean();
@@ -209,7 +231,7 @@ public sealed class ExchangeDashboard(
                 {
                     identifier = entry.Identifier, name = entry.DisplayName ?? entry.Identifier,
                     origin = entry.CardUrl.GetLeftPart(UriPartial.Authority),
-                    cardUrl = entry.CardUrl.AbsoluteUri, slimUrl, status, problem, structuredDataParts = structured,
+                    cardUrl = entry.CardUrl.AbsoluteUri, slimUrl, status, problem, llm, structuredDataParts = structured,
                     controlsEnabled = entry.CardUrl.IsLoopback && !string.IsNullOrWhiteSpace(options.SupplierControlToken) && structured is not null
                 };
             }));
@@ -219,13 +241,15 @@ public sealed class ExchangeDashboard(
             logger.LogWarning("Exchange dashboard catalog unavailable: {ErrorType}", exception.GetType().Name);
             catalogError = "Cannot read the configured catalog. Check the catalog and buyer console.";
         }
+        if (clear) store.Clear(refreshedSuppliers.Keys.ToHashSet());
         return new
         {
             capturedAt = DateTimeOffset.UtcNow,
             buyer = new { name = "Buyer Agent", origin = options.ListenUrl.TrimEnd('/'), status = "HTTP ready",
                 // slimUrl once serving on SLIM; slimConfigured without slimUrl means the node is unreachable.
                 slimUrl = slim?.ServingUrl, slimConfigured = slim?.Configured == true,
-                communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport },
+                communicationMode = options.CommunicationMode.ToString(), nativeStructuredSupport = options.NativeStructuredSupport,
+                llm = store.BuyerLlm.Snapshot() },
             sellers, catalogError, warnings, capture = store.Snapshot()
         };
     }

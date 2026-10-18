@@ -72,9 +72,16 @@ and structured requests need **no Copilot login or inference**.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `http://localhost:6000/health` | Readiness, structured requests and inference **attempts** |
+| `http://localhost:6000/health` | Readiness, structured requests, inference **attempts** and cumulative agent LLM metrics |
 | `http://localhost:6000/.well-known/agent-card.json` | SDK-served live A2A 1.0 Agent Card |
 | `http://localhost:6000/a2a` | SDK JSON-RPC, including task get/list/cancel and SSE |
+
+Health's `llm` object reports a process `instanceId`, actual model `calls`,
+`responseTimeMs`, `timedCalls` and event-stream `complete` status. Copilot time is
+the sum of SDK usage durations; the OpenAI-compatible client measures the model
+HTTP wait, including failed responses. Missing usage samples are not filled with
+zero. These process totals are independent of message capture and transport;
+the buyer dashboard applies per-agent Clear baselines without resetting suppliers.
 
 Only `127.0.0.1` is bound. Startup fails if the port is occupied; do not kill an
 existing process. Browser-origin/fetch requests are rejected. This is an

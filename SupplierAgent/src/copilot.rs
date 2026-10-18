@@ -14,9 +14,10 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::domain::Inventory;
-use crate::inference::{instructions, prompt, Intent, Interpreter, MESSAGE_LLM_CALLS, MESSAGE_LLM_COMPLETE};
+use crate::inference::{instructions, prompt, Intent, Interpreter, MESSAGE_LLM_COMPLETE};
 
 fn incomplete_calls() {
+    crate::inference::incomplete_metrics();
     let _ = MESSAGE_LLM_COMPLETE
         .try_with(|complete| complete.store(false, std::sync::atomic::Ordering::Relaxed));
     tracing::warn!(
@@ -29,17 +30,22 @@ fn record_call(value: &serde_json::Value) {
         value.get("type").and_then(|v| v.as_str()),
         Some("assistant.turn_start" | "assistant.turn_retry")
     ) {
-        let _ = MESSAGE_LLM_CALLS
-            .try_with(|calls| calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        crate::inference::count_call();
+    }
+    if value.get("type").and_then(|v| v.as_str()) == Some("assistant.usage") {
+        if let Some(milliseconds) = value.pointer("/data/duration").and_then(|v| v.as_f64()) {
+            crate::inference::record_duration(milliseconds);
+        }
     }
 }
 
 #[cfg(test)]
 mod counter_tests {
+    use crate::inference::MESSAGE_LLM_CALLS;
     #[tokio::test]
     async fn counts_actual_sdk_turns_and_retries_not_usage_or_payload_events() {
         use std::sync::atomic::{AtomicU64, Ordering};
-        super::MESSAGE_LLM_CALLS
+        MESSAGE_LLM_CALLS
             .scope(AtomicU64::new(0), async {
                 for event in [
                     "assistant.turn_start",
@@ -50,15 +56,15 @@ mod counter_tests {
                     super::record_call(&serde_json::json!({"type":event}));
                 }
                 assert_eq!(
-                    super::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
+                    MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
                     2
                 );
             })
             .await;
-        super::MESSAGE_LLM_CALLS
+        MESSAGE_LLM_CALLS
             .scope(AtomicU64::new(0), async {
                 assert_eq!(
-                    super::MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
+                    MESSAGE_LLM_CALLS.with(|calls| calls.load(Ordering::Relaxed)),
                     0
                 );
             })

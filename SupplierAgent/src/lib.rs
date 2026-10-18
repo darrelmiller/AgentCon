@@ -861,6 +861,7 @@ pub fn app_with_handler(
                     "status": "ok", "demoOnly": true,
                     "structuredRequests": metrics.structured_requests.load(Ordering::Relaxed),
                     "inferenceAttempts": metrics.inference_attempts.load(Ordering::Relaxed),
+                    "llm": inference::llm_snapshot(),
                     "structuredDataParts": supplier.structured.load(Ordering::Relaxed),
                     "oid4vp": if verifier_configured { "presentation-verifier-configured" } else { "verifier-not-configured" },
                     "slim": supplier.advertised_slim_url().unwrap_or(if supplier.slim_url.is_some() { "unavailable" } else { "disabled" })
