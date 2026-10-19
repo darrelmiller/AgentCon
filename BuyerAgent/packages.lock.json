@@ -22,22 +22,22 @@
       },
       "Agntcy.Slim.SlimRpc": {
         "type": "Direct",
-        "requested": "[3.3.5, )",
-        "resolved": "3.3.5",
-        "contentHash": "gkIjwCmSQdnBGWu3Kdjbsb9RROa7Dx7UG8tIce8fFGxBhUhnv+WYU9Fd77ro8f7dTtHcLvi/zPZXa3U2CxRCrA==",
+        "requested": "[3.3.6, )",
+        "resolved": "3.3.6",
+        "contentHash": "WARcx8CLTrk2ZHLKQP0CkxCRCDtgN4LwOzwT+nQ9atCWGX7R3RvkGlHRKhVWVEIqRqxVKO9lSNbDoc+mQDJJBA==",
         "dependencies": {
-          "Agntcy.Slim": "3.3.5",
+          "Agntcy.Slim": "3.3.6",
           "Google.Protobuf": "3.28.0"
         }
       },
       "Agntcy.SlimA2A": {
         "type": "Direct",
-        "requested": "[0.6.1, )",
-        "resolved": "0.6.1",
-        "contentHash": "ysFxK3Xks0RYljtPLVk4gOkR9+4iU3Cnjbxxyn6ehrInAUb5M87d1mhpUMLuNMxU7A0RT/2U/0lVVWvy+pKaGg==",
+        "requested": "[0.6.2, )",
+        "resolved": "0.6.2",
+        "contentHash": "TFW6NTIHkoRcok+AoIXN4EPSMUW1scuBOT1Yz5tg+hqiMCcZjSEFsJvz4k2naiTilTERvuyO/I3YqYKxkw68Aw==",
         "dependencies": {
           "A2A": "1.0.0-preview3",
-          "Agntcy.Slim.SlimRpc": "3.3.4",
+          "Agntcy.Slim.SlimRpc": "3.3.6",
           "Google.Api.CommonProtos": "2.15.0",
           "Google.Protobuf": "3.28.0"
         }
@@ -98,8 +98,8 @@
       },
       "Agntcy.Slim": {
         "type": "Transitive",
-        "resolved": "3.3.5",
-        "contentHash": "4DlCeJk/2Gr1To3GIoTCg9mZnwQ5onY5RDBNYfnhqgFTUmwJL6gQxvSVedd+ncqF99FMK33Zmvmy4WldPNQcEA=="
+        "resolved": "3.3.6",
+        "contentHash": "uVSjZpbRI8UhVwiCOwULhXlnwXdztiaxzu55hqlV/+RSSFHCAo5Xcmk5M+zXUJbU7JuIC27LlEDA/Eczv9Dl5A=="
       },
       "Google.Api.CommonProtos": {
         "type": "Transitive",
