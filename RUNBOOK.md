@@ -196,7 +196,8 @@ a2a send -e slim://agntcy/agentcon/buyer --transport slimrpc --timeout 150s --co
 printf '\n\033[1;34m== SLIM · Stage S8 · Buy the Barolo: the seller asks for an over-21 wallet proof ==\033[0m\n'
 export A2A_SLIMRPC_PLUGIN_CONFIG="$HOME/Library/Application Support/AgentConDemo/slim/slim-client.json"
 a2a send -e slim://agntcy/agentcon/buyer --transport slimrpc --timeout 150s --context-id slim-dinner \
-  'Buy the quoted wine as a simulated demo order only.'
+  'Buy the quoted wine as a simulated demo order only.' |
+  tee /dev/stderr | awk '/^Task:/{print $2; exit}' > "${TMPDIR:-/tmp}/agentcon-s-purchase-task"
 ```
 
 The reply is `Status: auth-required`, with a `Task:` ID and a link
@@ -209,19 +210,38 @@ The reply is `Status: auth-required`, with a `Task:` ID and a link
 
 Scan it with the wallet, choose the AgentCon over_21 credential and approve, within about 10 minutes.
 
-### Stage S9 · SLIM · Check the order
-
-With the `Task:` ID from Stage S8 in place of `<task-id>`:
+### Stage S9 · SLIM · Age check, then the purchase
 
 ```bash
-printf '\n\033[1;34m== SLIM · Stage S9 · Check the order ==\033[0m\n'
+printf '\n\033[1;34m== SLIM · Stage S9 · Age check, then the purchase ==\033[0m\n'
 export A2A_SLIMRPC_PLUGIN_CONFIG="$HOME/Library/Application Support/AgentConDemo/slim/slim-client.json"
-a2a task get -e slim://agntcy/agentcon/buyer --transport slimrpc <task-id>
+buyer=(-e slim://agntcy/agentcon/buyer --transport slimrpc)
+task=$(cat "${TMPDIR:-/tmp}/agentcon-s-purchase-task")
+printf 'purchase task %s: waiting for the wallet approval ' "$task"
+for _ in $(seq 240); do
+  json=$(a2a task get "${buyer[@]}" "$task" -o json </dev/null 2>/dev/null)
+  state=$(jq -r '.task.status.state // empty' <<<"$json")
+  [[ -n "$state" && "$state" != TASK_STATE_AUTH_REQUIRED ]] && break
+  printf .; sleep 3
+done; echo
+jq -r --arg ok $'\033[1;32m✓\033[0m' --arg no $'\033[1;31m✗\033[0m' '
+  .task as $t
+  | ([$t.artifacts[]? | select(.name == "order-receipt") | .parts[0].data][0]) as $r
+  | "  task state:  \($t.status.state // "unknown" | sub("TASK_STATE_"; "") | ascii_downcase)",
+    if $r then
+      (if $r.ageVerification == "verified-demo-over-21" then "\($ok) 1. age check: over 21, proved with the wallet (\($r.ageVerification))"
+       else "\($no) 1. age check: \($r.ageVerification // "missing")" end),
+      "\($ok) 2. purchase:  order \($r.orderId) completed, \($r.currency) \($r.totalMinor / 100 | floor).\($r.totalMinor % 100 + 100 | tostring | .[1:]) for quote \($r.quoteId)",
+      "     \($r.status) demo order: payment \($r.payment), fulfillment \($r.fulfillment)"
+    else
+      "\($no) no order receipt yet: \($t.status.message.parts[0].text // "no status message")"
+    end' <<<"$json"
 ```
 
-While the wallet hasn't approved yet it shows `auth-required`: run it again. After approval it shows
-`Status: completed` and an `order-receipt` artifact with `"ageVerification":"verified-demo-over-21"`,
-`"status":"simulated"` and `"payment":"not-performed"`.
+It polls every 3 seconds while the task is `auth-required` (up to 12 minutes), so it can run right after Stage S8
+while you scan the QR code. When the wallet approves, the seller checks the over-21 proof and only then records the
+order: the output shows `✓ 1. age check` and `✓ 2. purchase` with the order ID and the USD 169.00 total. `✗ no order
+receipt` means the wallet didn't approve in time or the seller refused the proof; the status message says which.
 
 ## The HTTPS run
 
@@ -279,19 +299,44 @@ a2a send -a http://localhost:5100 --timeout 150s --context-id https-dinner \
 ```bash
 printf '\n\033[1;32m== HTTPS · Stage H8 · Buy the Barolo: the seller asks for an over-21 wallet proof ==\033[0m\n'
 a2a send -a http://localhost:5100 --timeout 150s --context-id https-dinner \
-  'Buy the quoted wine as a simulated demo order only.'
+  'Buy the quoted wine as a simulated demo order only.' |
+  tee /dev/stderr | awk '/^Task:/{print $2; exit}' > "${TMPDIR:-/tmp}/agentcon-h-purchase-task"
 ```
 
 Approve as in Stage S8: **Show QR** on the Barolo seller's task, or the presentation link.
 
-### Stage H9 · HTTPS · Check the order
-
-With the `Task:` ID from Stage H8 in place of `<task-id>`:
+### Stage H9 · HTTPS · Age check, then the purchase
 
 ```bash
-printf '\n\033[1;32m== HTTPS · Stage H9 · Check the order ==\033[0m\n'
-a2a task get -a http://localhost:5100 <task-id>
+printf '\n\033[1;32m== HTTPS · Stage H9 · Age check, then the purchase ==\033[0m\n'
+export A2A_SLIMRPC_PLUGIN_CONFIG="$HOME/Library/Application Support/AgentConDemo/slim/slim-client.json"
+buyer=(-a http://localhost:5100)
+task=$(cat "${TMPDIR:-/tmp}/agentcon-h-purchase-task")
+printf 'purchase task %s: waiting for the wallet approval ' "$task"
+for _ in $(seq 240); do
+  json=$(a2a task get "${buyer[@]}" "$task" -o json </dev/null 2>/dev/null)
+  state=$(jq -r '.task.status.state // empty' <<<"$json")
+  [[ -n "$state" && "$state" != TASK_STATE_AUTH_REQUIRED ]] && break
+  printf .; sleep 3
+done; echo
+jq -r --arg ok $'\033[1;32m✓\033[0m' --arg no $'\033[1;31m✗\033[0m' '
+  .task as $t
+  | ([$t.artifacts[]? | select(.name == "order-receipt") | .parts[0].data][0]) as $r
+  | "  task state:  \($t.status.state // "unknown" | sub("TASK_STATE_"; "") | ascii_downcase)",
+    if $r then
+      (if $r.ageVerification == "verified-demo-over-21" then "\($ok) 1. age check: over 21, proved with the wallet (\($r.ageVerification))"
+       else "\($no) 1. age check: \($r.ageVerification // "missing")" end),
+      "\($ok) 2. purchase:  order \($r.orderId) completed, \($r.currency) \($r.totalMinor / 100 | floor).\($r.totalMinor % 100 + 100 | tostring | .[1:]) for quote \($r.quoteId)",
+      "     \($r.status) demo order: payment \($r.payment), fulfillment \($r.fulfillment)"
+    else
+      "\($no) no order receipt yet: \($t.status.message.parts[0].text // "no status message")"
+    end' <<<"$json"
 ```
+
+It polls every 3 seconds while the task is `auth-required` (up to 12 minutes), so it can run right after Stage H8
+while you scan the QR code. When the wallet approves, the seller checks the over-21 proof and only then records the
+order: the output shows `✓ 1. age check` and `✓ 2. purchase` with the order ID and the USD 169.00 total. `✗ no order
+receipt` means the wallet didn't approve in time or the seller refused the proof; the status message says which.
 
 ## Stage 10 · Stop
 
@@ -349,7 +394,7 @@ When asked to run the SLIM or the HTTPS demo:
   account, stop and ask the user to run `slimctl login`.
 - Run Stage S8 or H8 (the purchase) only when the user asked for the full demo. Then post the presentation link, point the
   user to **Show QR** on the Barolo seller's task in the dashboard's Seller Agent panel, and wait for them to approve.
-  Never resend a purchase on your own: a second order could be created. Check the order with Stage S9 or H9 when the user
-  says they approved, or every 30 seconds until it is no longer `auth-required`.
+  Never resend a purchase on your own: a second order could be created. Run Stage S9 or H9 right away: it waits for the
+  approval and prints the age check and the purchase. Report both lines to the user.
 - Keep the same transport for the whole run, and the context IDs as written (use a new suffix only when repeating a
   run in the same buyer session).
