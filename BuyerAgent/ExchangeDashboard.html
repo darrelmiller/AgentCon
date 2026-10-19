@@ -429,7 +429,7 @@ a { color: var(--cp-link); } #seller-select { width: 100%; margin-bottom: 12px; 
     $("inspector-hint").textContent = `Exchange #${entry.id} - ${route} - ${wire} - ${entry.status}${truncated ? " - TRUNCATED (not a complete payload)" : ""}`;
     $("metadata").append(node("code", entry.endpoint), node("span", `HTTP ${entry.httpStatus ?? "pending"}`));
     if (entry.httpMethod) $("metadata").append(node("span", entry.httpMethod));
-    if (entry.inbound) $("metadata").append(node("span",
+    if (entry.inbound && !entry.endpoint.startsWith("slim://")) $("metadata").append(node("span",
       `Content-Type: ${(response ? entry.responseContentType : entry.requestContentType) || "(not set)"}`));
     if (entry.durationMs !== null) $("metadata").append(node("span", `${entry.durationMs.toFixed(1)} ms`));
     if (entry.errorType) $("metadata").append(node("span", entry.errorType, "error"));

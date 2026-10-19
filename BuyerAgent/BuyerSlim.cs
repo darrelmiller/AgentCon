@@ -80,7 +80,8 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
                 IdentityProvider = Identity?.Provider,
                 IdentityVerifier = Identity?.Verifier,
                 ResolveExtendedAgentCard = (_, _) => Task.FromResult(BuyerCard.Create(options.WithMode(options.CommunicationMode), ServingUrl)),
-            }, services.GetRequiredService<IA2ARequestHandler>());
+            }, new CapturingHandler(services.GetRequiredService<IA2ARequestHandler>(), exchanges,
+                new Uri($"slim://{options.SlimName}")));
             Volatile.Write(ref _connection, connection);
             EnableMulticast(connection);
             logger.LogInformation("Buyer SLIMRPC ready at slim://{Name} via {Endpoint}", options.SlimName, endpoint);
@@ -393,7 +394,7 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
             return key;
         }
 
-        private static string Result(string id, object result, Type type) => new JsonObject
+        internal static string Result(string id, object result, Type type) => new JsonObject
         {
             ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = JsonSerializer.SerializeToNode(result, type, Json)
         }.ToJsonString();
@@ -497,6 +498,136 @@ public sealed partial class BuyerSlim(BuyerOptions options, ExchangeStore exchan
             inner.DeleteTaskPushNotificationConfigAsync(request, cancellationToken);
 
         public Task<AgentCard> GetExtendedAgentCardAsync(GetExtendedAgentCardRequest request, CancellationToken cancellationToken = default) =>
+            inner.GetExtendedAgentCardAsync(request, cancellationToken);
+    }
+
+    /// <summary>
+    /// Records the A2A calls user agents make to the buyer over SLIM, like IncomingExchangeCapture does for HTTP, so
+    /// the dashboard shows that leg too ("User Agent → Buyer Agent · SLIM"). Same JSON-RPC/SSE rendering as
+    /// <see cref="CapturingClient"/>; the wire is protobuf over SLIM.
+    /// </summary>
+    private sealed class CapturingHandler(IA2ARequestHandler inner, ExchangeStore store, Uri endpoint) : IA2ARequestHandler
+    {
+        private static readonly JsonSerializerOptions Json = A2AJsonUtilities.DefaultOptions;
+
+        private (string Id, (long, long) Key)? Begin(string method, object request)
+        {
+            if (!store.Enabled) return null;
+            var id = Guid.NewGuid().ToString();
+            var key = store.Begin(endpoint, inbound: true);
+            var (body, truncated) = CapturingClient.Bound(new JsonObject
+            {
+                ["jsonrpc"] = "2.0", ["id"] = id, ["method"] = method,
+                ["params"] = JsonSerializer.SerializeToNode(request, request.GetType(), Json)
+            }.ToJsonString());
+            store.Body(key, false, body, truncated, false);
+            return (id, key);
+        }
+
+        private async Task<T> UnaryAsync<T>(string method, object request, Func<Task<T>> call)
+        {
+            var started = Begin(method, request);
+            var clock = Stopwatch.StartNew();
+            try
+            {
+                var response = await call().ConfigureAwait(false);
+                if (started is var (id, key))
+                {
+                    store.Status(key, "receiving", 200);
+                    var (body, truncated) = CapturingClient.Bound(CapturingClient.Result(id, response!, typeof(T)));
+                    store.Body(key, true, body, truncated, false);
+                    store.Status(key, "complete", durationMs: clock.Elapsed.TotalMilliseconds);
+                }
+                return response;
+            }
+            catch (Exception exception) when (started is not null)
+            {
+                store.Status(started.Value.Key, exception is OperationCanceledException ? "canceled" : "failed",
+                    errorType: exception.GetType().Name, durationMs: clock.Elapsed.TotalMilliseconds);
+                throw;
+            }
+        }
+
+        private async IAsyncEnumerable<StreamResponse> StreamAsync(string method, object request,
+            IAsyncEnumerable<StreamResponse> source, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var started = Begin(method, request);
+            var clock = Stopwatch.StartNew();
+            var frames = new StringBuilder();
+            var count = 0;
+            var finished = false;
+            string? error = null;
+            await using var reader = source.WithCancellation(cancellationToken).GetAsyncEnumerator();
+            try
+            {
+                while (true)
+                {
+                    StreamResponse item;
+                    try
+                    {
+                        if (!await reader.MoveNextAsync()) { finished = true; break; }
+                        item = reader.Current;
+                    }
+                    catch (Exception exception)
+                    {
+                        error = exception is OperationCanceledException ? "canceled" : exception.GetType().Name;
+                        throw;
+                    }
+                    if (started is var (id, key))
+                    {
+                        if (count++ == 0) store.Status(key, "receiving", 200);
+                        frames.Append("id: ").Append(count).Append("\ndata: ")
+                            .Append(CapturingClient.Result(id, item, typeof(StreamResponse))).Append("\n\n");
+                        var (body, truncated) = CapturingClient.Bound(frames.ToString());
+                        store.Body(key, true, body, truncated, true);
+                    }
+                    yield return item;
+                }
+            }
+            finally
+            {
+                if (started is not null)
+                    store.Status(started.Value.Key, finished ? "complete" : error == "canceled" ? "canceled"
+                        : error is not null ? "response failed" : "response not fully consumed",
+                        errorType: error is null or "canceled" ? null : error, durationMs: clock.Elapsed.TotalMilliseconds);
+            }
+        }
+
+        public Task<SendMessageResponse> SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken) =>
+            UnaryAsync("SendMessage", request, () => inner.SendMessageAsync(request, cancellationToken));
+
+        public IAsyncEnumerable<StreamResponse> SendStreamingMessageAsync(SendMessageRequest request, CancellationToken cancellationToken) =>
+            StreamAsync("SendStreamingMessage", request, inner.SendStreamingMessageAsync(request, cancellationToken), cancellationToken);
+
+        public Task<AgentTask> GetTaskAsync(GetTaskRequest request, CancellationToken cancellationToken) =>
+            UnaryAsync("GetTask", request, () => inner.GetTaskAsync(request, cancellationToken));
+
+        public Task<ListTasksResponse> ListTasksAsync(ListTasksRequest request, CancellationToken cancellationToken) =>
+            UnaryAsync("ListTasks", request, () => inner.ListTasksAsync(request, cancellationToken));
+
+        public Task<AgentTask> CancelTaskAsync(CancelTaskRequest request, CancellationToken cancellationToken) =>
+            UnaryAsync("CancelTask", request, () => inner.CancelTaskAsync(request, cancellationToken));
+
+        public IAsyncEnumerable<StreamResponse> SubscribeToTaskAsync(SubscribeToTaskRequest request, CancellationToken cancellationToken) =>
+            StreamAsync("SubscribeToTask", request, inner.SubscribeToTaskAsync(request, cancellationToken), cancellationToken);
+
+        public Task<TaskPushNotificationConfig> CreateTaskPushNotificationConfigAsync(
+            TaskPushNotificationConfig config, CancellationToken cancellationToken) =>
+            inner.CreateTaskPushNotificationConfigAsync(config, cancellationToken);
+
+        public Task<TaskPushNotificationConfig> GetTaskPushNotificationConfigAsync(
+            GetTaskPushNotificationConfigRequest request, CancellationToken cancellationToken) =>
+            inner.GetTaskPushNotificationConfigAsync(request, cancellationToken);
+
+        public Task<ListTaskPushNotificationConfigsResponse> ListTaskPushNotificationConfigsAsync(
+            ListTaskPushNotificationConfigsRequest request, CancellationToken cancellationToken) =>
+            inner.ListTaskPushNotificationConfigsAsync(request, cancellationToken);
+
+        public Task DeleteTaskPushNotificationConfigAsync(
+            DeleteTaskPushNotificationConfigRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteTaskPushNotificationConfigAsync(request, cancellationToken);
+
+        public Task<AgentCard> GetExtendedAgentCardAsync(GetExtendedAgentCardRequest request, CancellationToken cancellationToken) =>
             inner.GetExtendedAgentCardAsync(request, cancellationToken);
     }
 }
