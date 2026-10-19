@@ -47,32 +47,65 @@ account starts the buyer without SLIM and gets HTTP 403 from the HTTPS gateway.
 
 ## Stage 1 · Find and verify the sellers in the Directory
 
-The sellers are published in the AGNTCY Directory (`ads.outshift.io`) as OASF records, signed with the AgentCon cosign
-key, whose public key is served next to the cards at <https://agents.slim.outshift.io/agentcon/cosign.pub>. This stage
-lists the records, verifies each signature against that key, pulls the A2A card out of each record and checks that it
-matches the card the seller serves.
+The sellers are published in the AGNTCY Directory (`ads.outshift.io`) as OASF records. This stage shows, for each
+seller, why it can be trusted:
+
+- **Record:** its CID (the content hash, so any change to the record changes it), name, version and creation time.
+- **Signature:** the record is signed with the AgentCon cosign key. `dirctl` verifies the signature, and the stage
+  checks that the signer's key is the public key AgentCon publishes next to the cards
+  (<https://agents.slim.outshift.io/agentcon/cosign.pub>), by comparing their SHA-256 fingerprints.
+- **Identity:** each seller has a did:web identity, `did:web:agents.slim.outshift.io:agentcon:<seller>`, the identity
+  it uses on SLIM. The stage resolves its DID document (`https://agents.slim.outshift.io/agentcon/<seller>/did.json`)
+  and checks that its key is the key the SLIM peers trust for that DID, in the published JWKS
+  (`https://agents.slim.outshift.io/.well-known/jwks.json`, `kid` = the DID).
+- **Directory identity claim:** whether a signed claim binds the record to that DID (`dirctl identity status`).
+- **A2A card:** the card pulled from the record, its interfaces, and whether it matches the card the seller serves.
 
 ```bash
 printf '\n\033[1;33m== Stage 1 · Find and verify the sellers in the Directory ==\033[0m\n'
 dirctl() { npx -y --package=@agntcy/dir-mcp dirctl "$@" </dev/null; }
-dirctl search --name 'https://agents.slim.outshift.io/agentcon/*'
+fingerprint() { openssl pkey -pubin -outform DER 2>/dev/null | shasum -a 256 | cut -c1-16; }
+base=https://agents.slim.outshift.io/agentcon
+published=$(curl -s "$base/cosign.pub" | fingerprint)
+echo "AgentCon signing key (published at $base/cosign.pub): sha256 $published"
+dirctl search --name "$base/*"
 for seller in barolo-supplier sardinian-supplier french-supplier; do
-  name="https://agents.slim.outshift.io/agentcon/$seller"
+  name="$base/$seller"; did="did:web:agents.slim.outshift.io:agentcon:$seller"
   cid=$(dirctl search --name "$name" --output raw)
-  echo "-- $seller ($cid)"
-  dirctl verify "$cid" --key https://agents.slim.outshift.io/agentcon/cosign.pub | grep -E "signature is|Reason"
+  printf '\n\033[1m-- %s\033[0m\n' "$seller"
+  echo "   record:    $(dirctl info "$cid" --output json | jq -r '"\(.cid), version \(.annotations.version), OASF \(.annotations["oasf-version"]), created \(.createdAt)"')"
+  verdict=$(dirctl verify "$cid" --key "$base/cosign.pub" | grep -oE 'signature is: [a-z ]+')
+  signer=$(dirctl verify "$cid" --key "$base/cosign.pub" --output json | jq -r '.signers[0].key.publicKey // empty' | fingerprint)
+  algorithm=$(dirctl verify "$cid" --key "$base/cosign.pub" --output json | jq -r '.signers[0].key.algorithm // "none"')
+  [ "$signer" = "$published" ] && match="matches the published key" || match="DOES NOT match the published key"
+  echo "   signature: $verdict; signer $algorithm sha256 $signer, $match"
+  doc=$(curl -s "$name/did.json" | jq -r '.verificationMethod[0].publicKeyJwk.x')
+  trusted=$(curl -s https://agents.slim.outshift.io/.well-known/jwks.json | jq -r --arg did "$did" '.keys[] | select(.kid == $did) | .x')
+  [ -n "$doc" ] && [ "$doc" = "$trusted" ] && idmatch="same key in the JWKS SLIM peers trust" || idmatch="NOT the key in the trusted JWKS"
+  echo "   identity:  $did, Ed25519 ${doc:0:12}…, $idmatch"
+  echo "   claim:     $(dirctl identity status "$cid" | grep -E '^Identity:' | sed 's/Identity: *//')"
   dirctl pull "$name" --output json \
     | jq '(.data // .) | .modules[] | select(.name == "integration/a2a") | .data.card_data' > "/tmp/$seller.card.json"
-  jq -c '{name, interfaces: [.supportedInterfaces[].url]}' "/tmp/$seller.card.json"
   diff -q <(jq -S . "/tmp/$seller.card.json") <(curl -s "$name/agent-card.json" | jq -S .) >/dev/null \
-    && echo "card matches the published card" || echo "card DIFFERS from the published card"
+    && cardmatch="matches the published card" || cardmatch="DIFFERS from the published card"
+  echo "   card:      $(jq -r '[.supportedInterfaces[] | "\(.protocolBinding) \(.url)"] | join(", ")' "/tmp/$seller.card.json"); $cardmatch"
 done
 ```
 
-Expect, for each seller: `Record signature is: trusted`; the interfaces
-`https://agents.slim.outshift.io/agentcon/<seller>/a2a` (JSON-RPC over HTTPS) and `slim://agntcy/agentcon/<seller>`
-(SLIMRPC); and `card matches the published card`. A record that isn't trusted, or a card that differs, isn't the one
-AgentCon signed: stop, and don't run the demo against it.
+Expect, for each seller:
+
+- `signature: signature is: trusted`, with the signer's fingerprint matching the published AgentCon key;
+- `identity: did:web:…:<seller>, Ed25519 …, same key in the JWKS SLIM peers trust`;
+- `claim: no result` for now: the records don't carry a Directory identity claim yet (see below);
+- `card: JSONRPC https://…/<seller>/a2a, SLIMRPC slim://agntcy/agentcon/<seller>; matches the published card`.
+
+Anything that says `not trusted`, `DOES NOT match`, `NOT the key` or `DIFFERS` means the record, the key or the card
+isn't the one AgentCon published: stop, and don't run the demo against it.
+
+The signature proves the record comes from whoever holds the AgentCon key. The did:web check proves which key each
+seller uses on SLIM, as published under the `agents.slim.outshift.io` domain. A Directory identity claim
+(`dirctl identity claim --role identity`, signed with the seller's own key) would tie the two together in the record
+itself; once the records carry one, `claim:` shows its verification result.
 
 ## Stage 2 · Start the buyer
 
