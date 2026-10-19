@@ -8,13 +8,13 @@ publish = false
 [dependencies]
 a2a = { package = "a2a-lf", version = "=0.4.2" }
 a2a-server = { package = "a2a-server-lf", version = "=0.5.3", default-features = false }
-# SLIMRPC binding (SLIM 3.4 line); slim_* versions match what a2a-slimrpc 0.3.4 builds on.
+# SLIMRPC binding (SLIM 3.4 line); slim_* at the SLIM 3.4.5 release (multicast join fix, agntcy/slim#2326).
 a2a-slimrpc = "=0.3.4"
-slim_auth = { package = "agntcy-slim-auth", version = "0.17.7" }
-slim_config = { package = "agntcy-slim-config", version = "0.17.7" }
-slim_datapath = { package = "agntcy-slim-datapath", version = "0.19.12" }
-slim_rpc = { package = "agntcy-slim-rpc", version = "3.4.3" }
-slim_service = { package = "agntcy-slim-service", version = "0.13.12", features = ["session"] }
+slim_auth = { package = "agntcy-slim-auth", version = "0.17.9" }
+slim_config = { package = "agntcy-slim-config", version = "0.17.9" }
+slim_datapath = { package = "agntcy-slim-datapath", version = "0.19.14" }
+slim_rpc = { package = "agntcy-slim-rpc", version = "3.4.5" }
+slim_service = { package = "agntcy-slim-service", version = "0.13.14", features = ["session"] }
 serde_yaml = "0.9"
 github-copilot-sdk = { version = "=1.0.20-preview.2", optional = true }
 async-trait = "0.1"
