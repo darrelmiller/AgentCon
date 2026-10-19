@@ -51,8 +51,9 @@ The sellers are published in the AGNTCY Directory (`ads.outshift.io`) as OASF re
 seller, why it can be trusted:
 
 - **Record:** its CID (the content hash, so any change to the record changes it), name, version and creation time.
-- **Signature:** the record is signed with the AgentCon cosign key. `dirctl` verifies the signature, and the stage
-  checks that the signer's key is the public key AgentCon publishes next to the cards
+- **Signature:** the record is signed with the AgentCon cosign key. The Directory server verifies the signature when
+  the record is signed, and the stage reads that result (`dirctl verify --from-server`, one quick call instead of a
+  local Sigstore verification). It then checks that the signer's key is the public key AgentCon publishes next to the cards
   (<https://agents.slim.outshift.io/agentcon/cosign.pub>), by comparing their SHA-256 fingerprints.
 - **Identity:** each seller has a did:web identity, `did:web:agents.slim.outshift.io:agentcon:<seller>`, the identity
   it uses on SLIM. The stage resolves its DID document (`https://agents.slim.outshift.io/agentcon/<seller>/did.json`)
@@ -63,38 +64,43 @@ seller, why it can be trusted:
 
 ```bash
 printf '\n\033[1;33m== Stage 1 · Find and verify the sellers in the Directory ==\033[0m\n'
-dirctl() { npx -y --package=@agntcy/dir-mcp dirctl "$@" </dev/null; }
-fingerprint() { openssl pkey -pubin -outform DER 2>/dev/null | shasum -a 256 | cut -c1-16; }
+dirctl() { npx -y --package=@agntcy/dir-mcp dirctl "$@" </dev/null 2>/dev/null; }
+fingerprint() { local key; key=$(cat); [ -n "$key" ] && openssl pkey -pubin -outform DER 2>/dev/null <<<"$key" | shasum -a 256 | cut -c1-16; }
 base=https://agents.slim.outshift.io/agentcon
+out=$(mktemp -d)
 published=$(curl -s "$base/cosign.pub" | fingerprint)
+curl -s https://agents.slim.outshift.io/.well-known/jwks.json > "$out/jwks.json"
 echo "AgentCon signing key (published at $base/cosign.pub): sha256 $published"
-dirctl search --name "$base/*"
-for seller in barolo-supplier sardinian-supplier french-supplier; do
-  name="$base/$seller"; did="did:web:agents.slim.outshift.io:agentcon:$seller"
-  cid=$(dirctl search --name "$name" --output raw)
+check() {  # one seller; the three run in parallel, each into its own file
+  local seller=$1 name="$base/$1" did="did:web:agents.slim.outshift.io:agentcon:$1"
+  local info cid verify signer verdict match doc trusted idmatch cardmatch
+  info=$(dirctl info "$name" --output json); cid=$(jq -r .cid <<<"$info")
   printf '\n\033[1m-- %s\033[0m\n' "$seller"
-  echo "   record:    $(dirctl info "$cid" --output json | jq -r '"\(.cid), version \(.annotations.version), OASF \(.annotations["oasf-version"]), created \(.createdAt)"')"
-  verdict=$(dirctl verify "$cid" --key "$base/cosign.pub" | grep -oE 'signature is: [a-z ]+')
-  signer=$(dirctl verify "$cid" --key "$base/cosign.pub" --output json | jq -r '.signers[0].key.publicKey // empty' | fingerprint)
-  algorithm=$(dirctl verify "$cid" --key "$base/cosign.pub" --output json | jq -r '.signers[0].key.algorithm // "none"')
-  [ "$signer" = "$published" ] && match="matches the published key" || match="DOES NOT match the published key"
-  echo "   signature: $verdict; signer $algorithm sha256 $signer, $match"
+  echo "   record:    $(jq -r '"\(.cid), version \(.annotations.version), OASF \(.annotations["oasf-version"]), created \(.createdAt)"' <<<"$info")"
+  verify=$(dirctl verify "$cid" --from-server --output json)
+  signer=$(jq -r '.signers[0].key.publicKey // empty' <<<"$verify" | fingerprint)
+  [ "$(jq -r .success <<<"$verify")" = true ] && verdict="trusted (verified by the Directory)" || verdict="not trusted, or not verified yet"
+  [ -n "$signer" ] && [ "$signer" = "$published" ] && match="matches the published key" || match="DOES NOT match the published key"
+  echo "   signature: $verdict; signer $(jq -r '.signers[0].key.algorithm // "none"' <<<"$verify") sha256 ${signer:-none}, $match"
   doc=$(curl -s "$name/did.json" | jq -r '.verificationMethod[0].publicKeyJwk.x')
-  trusted=$(curl -s https://agents.slim.outshift.io/.well-known/jwks.json | jq -r --arg did "$did" '.keys[] | select(.kid == $did) | .x')
+  trusted=$(jq -r --arg did "$did" '.keys[] | select(.kid == $did) | .x' "$out/jwks.json")
   [ -n "$doc" ] && [ "$doc" = "$trusted" ] && idmatch="same key in the JWKS SLIM peers trust" || idmatch="NOT the key in the trusted JWKS"
   echo "   identity:  $did, Ed25519 ${doc:0:12}…, $idmatch"
-  echo "   claim:     $(dirctl identity status "$cid" | grep -E '^Identity:' | sed 's/Identity: *//')"
-  dirctl pull "$name" --output json \
-    | jq '(.data // .) | .modules[] | select(.name == "integration/a2a") | .data.card_data' > "/tmp/$seller.card.json"
-  diff -q <(jq -S . "/tmp/$seller.card.json") <(curl -s "$name/agent-card.json" | jq -S .) >/dev/null \
+  echo "   claim:     $(dirctl identity status "$cid" | sed -n 's/^Identity: *//p')"
+  dirctl pull "$cid" --output json \
+    | jq '(.data // .) | .modules[] | select(.name == "integration/a2a") | .data.card_data' > "$out/$seller.card.json"
+  diff -q <(jq -S . "$out/$seller.card.json") <(curl -s "$name/agent-card.json" | jq -S .) >/dev/null \
     && cardmatch="matches the published card" || cardmatch="DIFFERS from the published card"
-  echo "   card:      $(jq -r '[.supportedInterfaces[] | "\(.protocolBinding) \(.url)"] | join(", ")' "/tmp/$seller.card.json"); $cardmatch"
-done
+  echo "   card:      $(jq -r '[.supportedInterfaces[] | "\(.protocolBinding) \(.url)"] | join(", ")' "$out/$seller.card.json"); $cardmatch"
+}
+sellers=(barolo-supplier sardinian-supplier french-supplier)
+for seller in "${sellers[@]}"; do check "$seller" > "$out/$seller.txt" & done; wait
+for seller in "${sellers[@]}"; do cat "$out/$seller.txt"; done
 ```
 
 Expect, for each seller:
 
-- `signature: signature is: trusted`, with the signer's fingerprint matching the published AgentCon key;
+- `signature: trusted (verified by the Directory)`, with the signer's fingerprint matching the published AgentCon key;
 - `identity: did:web:…:<seller>, Ed25519 …, same key in the JWKS SLIM peers trust`;
 - `claim: no result` for now: the records don't carry a Directory identity claim yet (see below);
 - `card: JSONRPC https://…/<seller>/a2a, SLIMRPC slim://agntcy/agentcon/<seller>; matches the published card`.
