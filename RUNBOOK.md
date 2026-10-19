@@ -59,7 +59,10 @@ seller, why it can be trusted:
   it uses on SLIM. The stage resolves its DID document (`https://agents.slim.outshift.io/agentcon/<seller>/did.json`)
   and checks that its key is the key the SLIM peers trust for that DID, in the published JWKS
   (`https://agents.slim.outshift.io/.well-known/jwks.json`, `kid` = the DID).
-- **Directory identity claim:** whether a signed claim binds the record to that DID (`dirctl identity status`).
+- **Directory identity claim:** each record declares its DID (annotation `agntcy.dir/identity`) and carries a claim
+  signed with the seller's own key. The Directory server verifies the claim against the DID document, and the stage
+  reads its result (`dirctl identity status`). The claim itself can't be fetched, so it can only be verified on the
+  server.
 - **A2A card:** the card pulled from the record, its interfaces, and whether it matches the card the seller serves.
 
 ```bash
@@ -102,16 +105,17 @@ Expect, for each seller:
 
 - `signature: trusted (verified by the Directory)`, with the signer's fingerprint matching the published AgentCon key;
 - `identity: did:web:…:<seller>, Ed25519 …, same key in the JWKS SLIM peers trust`;
-- `claim: no result` for now: the records don't carry a Directory identity claim yet (see below);
+- `claim: verified`. `no result` means the server hasn't checked the claim yet (it does so periodically, after the
+  record is signed and announced); `failed` comes with the server's reason;
 - `card: JSONRPC https://…/<seller>/a2a, SLIMRPC slim://agntcy/agentcon/<seller>; matches the published card`.
 
-Anything that says `not trusted`, `DOES NOT match`, `NOT the key` or `DIFFERS` means the record, the key or the card
+Anything that says `not trusted`, `DOES NOT match`, `NOT the key`, `failed` or `DIFFERS` means the record, the key or the card
 isn't the one AgentCon published: stop, and don't run the demo against it.
 
 The signature proves the record comes from whoever holds the AgentCon key. The did:web check proves which key each
-seller uses on SLIM, as published under the `agents.slim.outshift.io` domain. A Directory identity claim
-(`dirctl identity claim --role identity`, signed with the seller's own key) would tie the two together in the record
-itself; once the records carry one, `claim:` shows its verification result.
+seller uses on SLIM, as published under the `agents.slim.outshift.io` domain. The identity claim
+(`dirctl identity claim --role identity`, signed with the seller's own key) ties the two together in the record
+itself, as verified by the Directory server.
 
 ## Stage 2 · Start the buyer
 
