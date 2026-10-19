@@ -48,6 +48,8 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
+            - name: SUPPLIER_STRUCTURED_DATA
+              value: {{ .Values.structuredData | quote }}
             - name: SUPPLIER_INVENTORY
               value: /etc/agentcon/inventory.json
             - name: SUPPLIER_SLIM_CONFIG

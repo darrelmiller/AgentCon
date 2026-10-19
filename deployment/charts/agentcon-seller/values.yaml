@@ -7,6 +7,10 @@ agentName: barolo-supplier
 # /etc/agentcon/inventory.json. From a file: --set-file inventory=SupplierAgent/inventories/barolo.json
 inventory: ""
 
+# Accept typed (JSON Schema) requests, as the published card advertises. The supplier binary defaults to text only
+# (the local demo switches typed data on from its dashboard); a cloud seller has no such control, so it's set here.
+structuredData: true
+
 image:
   repository: ghcr.io/darrelmiller/agentcon-supplier
   # Defaults to the chart's appVersion.
