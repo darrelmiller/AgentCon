@@ -47,32 +47,75 @@ account starts the buyer without SLIM and gets HTTP 403 from the HTTPS gateway.
 
 ## Stage 1 · Find and verify the sellers in the Directory
 
-The sellers are published in the AGNTCY Directory (`ads.outshift.io`) as OASF records, signed with the AgentCon cosign
-key, whose public key is served next to the cards at <https://agents.slim.outshift.io/agentcon/cosign.pub>. This stage
-lists the records, verifies each signature against that key, pulls the A2A card out of each record and checks that it
-matches the card the seller serves.
+The sellers are published in the AGNTCY Directory (`ads.outshift.io`) as OASF records. This stage shows, for each
+seller, why it can be trusted:
+
+- **Record:** its CID (the content hash, so any change to the record changes it), name, version and creation time.
+- **Signature:** the record is signed with the AgentCon cosign key. The Directory server verifies the signature when
+  the record is signed, and the stage reads that result (`dirctl verify --from-server`, one quick call instead of a
+  local Sigstore verification). It then checks that the signer's key is the public key AgentCon publishes next to the cards
+  (<https://agents.slim.outshift.io/agentcon/cosign.pub>), by comparing their SHA-256 fingerprints.
+- **Identity:** each seller has a did:web identity, `did:web:agents.slim.outshift.io:agentcon:<seller>`, the identity
+  it uses on SLIM. The stage resolves its DID document (`https://agents.slim.outshift.io/agentcon/<seller>/did.json`)
+  and checks that its key is the key the SLIM peers trust for that DID, in the published JWKS
+  (`https://agents.slim.outshift.io/.well-known/jwks.json`, `kid` = the DID).
+- **Directory identity claim:** each record declares its DID (annotation `agntcy.dir/identity`) and carries a claim
+  signed with the seller's own key. The Directory server verifies the claim against the DID document, and the stage
+  reads its result (`dirctl identity status`). The claim itself can't be fetched, so it can only be verified on the
+  server.
+- **A2A card:** the card pulled from the record, its interfaces, and whether it matches the card the seller serves.
 
 ```bash
 printf '\n\033[1;33m== Stage 1 · Find and verify the sellers in the Directory ==\033[0m\n'
-dirctl() { npx -y --package=@agntcy/dir-mcp dirctl "$@" </dev/null; }
-dirctl search --name 'https://agents.slim.outshift.io/agentcon/*'
-for seller in barolo-supplier sardinian-supplier french-supplier; do
-  name="https://agents.slim.outshift.io/agentcon/$seller"
-  cid=$(dirctl search --name "$name" --output raw)
-  echo "-- $seller ($cid)"
-  dirctl verify "$cid" --key https://agents.slim.outshift.io/agentcon/cosign.pub | grep -E "signature is|Reason"
-  dirctl pull "$name" --output json \
-    | jq '(.data // .) | .modules[] | select(.name == "integration/a2a") | .data.card_data' > "/tmp/$seller.card.json"
-  jq -c '{name, interfaces: [.supportedInterfaces[].url]}' "/tmp/$seller.card.json"
-  diff -q <(jq -S . "/tmp/$seller.card.json") <(curl -s "$name/agent-card.json" | jq -S .) >/dev/null \
-    && echo "card matches the published card" || echo "card DIFFERS from the published card"
-done
+dirctl() { npx -y --package=@agntcy/dir-mcp dirctl "$@" </dev/null 2>/dev/null; }
+fingerprint() { local key; key=$(cat); [ -n "$key" ] && openssl pkey -pubin -outform DER 2>/dev/null <<<"$key" | shasum -a 256 | cut -c1-16; }
+base=https://agents.slim.outshift.io/agentcon
+out=$(mktemp -d)
+published=$(curl -s "$base/cosign.pub" | fingerprint)
+curl -s https://agents.slim.outshift.io/.well-known/jwks.json > "$out/jwks.json"
+echo "AgentCon signing key (published at $base/cosign.pub): sha256 $published"
+check() {  # one seller; the three run in parallel, each into its own file
+  local seller=$1 name="$base/$1" did="did:web:agents.slim.outshift.io:agentcon:$1"
+  local info cid verify signer verdict match doc trusted idmatch cardmatch
+  info=$(dirctl info "$name" --output json); cid=$(jq -r .cid <<<"$info")
+  printf '\n\033[1m-- %s\033[0m\n' "$seller"
+  echo "   record:    $(jq -r '"\(.cid), version \(.annotations.version), OASF \(.annotations["oasf-version"]), created \(.createdAt)"' <<<"$info")"
+  verify=$(dirctl verify "$cid" --from-server --output json)
+  signer=$(jq -r '.signers[0].key.publicKey // empty' <<<"$verify" | fingerprint)
+  [ "$(jq -r .success <<<"$verify")" = true ] && verdict="trusted (verified by the Directory)" || verdict="not trusted, or not verified yet"
+  [ -n "$signer" ] && [ "$signer" = "$published" ] && match="matches the published key" || match="DOES NOT match the published key"
+  echo "   signature: $verdict; signer $(jq -r '.signers[0].key.algorithm // "none"' <<<"$verify") sha256 ${signer:-none}, $match"
+  doc=$(curl -s "$name/did.json" | jq -r '.verificationMethod[0].publicKeyJwk.x')
+  trusted=$(jq -r --arg did "$did" '.keys[] | select(.kid == $did) | .x' "$out/jwks.json")
+  [ -n "$doc" ] && [ "$doc" = "$trusted" ] && idmatch="same key in the JWKS SLIM peers trust" || idmatch="NOT the key in the trusted JWKS"
+  echo "   identity:  $did, Ed25519 ${doc:0:12}…, $idmatch"
+  echo "   claim:     $(dirctl identity status "$cid" | sed -n 's/^Identity: *//p')"
+  dirctl pull "$cid" --output json \
+    | jq '(.data // .) | .modules[] | select(.name == "integration/a2a") | .data.card_data' > "$out/$seller.card.json"
+  diff -q <(jq -S . "$out/$seller.card.json") <(curl -s "$name/agent-card.json" | jq -S .) >/dev/null \
+    && cardmatch="matches the published card" || cardmatch="DIFFERS from the published card"
+  echo "   card:      $(jq -r '[.supportedInterfaces[] | "\(.protocolBinding) \(.url)"] | join(", ")' "$out/$seller.card.json"); $cardmatch"
+}
+sellers=(barolo-supplier sardinian-supplier french-supplier)
+for seller in "${sellers[@]}"; do check "$seller" > "$out/$seller.txt" & done; wait
+for seller in "${sellers[@]}"; do cat "$out/$seller.txt"; done
 ```
 
-Expect, for each seller: `Record signature is: trusted`; the interfaces
-`https://agents.slim.outshift.io/agentcon/<seller>/a2a` (JSON-RPC over HTTPS) and `slim://agntcy/agentcon/<seller>`
-(SLIMRPC); and `card matches the published card`. A record that isn't trusted, or a card that differs, isn't the one
-AgentCon signed: stop, and don't run the demo against it.
+Expect, for each seller:
+
+- `signature: trusted (verified by the Directory)`, with the signer's fingerprint matching the published AgentCon key;
+- `identity: did:web:…:<seller>, Ed25519 …, same key in the JWKS SLIM peers trust`;
+- `claim: verified`. `no result` means the server hasn't checked the claim yet (it does so periodically, after the
+  record is signed and announced); `failed` comes with the server's reason;
+- `card: JSONRPC https://…/<seller>/a2a, SLIMRPC slim://agntcy/agentcon/<seller>; matches the published card`.
+
+Anything that says `not trusted`, `DOES NOT match`, `NOT the key`, `failed` or `DIFFERS` means the record, the key or the card
+isn't the one AgentCon published: stop, and don't run the demo against it.
+
+The signature proves the record comes from whoever holds the AgentCon key. The did:web check proves which key each
+seller uses on SLIM, as published under the `agents.slim.outshift.io` domain. The identity claim
+(`dirctl identity claim --role identity`, signed with the seller's own key) ties the two together in the record
+itself, as verified by the Directory server.
 
 ## Stage 2 · Start the buyer
 
@@ -163,7 +206,8 @@ a2a send -e slim://agntcy/agentcon/buyer --transport slimrpc --timeout 150s --co
 printf '\n\033[1;34m== SLIM · Stage S8 · Buy the Barolo: the seller asks for an over-21 wallet proof ==\033[0m\n'
 export A2A_SLIMRPC_PLUGIN_CONFIG="$HOME/Library/Application Support/AgentConDemo/slim/slim-client.json"
 a2a send -e slim://agntcy/agentcon/buyer --transport slimrpc --timeout 150s --context-id slim-dinner \
-  'Buy the quoted wine as a simulated demo order only.'
+  'Buy the quoted wine as a simulated demo order only.' |
+  tee /dev/stderr | awk '/^Task:/{print $2; exit}' > "${TMPDIR:-/tmp}/agentcon-s-purchase-task"
 ```
 
 The reply is `Status: auth-required`, with a `Task:` ID and a link
@@ -176,19 +220,38 @@ The reply is `Status: auth-required`, with a `Task:` ID and a link
 
 Scan it with the wallet, choose the AgentCon over_21 credential and approve, within about 10 minutes.
 
-### Stage S9 · SLIM · Check the order
-
-With the `Task:` ID from Stage S8 in place of `<task-id>`:
+### Stage S9 · SLIM · Age check, then the purchase
 
 ```bash
-printf '\n\033[1;34m== SLIM · Stage S9 · Check the order ==\033[0m\n'
+printf '\n\033[1;34m== SLIM · Stage S9 · Age check, then the purchase ==\033[0m\n'
 export A2A_SLIMRPC_PLUGIN_CONFIG="$HOME/Library/Application Support/AgentConDemo/slim/slim-client.json"
-a2a task get -e slim://agntcy/agentcon/buyer --transport slimrpc <task-id>
+buyer=(-e slim://agntcy/agentcon/buyer --transport slimrpc)
+task=$(cat "${TMPDIR:-/tmp}/agentcon-s-purchase-task")
+printf 'purchase task %s: waiting for the wallet approval ' "$task"
+for _ in $(seq 240); do
+  json=$(a2a task get "${buyer[@]}" "$task" -o json </dev/null 2>/dev/null)
+  state=$(jq -r '.task.status.state // empty' <<<"$json")
+  [[ -n "$state" && "$state" != TASK_STATE_AUTH_REQUIRED ]] && break
+  printf .; sleep 3
+done; echo
+jq -r --arg ok $'\033[1;32m✓\033[0m' --arg no $'\033[1;31m✗\033[0m' '
+  .task as $t
+  | ([$t.artifacts[]? | select(.name == "order-receipt") | .parts[0].data][0]) as $r
+  | "  task state:  \($t.status.state // "unknown" | sub("TASK_STATE_"; "") | ascii_downcase)",
+    if $r then
+      (if $r.ageVerification == "verified-demo-over-21" then "\($ok) 1. age check: over 21, proved with the wallet (\($r.ageVerification))"
+       else "\($no) 1. age check: \($r.ageVerification // "missing")" end),
+      "\($ok) 2. purchase:  order \($r.orderId) completed, \($r.currency) \($r.totalMinor / 100 | floor).\($r.totalMinor % 100 + 100 | tostring | .[1:]) for quote \($r.quoteId)",
+      "     \($r.status) demo order: payment \($r.payment), fulfillment \($r.fulfillment)"
+    else
+      "\($no) no order receipt yet: \($t.status.message.parts[0].text // "no status message")"
+    end' <<<"$json"
 ```
 
-While the wallet hasn't approved yet it shows `auth-required`: run it again. After approval it shows
-`Status: completed` and an `order-receipt` artifact with `"ageVerification":"verified-demo-over-21"`,
-`"status":"simulated"` and `"payment":"not-performed"`.
+It polls every 3 seconds while the task is `auth-required` (up to 12 minutes), so it can run right after Stage S8
+while you scan the QR code. When the wallet approves, the seller checks the over-21 proof and only then records the
+order: the output shows `✓ 1. age check` and `✓ 2. purchase` with the order ID and the USD 169.00 total. `✗ no order
+receipt` means the wallet didn't approve in time or the seller refused the proof; the status message says which.
 
 ## The HTTPS run
 
@@ -246,19 +309,44 @@ a2a send -a http://localhost:5100 --timeout 150s --context-id https-dinner \
 ```bash
 printf '\n\033[1;32m== HTTPS · Stage H8 · Buy the Barolo: the seller asks for an over-21 wallet proof ==\033[0m\n'
 a2a send -a http://localhost:5100 --timeout 150s --context-id https-dinner \
-  'Buy the quoted wine as a simulated demo order only.'
+  'Buy the quoted wine as a simulated demo order only.' |
+  tee /dev/stderr | awk '/^Task:/{print $2; exit}' > "${TMPDIR:-/tmp}/agentcon-h-purchase-task"
 ```
 
 Approve as in Stage S8: **Show QR** on the Barolo seller's task, or the presentation link.
 
-### Stage H9 · HTTPS · Check the order
-
-With the `Task:` ID from Stage H8 in place of `<task-id>`:
+### Stage H9 · HTTPS · Age check, then the purchase
 
 ```bash
-printf '\n\033[1;32m== HTTPS · Stage H9 · Check the order ==\033[0m\n'
-a2a task get -a http://localhost:5100 <task-id>
+printf '\n\033[1;32m== HTTPS · Stage H9 · Age check, then the purchase ==\033[0m\n'
+export A2A_SLIMRPC_PLUGIN_CONFIG="$HOME/Library/Application Support/AgentConDemo/slim/slim-client.json"
+buyer=(-a http://localhost:5100)
+task=$(cat "${TMPDIR:-/tmp}/agentcon-h-purchase-task")
+printf 'purchase task %s: waiting for the wallet approval ' "$task"
+for _ in $(seq 240); do
+  json=$(a2a task get "${buyer[@]}" "$task" -o json </dev/null 2>/dev/null)
+  state=$(jq -r '.task.status.state // empty' <<<"$json")
+  [[ -n "$state" && "$state" != TASK_STATE_AUTH_REQUIRED ]] && break
+  printf .; sleep 3
+done; echo
+jq -r --arg ok $'\033[1;32m✓\033[0m' --arg no $'\033[1;31m✗\033[0m' '
+  .task as $t
+  | ([$t.artifacts[]? | select(.name == "order-receipt") | .parts[0].data][0]) as $r
+  | "  task state:  \($t.status.state // "unknown" | sub("TASK_STATE_"; "") | ascii_downcase)",
+    if $r then
+      (if $r.ageVerification == "verified-demo-over-21" then "\($ok) 1. age check: over 21, proved with the wallet (\($r.ageVerification))"
+       else "\($no) 1. age check: \($r.ageVerification // "missing")" end),
+      "\($ok) 2. purchase:  order \($r.orderId) completed, \($r.currency) \($r.totalMinor / 100 | floor).\($r.totalMinor % 100 + 100 | tostring | .[1:]) for quote \($r.quoteId)",
+      "     \($r.status) demo order: payment \($r.payment), fulfillment \($r.fulfillment)"
+    else
+      "\($no) no order receipt yet: \($t.status.message.parts[0].text // "no status message")"
+    end' <<<"$json"
 ```
+
+It polls every 3 seconds while the task is `auth-required` (up to 12 minutes), so it can run right after Stage H8
+while you scan the QR code. When the wallet approves, the seller checks the over-21 proof and only then records the
+order: the output shows `✓ 1. age check` and `✓ 2. purchase` with the order ID and the USD 169.00 total. `✗ no order
+receipt` means the wallet didn't approve in time or the seller refused the proof; the status message says which.
 
 ## Stage 10 · Stop
 
@@ -316,7 +404,7 @@ When asked to run the SLIM or the HTTPS demo:
   account, stop and ask the user to run `slimctl login`.
 - Run Stage S8 or H8 (the purchase) only when the user asked for the full demo. Then post the presentation link, point the
   user to **Show QR** on the Barolo seller's task in the dashboard's Seller Agent panel, and wait for them to approve.
-  Never resend a purchase on your own: a second order could be created. Check the order with Stage S9 or H9 when the user
-  says they approved, or every 30 seconds until it is no longer `auth-required`.
+  Never resend a purchase on your own: a second order could be created. Run Stage S9 or H9 right away: it waits for the
+  approval and prints the age check and the purchase. Report both lines to the user.
 - Keep the same transport for the whole run, and the context IDs as written (use a new suffix only when repeating a
   run in the same buyer session).
